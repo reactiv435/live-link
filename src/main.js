@@ -16,7 +16,9 @@ const VERSION = app.getVersion();
 const START_HIDDEN = process.argv.includes('--hidden');
 const API_BASE = process.env.LIVE_LINK_API || SITE.apiBase;      // LIVE_LINK_API = the local mock for testing
 
-if (!app.requestSingleInstanceLock()) { app.quit(); }
+// A second copy must stop HERE: if it ran on, its startup token refresh would rotate the device token and
+// knock the running copy offline mid-show. app.quit() is asynchronous, so exit and return.
+if (!app.requestSingleInstanceLock()) { app.exit(0); return; }
 app.setAppUserModelId(APP_ID);
 
 // ---------------------------------------------------------------- logging (userData/logs/live-link.log, ~1 MB)

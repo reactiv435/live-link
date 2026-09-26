@@ -16,6 +16,7 @@
 //   * a connect that hangs is abandoned after 45 s; an open socket with no data for 120 s is reconnected once,
 //     then left alone for 5 min so a quiet room can't spin into a reconnect loop.
 const EventEmitter = require('events');
+const { usableTotal } = require('./batcher');
 
 const RETRY_BACKOFF_MS = [10000, 20000, 40000, 80000, 120000];
 const RATE_LIMIT_MIN_MS = 60000;
@@ -35,7 +36,8 @@ class TikTokLink extends EventEmitter {
     super();
     this.lib = opts.lib || null;                 // { TikTokLiveConnection, WebcastEvent, ControlEvent, UserOfflineError, SignatureRateLimitError }
     this.log = opts.log || (() => {});
-    this.now = opts.now || (() => Date.now());
+    this.now = opts.now || (() => Date.now());                       // wall clock: only for retryAt display
+    this.mono = opts.mono || opts.now || (() => performance.now());  // steady clock for every interval check
     this.setTimeout = opts.setTimeout || setTimeout;
     this.clearTimeout = opts.clearTimeout || clearTimeout;
     this.setInterval = opts.setInterval || setInterval;
@@ -81,8 +83,15 @@ class TikTokLink extends EventEmitter {
     this._setState({ status: 'idle', roomId: null, viewers: 0, error: null, errorKind: null, retryAt: null });
   }
 
-  // Try now (the UI's "Reconnect" button).
-  retryNow() { if (this.username) this._connect(); }
+  // Try now (the UI's "Reconnect" button). Never tears down a healthy or in-progress connection, and never
+  // jumps a rate-limit wait (each attempt costs a request on the free sign server).
+  retryNow() {
+    if (!this.username) return;
+    const st = this.state.status;
+    if (st === 'live' || st === 'connecting' || st === 'reconnecting') return;
+    if (this.state.errorKind === 'rate-limit' && this.state.retryAt > this.now()) return;
+    this._connect();
+  }
 
   _dropConnection() {
     if (!this.conn) return;
@@ -147,8 +156,8 @@ class TikTokLink extends EventEmitter {
     const generation = ++this.generation;
     this.clearTimeout(this.reconnectTimer); this.reconnectTimer = null;
     this._dropConnection();
-    this.lastFrameAt = this.now();
-    this.connectStartedAt = this.now();
+    this.lastFrameAt = this.mono();
+    this.connectStartedAt = this.mono();
     this._setState({ status: this.state.status === 'live' ? 'reconnecting' : 'connecting', error: null, errorKind: null, retryAt: null });
 
     const conn = new L.TikTokLiveConnection(this.username, {
@@ -162,9 +171,9 @@ class TikTokLink extends EventEmitter {
     const on = (event, cb) => { if (event) conn.on(event, (...a) => { if (generation === this.generation) cb(...a); }); };
     const C = L.ControlEvent || {}, W = L.WebcastEvent || {};
 
-    on(C.WEBSOCKET_DATA, () => { this.lastFrameAt = this.now(); });
+    on(C.WEBSOCKET_DATA, () => { this.lastFrameAt = this.mono(); });
     on(C.CONNECTED, (s) => {
-      this.lastFrameAt = this.now();
+      this.lastFrameAt = this.mono();
       this.retryStep = 0; this.connectStartedAt = 0;
       this._setState({ status: 'live', roomId: (s && s.roomId) ? String(s.roomId) : null, error: null, errorKind: null, retryAt: null });
       this.log('info', `Connected to @${this.username} room ${this.state.roomId}`);
@@ -184,10 +193,11 @@ class TikTokLink extends EventEmitter {
     on(W.LIKE, (d) => {
       // tiktok-live-proto v3 (what 2.4.4 decodes): count = taps in this batch, total = room total as a STRING.
       // Older/other shapes use likeCount / totalLikeCount; read both.
+      // v3 DEFAULTS total to "0" when the wire omits it: a total of 0 (or below this batch) means "no total".
       const count = Math.max(0, Math.floor(Number(d && (d.count ?? d.likeCount)) || 0));
-      const totalRaw = d && (d.total ?? d.totalLikeCount);
-      const total = totalRaw === undefined || totalRaw === null || totalRaw === '' ? NaN : Number(totalRaw);
-      if (count > 0 || Number.isFinite(total)) this.emit('like', { count, total, at: this.now() });
+      const t = usableTotal(d && (d.total ?? d.totalLikeCount), count);
+      const total = t === null ? NaN : t;
+      if (count > 0 || t !== null) this.emit('like', { count, total, at: this.now() });
     });
 
     try {
@@ -200,7 +210,7 @@ class TikTokLink extends EventEmitter {
   }
 
   _tick() {
-    const now = this.now();
+    const now = this.mono();
     if (!this.username) return;
     if (this.state.status === 'live' && this.lastFrameAt && now - this.lastFrameAt > SILENT_SOCKET_MS && now - this.lastForcedReconnectAt > FORCED_RECONNECT_GAP_MS) {
       this.lastForcedReconnectAt = now;

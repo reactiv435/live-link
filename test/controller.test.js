@@ -6,7 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const EventEmitter = require('events');
 const { createMock } = require('./mock-server');
-const { LiveLinkApi } = require('../src/core/api');
+const { LiveLinkApi, ApiError } = require('../src/core/api');
 const { Controller } = require('../src/core/controller');
 const { Store } = require('../src/core/store');
 
@@ -151,4 +151,100 @@ test('bad pair code surfaces the error code', async () => {
   const t = await setup();
   await assert.rejects(() => t.ctl.pair('WRONG999'), (e) => e.code === 'invalid_code');
   await t.done();
+});
+
+
+test('a LIVE that ends before the next push still gets its last taps and backlog credited', async () => {
+  const t = await setup({ autoApprove: true });
+  await t.ctl.pair('TEST2345');
+  t.link.goLive('R1');
+  t.link.like(10, '110');
+  assert.ok(await until(() => t.mock.state.pushes.length === 1));      // baseline (100)
+  t.link.like(1200, '1310');                                         // big burst...
+  t.link._set({ status: 'offline', roomId: null });                  // ...then the stream ends at once
+  assert.ok(await until(() => t.mock.state.credited === 1210, 6000), `credited ${t.mock.state.credited}`);
+  await t.done();
+});
+
+test('leaving test mode never credits the taps seen during the test', async () => {
+  const t = await setup({ autoApprove: true });
+  await t.ctl.pair('TEST2345');
+  t.link.goLive('R1');
+  t.link.like(10, '110');
+  t.link.like(10, '120');
+  assert.ok(await until(() => t.mock.state.credited === 20), `credited ${t.mock.state.credited}`);
+  t.ctl.setDryRun(true);
+  t.link.like(500, '620');                                           // test-period taps
+  assert.ok(await until(() => t.mock.state.pushes.some(p => p.dry_run)));
+  t.ctl.setDryRun(false);
+  t.link.like(7, '627');
+  assert.ok(await until(() => t.mock.state.pushes.some(p => p.rebaseline)), 'asked the site to re-baseline');
+  t.link.like(3, '630');
+  assert.ok(await until(() => t.mock.state.credited === 23, 4000), `credited ${t.mock.state.credited}`);
+  await wait(300);
+  assert.strictEqual(t.mock.state.credited, 23, 'the 500 test taps (and the re-baseline gap) were not credited');
+  await t.done();
+});
+
+test('disconnect while a push retry is pending, then connect again: pushes still work', async () => {
+  const t = await setup({ autoApprove: true });
+  t.mock.state.codes.set('SECOND22', { host_id: 'host-1', expires: Date.now() + 600000, used: false });
+  await t.ctl.pair('TEST2345');
+  t.link.goLive('R1');
+  t.link.like(10, '110');
+  assert.ok(await until(() => t.mock.state.pushes.length === 1));
+  t.mock.state.failNext.push({ path: 'live-link-push', status: 503 });
+  t.link.like(10, '120');
+  assert.ok(await until(() => t.mock.state.calls.filter(c => c.path === 'live-link-push').length === 2));
+  t.ctl.unpair();                                                    // retry timer pending right now
+  assert.strictEqual(t.ctl.s.phase, 'unpaired');
+  await t.ctl.pair('SECOND22');
+  t.link.goLive('R7');
+  t.link.like(5, '905');
+  t.link.like(5, '910');
+  assert.ok(await until(() => t.mock.state.pushes.some(p => p.tiktok_room_id === 'R7' && p.session_total === 910), 4000));
+  assert.notStrictEqual(t.ctl.s.phase, 'revoked');
+  await t.done();
+});
+
+test('site says not_live: pause, forget those taps, resume counting when the show starts', async () => {
+  const t = await setup({ autoApprove: true, notLiveReturns409: true });
+  t.mock.state.host.site_live = false;
+  await t.ctl.pair('TEST2345');
+  t.link.goLive('R1');
+  t.link.like(50, '1050');                                          // pre-show taps
+  assert.ok(await until(() => t.ctl.pausedForSite));
+  t.link.like(50, '1100');
+  t.mock.state.host.site_live = true;                                // host starts the show
+  await t.ctl._loadConfig();
+  t.link.like(20, '1120');
+  t.link.like(10, '1130');
+  assert.ok(await until(() => t.mock.state.credited === 30, 4000), `credited ${t.mock.state.credited}`);
+  await t.done();
+});
+
+test('a 401 for a token the app already rotated does not unpair it', async () => {
+  const t = await setup({ autoApprove: true });
+  await t.ctl.pair('TEST2345');
+  const tok = t.store.getToken();
+  t.ctl._handleApiError(new ApiError(401, 'device_revoked', 'old', { tokenUsed: 'an-older-token' }), 'config');
+  assert.strictEqual(t.ctl.s.phase, 'ready');
+  assert.strictEqual(t.store.getToken(), tok);
+  await t.done();
+});
+
+test('failing status calls back off instead of hammering every 1.5 s', async () => {
+  const t = await setup({ autoApprove: true });
+  await t.ctl.pair('TEST2345');
+  for (let i = 0; i < 10; i++) t.mock.state.failNext.push({ path: 'live-link-status', status: 503 });
+  t.link._set({ status: 'offline', roomId: null, error: null });     // a state change -> status call
+  await wait(4500);
+  const n = t.mock.state.calls.filter(c => c.path === 'live-link-status').length;
+  assert.ok(n <= 2, `${n} status calls in 4.5 s`);
+  await t.done();
+});
+
+test('a 2xx with a garbled body is not treated as a config', async () => {
+  const bad = new LiveLinkApi({ baseUrl: 'http://x/', getToken: () => 't', fetch: async () => ({ ok: true, status: 200, text: async () => '<html>proxy</html>', headers: { get: () => null } }) });
+  await assert.rejects(() => bad.config(), (e) => e.code === 'network');
 });

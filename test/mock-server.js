@@ -72,6 +72,7 @@ function createMock(opts = {}) {
 
       if (path === 'live-link-push') {
         if (!st.host.enabled && !body.dry_run) return err(res, 403, 'live_link_disabled');
+        if (opts.notLiveReturns409 && !st.host.site_live) return err(res, 409, 'not_live');
         if (!st.host.verified) return err(res, 403, 'tiktok_unverified');
         const events = Array.isArray(body.events) ? body.events : null;
         if (!events || events.length > 200 || typeof body.batch_id !== 'string' || !Number.isInteger(body.session_total)) return err(res, 400, 'validation', 'bad body', { details: { events: !!events } });
@@ -82,8 +83,11 @@ function createMock(opts = {}) {
         for (const e of events) if (Math.abs(Date.parse(e.at) - serverNow) > 10000) stale += e.count;
         const key = String(body.tiktok_room_id);
         let accepted = 0, deferred = 0, baseline = false;
-        if (!st.rooms.has(key)) { st.rooms.set(key, body.session_total); baseline = true; }
-        else {
+        if (!st.rooms.has(key) || body.rebaseline) {
+          // first push for a room, or an explicit re-baseline: remember the total, credit nothing
+          baseline = true;
+          if (!body.dry_run) st.rooms.set(key, body.session_total);
+        } else {
           const last = st.rooms.get(key);
           const delta = Math.max(0, body.session_total - last);
           accepted = Math.min(500, delta);
@@ -93,7 +97,6 @@ function createMock(opts = {}) {
         if (!body.dry_run && st.target) st.credited += accepted;
         const resp = { batch_id: body.batch_id, accepted, deferred, stale, ignored: 0, baseline_set: baseline, dry_run: !!body.dry_run,
           duplicate: false, target: st.target, next_push_ms: opts.pushIntervalMs || 2000, server_time: new Date().toISOString() };
-        if (body.dry_run && baseline) st.rooms.delete(key);   // dry runs write nothing
         st.batches.set(body.batch_id, resp);
         st.pushes.push(body);
         return send(res, 200, resp);

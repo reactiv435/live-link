@@ -10,13 +10,14 @@ function fakeLib(scenario) {
   class SignatureRateLimitError extends Error {}
   const made = [];
   class TikTokLiveConnection extends EventEmitter {
-    constructor(user, opts) { super(); this.user = user; this.opts = opts; made.push(this); }
+    constructor(user, opts) { super(); this.user = user; this.opts = opts; this.disconnected = false; made.push(this); }
     async connect() {
       const step = scenario.shift() || 'hang';
       if (step === 'live') { setImmediate(() => this.emit('connected', { roomId: 'R1' })); return { roomId: 'R1' }; }
       if (step === 'offline') throw new UserOfflineError("The requested user isn't online :(");
       if (step === 'ratelimit') throw new TypeError("Cannot read properties of undefined (reading 'retry-after')");
       if (step === 'neterr') throw new Error('getaddrinfo ENOTFOUND www.tiktok.com');
+      if (step === 'deferred') return new Promise((resolve) => { this.finish = () => { this.emit('connected', { roomId: 'LATE' }); resolve(); }; });
       return new Promise(() => {});
     }
     disconnect() { this.disconnected = true; }
@@ -43,8 +44,7 @@ const tick = () => new Promise(r => setImmediate(r));
 
 test('connects without replaying backlog and parses v3 likes (count + string total)', async () => {
   const f = fakeLib(['live']);
-  const T = timers();
-  const link = new TikTokLink({ lib: f.lib, ...T });
+  const link = new TikTokLink({ lib: f.lib, ...timers() });
   const likes = [], rooms = [];
   link.on('like', l => likes.push(l));
   link.on('roomChanged', r => rooms.push(r));
@@ -56,24 +56,28 @@ test('connects without replaying backlog and parses v3 likes (count + string tot
   assert.deepStrictEqual(rooms, ['R1']);
   f.made[0].emit('like', { count: 12, total: '4012', user: { displayId: 'fan' } });
   f.made[0].emit('like', { likeCount: 3, totalLikeCount: 4015 });            // older shape
-  assert.deepStrictEqual(likes.map(l => [l.count, l.total]), [[12, 4012], [3, 4015]]);
+  f.made[0].emit('like', { count: 4, total: '0' });                          // proto default: no total
+  assert.deepStrictEqual(likes.map(l => [l.count, Number.isNaN(l.total) ? 'none' : l.total]), [[12, 4012], [3, 4015], [4, 'none']]);
   link.stop();
 });
 
-test('not live -> offline, polled at the offline interval with backoff reset', async () => {
-  const f = fakeLib(['offline']);
+test('not live -> offline at the offline interval, and it resets the error backoff', async () => {
+  const f = fakeLib(['neterr', 'neterr', 'offline', 'neterr']);
   const T = timers();
   const link = new TikTokLink({ lib: f.lib, ...T });
   link.setOfflinePoll(90000);
   link.start('host');
-  await tick();
-  assert.strictEqual(link.state.status, 'offline');
-  assert.strictEqual(link.state.error, null);
-  assert.strictEqual(T.list.at(-1).ms, 90000);
+  const waits = [];
+  for (let i = 0; i < 4; i++) {
+    await tick();
+    const h = T.list.at(-1); waits.push([link.state.status, h.ms]);
+    T.list = []; h.fn();
+  }
+  assert.deepStrictEqual(waits, [['error', 10000], ['error', 20000], ['offline', 90000], ['error', 10000]]);
   link.stop();
 });
 
-test('2.4.4 rate-limit TypeError waits at least 60 s', async () => {
+test('2.4.4 rate-limit TypeError waits at least 60 s, and Reconnect can not jump it', async () => {
   const f = fakeLib(['ratelimit']);
   const T = timers();
   const link = new TikTokLink({ lib: f.lib, ...T });
@@ -81,38 +85,35 @@ test('2.4.4 rate-limit TypeError waits at least 60 s', async () => {
   await tick();
   assert.strictEqual(link.state.errorKind, 'rate-limit');
   assert.ok(T.list.at(-1).ms >= 60000);
+  link.retryNow();
+  assert.strictEqual(f.made.length, 1, 'no new attempt during the rate-limit wait');
   link.stop();
 });
 
-test('network errors back off 10, 20, 40 s', async () => {
-  const f = fakeLib(['neterr', 'neterr', 'neterr']);
-  const T = timers();
-  const link = new TikTokLink({ lib: f.lib, ...T });
-  link.start('host');
-  const waits = [];
-  for (let i = 0; i < 3; i++) {
-    await tick();
-    const h = T.list.at(-1); waits.push(h.ms);
-    T.list = []; h.fn();
-  }
-  assert.deepStrictEqual(waits, [10000, 20000, 40000]);
-  link.stop();
-});
-
-test('a dropped LIVE retries in 10 s; stop() mutes the old connection', async () => {
+test('a dropped LIVE retries in 10 s; Reconnect does nothing while live', async () => {
   const f = fakeLib(['live']);
   const T = timers();
   const link = new TikTokLink({ lib: f.lib, ...T });
-  const states = [];
-  link.on('state', s => states.push(s.status));
   link.start('host');
   await tick(); await tick();
+  link.retryNow();
+  assert.strictEqual(f.made.length, 1, 'a healthy socket is left alone');
   f.made[0].emit('disconnected');
   assert.strictEqual(link.state.status, 'reconnecting');
   assert.strictEqual(T.list.at(-1).ms, 10000);
   link.stop();
-  const before = states.length;
-  f.made[0].emit('like', { count: 1, total: '1' });
-  f.made[0].emit('disconnected');
-  assert.strictEqual(states.length, before, 'no events after stop');
+});
+
+test('a connect still in flight when stop() runs can not change the state later', async () => {
+  const f = fakeLib(['deferred']);
+  const link = new TikTokLink({ lib: f.lib, ...timers() });
+  link.start('host');
+  await tick();
+  const stale = f.made[0];
+  link.stop();
+  stale.finish();                                     // TikTok answers after we gave up
+  await tick(); await tick();
+  assert.strictEqual(link.state.status, 'idle');
+  assert.strictEqual(link.state.roomId, null);
+  assert.strictEqual(stale.disconnected, true, 'the late connection is closed');
 });

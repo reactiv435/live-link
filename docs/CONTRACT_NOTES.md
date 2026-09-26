@@ -18,6 +18,16 @@ Please confirm or adjust these points while building Phase 1:
 6. **Pushes** go out every `push_interval_ms` only while taps arrive or `deferred > 0`; with no song playing,
    every `idle_push_interval_ms`. Status rides inside each push; a separate status call goes out on state change
    or after `status_interval_ms` without a push.
+8. **`rebaseline: true` (new, please support).** When set on a push, store `last_session_total = session_total` for
+   that room and credit 0 (it still counts as a normal push for idempotency). The app sends it after leaving test
+   mode and after a `not_live` pause, so taps from those stretches are never credited later. `dry_run` pushes
+   write nothing, so without this a host who tests for a while would get all test-period taps credited at once.
+9. **When the site show is off,** please either accept pushes and advance `last_session_total` without crediting
+   (preferred, as the plan says for `target: null`), or return `409 not_live`. The app handles both: on 409 it
+   pauses, re-baselines, and resumes when `live-link-config` reports `site_live: true` (it polls config every
+   15 s while TikTok is live and the site show is not).
+10. **TikTok's room total:** tiktok-live-proto v3 defaults `total` to "0" when TikTok omits it. The app never sends
+    a 0 or a total smaller than a batch as `session_total`.
 7. **Files to host** in the public `live-link` bucket: `LIVE-Link-Setup-<v>.exe`, `LIVE-Link-source-<v>.zip`,
    `latest.json` `{version, url, sha256, source_url, released_at}`. The dashboard card links the exe and the
    source zip (AGPL).

@@ -14,9 +14,11 @@ const DEFAULTS = {
   max_events_per_push: 200,
 };
 const CONFIG_EVERY_MS = 60000;          // pick up username / enabled / target changes
+const CONFIG_WATCH_SITE_MS = 15000;     // TikTok is live but the site show isn't on yet: notice it starting quickly
 const CONFIG_WAITING_MS = 10000;        // while waiting for Approve
 const CONFIG_UNVERIFIED_MS = 30000;
 const RETRY_STEPS_MS = [2000, 4000, 8000, 16000, 30000];
+const STATUS_RETRY_MS = [5000, 15000, 30000, 60000];
 
 function semverLess(a, b) {
   const pa = String(a || '0').split('.').map(n => parseInt(n, 10) || 0);
@@ -24,6 +26,8 @@ function semverLess(a, b) {
   for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) < (pb[i] || 0); }
   return false;
 }
+
+const freshTaps = () => ({ session: 0, accepted: 0, deferred: 0, lastAccepted: 0, lastPushAt: null });
 
 class Controller extends EventEmitter {
   constructor(opts) {
@@ -34,7 +38,8 @@ class Controller extends EventEmitter {
     this.log = opts.log || (() => {});
     this.appVersion = opts.appVersion || '0.0.0';
     this.deviceName = opts.deviceName || 'PC';
-    this.now = opts.now || (() => Date.now());
+    this.now = opts.now || (() => Date.now());                        // wall clock: timestamps + display only
+    this.mono = opts.mono || opts.now || (() => performance.now());   // steady clock: every interval
     this.setTimeout = opts.setTimeout || setTimeout;
     this.clearTimeout = opts.clearTimeout || clearTimeout;
     this.batcher = new LikeBatcher();
@@ -42,10 +47,15 @@ class Controller extends EventEmitter {
     this.clockOffset = 0;
     this.timers = { config: null, push: null, status: null };
     this.inFlight = null;          // the push being sent (kept for an idempotent retry)
-    this.retryStep = 0;
-    this.lastPushAt = 0;
-    this.lastStatusAt = 0;
+    this.epoch = 0;                // bumped by stop(): any await that returns into an older epoch is ignored
+    this.pushRetryStep = 0;
+    this.configRetryStep = 0;
+    this.statusRetryStep = 0;
+    this.lastPushAt = -Infinity;
+    this.lastStatusAt = -Infinity;
     this.lastStatusKey = '';
+    this.pausedForSite = false;    // the site said not_live: hold pushes until it reports the show is on
+    this.refreshing = null;
     this.stopped = true;
     this.s = {
       phase: 'starting',           // unpaired | starting | pending_approval | ready | revoked | suspended | update_required
@@ -53,15 +63,27 @@ class Controller extends EventEmitter {
       tiktokUsername: null, verified: false, enabled: false, siteLive: false, target: null,
       dryRun: !!this.store.get('dryRun'),
       tiktok: { ...this.link.state },
-      taps: { session: 0, accepted: 0, deferred: 0, lastAccepted: 0, lastPushAt: null },
+      taps: freshTaps(),
       siteError: null,
       message: null,
       appVersion: this.appVersion,
     };
 
-    this.link.on('state', (st) => { this.s.tiktok = st; this._statusSoon(); this._render(); });
-    this.link.on('roomChanged', (roomId) => { this.batcher.reset(roomId); this.s.taps.session = 0; this._render(); });
+    this.link.on('state', (st) => {
+      this.s.tiktok = st;
+      if (st.status === 'live') this._pushSoon();
+      this._statusSoon();
+      this._render();
+    });
+    this.link.on('roomChanged', (roomId) => {
+      const old = this.batcher;
+      if (old.roomId && old.hasNews()) this._flushOldRoom(old);   // a LIVE ended and a new one began
+      this.batcher = new LikeBatcher(roomId);
+      this.s.taps.session = 0; this.s.taps.deferred = 0;
+      this._render();
+    });
     this.link.on('like', (l) => {
+      if (!this.batcher.roomId && this.link.state.roomId) this.batcher.reset(this.link.state.roomId);
       this.batcher.add(l);
       this.s.taps.session = this.batcher.sessionTaps;
       this._pushSoon();
@@ -74,13 +96,21 @@ class Controller extends EventEmitter {
     this.stopped = false;
     if (!this.store.getToken()) { this._setPhase('unpaired'); return; }
     this._setPhase('starting');
-    await this._refreshToken();
-    if (!this.stopped && this.s.phase !== 'revoked') await this._loadConfig();
+    const ep = this.epoch;
+    this.refreshing = this._refreshToken();
+    await this.refreshing;
+    this.refreshing = null;
+    if (ep !== this.epoch || this.stopped) return;
+    if (this.s.phase !== 'revoked') await this._loadConfig();
   }
 
   stop() {
     this.stopped = true;
+    this.epoch++;
     for (const k of Object.keys(this.timers)) { this.clearTimeout(this.timers[k]); this.timers[k] = null; }
+    this.clearTimeout(this._renderTimer); this._renderTimer = null;
+    this.inFlight = null;
+    this.pushRetryStep = this.configRetryStep = this.statusRetryStep = 0;
     this.link.stop();
   }
 
@@ -99,19 +129,25 @@ class Controller extends EventEmitter {
     this.stop();
     this.store.setToken(null);
     this.cfg = null;
-    Object.assign(this.s, { deviceId: null, hostName: null, tiktokUsername: null, verified: false, enabled: false, siteLive: false, target: null });
+    this.batcher = new LikeBatcher();
+    this.pausedForSite = false;
+    this.lastStatusKey = '';
+    Object.assign(this.s, { deviceId: null, hostName: null, tiktokUsername: null, verified: false, enabled: false, siteLive: false, target: null, taps: freshTaps(), siteError: null });
     this.stopped = false;
     this._setPhase('unpaired');
   }
 
   setDryRun(on) {
+    const was = this.s.dryRun;
     this.s.dryRun = !!on;
     this.store.set('dryRun', this.s.dryRun);
+    // Leaving test mode: taps seen during the test must never be credited afterwards.
+    if (was && !this.s.dryRun) { this.batcher.rebaseNow(); this.s.taps.deferred = 0; }
     this._applyConfig();
   }
 
   retryNow() {
-    if (this.s.phase === 'unpaired') return;
+    if (this.s.phase === 'unpaired' || this.s.phase === 'starting' || this.refreshing) return;
     this.link.retryNow();
     this._loadConfig();
   }
@@ -120,13 +156,16 @@ class Controller extends EventEmitter {
 
   // ---------------------------------------------------------------- site calls
   async _refreshToken() {
+    const ep = this.epoch;
     try {
       const res = await this.api.refresh(this.appVersion);
+      if (ep !== this.epoch) return;
       if (res.device_token) this.store.setToken(res.device_token);
       this.s.deviceId = res.device_id || this.s.deviceId;
       this.s.siteError = null;
       if (res.status === 'pending_approval') this._setPhase('pending_approval');
     } catch (e) {
+      if (ep !== this.epoch) return;
       this._handleApiError(e, 'refresh');
     }
   }
@@ -134,21 +173,30 @@ class Controller extends EventEmitter {
   async _loadConfig() {
     this.clearTimeout(this.timers.config);
     if (this.stopped || !this.store.getToken()) return;
+    if (this.refreshing) await this.refreshing;          // never call with a token the refresh is rotating
+    const ep = this.epoch;
     const t0 = this.now();
     try {
       const cfg = await this.api.config();
+      if (ep !== this.epoch) return;
+      if (typeof cfg.tiktok_verified !== 'boolean') throw new ApiError(0, 'network', 'The site sent an incomplete config.');
       const t1 = this.now();
       const st = Date.parse(cfg.server_time);
       if (Number.isFinite(st)) this.clockOffset = st - Math.round((t0 + t1) / 2);
       this.cfg = { ...DEFAULTS, ...cfg };
       this.s.siteError = null;
-      if (this.s.phase === 'starting' || this.s.phase === 'pending_approval') this._setPhase('ready');
+      this.configRetryStep = 0;
+      if (['starting', 'pending_approval', 'suspended'].includes(this.s.phase)) this._setPhase('ready');
       this._applyConfig();
       this._scheduleConfig(this._configEvery());
     } catch (e) {
+      if (ep !== this.epoch) return;
       this._handleApiError(e, 'config');
-      if (!this.stopped && this.store.getToken() && !['revoked', 'suspended'].includes(this.s.phase)) {
-        this._scheduleConfig(this.s.phase === 'pending_approval' ? CONFIG_WAITING_MS : this._retryDelay(e));
+      if (!this.stopped && this.store.getToken() && this.s.phase !== 'revoked') {
+        const wait = this.s.phase === 'pending_approval' ? CONFIG_WAITING_MS
+          : this.s.phase === 'suspended' ? CONFIG_EVERY_MS
+          : this._retryDelay(e, 'config');
+        this._scheduleConfig(wait);
       }
     }
   }
@@ -156,6 +204,7 @@ class Controller extends EventEmitter {
   _configEvery() {
     const c = this.cfg || {};
     if (!c.tiktok_username || !c.tiktok_verified) return CONFIG_UNVERIFIED_MS;
+    if (this.s.tiktok.status === 'live' && (!this.s.siteLive || this.pausedForSite)) return CONFIG_WATCH_SITE_MS;
     return CONFIG_EVERY_MS;
   }
 
@@ -168,12 +217,18 @@ class Controller extends EventEmitter {
   _applyConfig() {
     const c = this.cfg;
     if (!c) { this._render(); return; }
+    const wasSiteLive = this.s.siteLive;
     this.s.hostName = c.host_display_name || this.s.hostName;
     this.s.tiktokUsername = c.tiktok_username || null;
     this.s.verified = !!c.tiktok_verified;
     this.s.enabled = !!c.live_link_enabled;
     this.s.siteLive = !!c.site_live;
     this.s.target = c.target || null;
+    if (this.s.siteLive && (!wasSiteLive || this.pausedForSite)) {
+      if (this.pausedForSite) this.batcher.rebaseNow();   // count from the moment the show is on, not before
+      this.pausedForSite = false;
+      this._pushSoon();
+    }
 
     if (c.min_app_version && semverLess(this.appVersion, c.min_app_version)) {
       this.link.stop();
@@ -201,16 +256,17 @@ class Controller extends EventEmitter {
   }
 
   _pushSoon() {
-    if (this.timers.push || this.inFlight) return;
-    const wait = Math.max(0, this.lastPushAt + this._pushInterval() - this.now());
+    if (this.timers.push || this.inFlight || this.stopped) return;
+    const wait = Math.max(0, this.lastPushAt + this._pushInterval() - this.mono());
     this.timers.push = this.setTimeout(() => { this.timers.push = null; this._pushOnce(); }, wait);
   }
 
   async _pushOnce() {
-    if (this.stopped || this.inFlight) return;
-    const tk = this.s.tiktok;
-    if (tk.status !== 'live' || !tk.roomId) return;
-    // Push when there are new taps, or when the site deferred some (it credits at most 500 per push).
+    if (this.stopped || this.inFlight || this.s.phase !== 'ready' || this.pausedForSite) return;
+    // Pushes follow the ROOM the taps belong to, not the socket: after a LIVE ends the last taps and any
+    // deferred backlog still go out while the link waits for the next LIVE.
+    const room = this.batcher.roomId;
+    if (!room || !this.link.running) return;
     if (!this.batcher.hasNews() && !(this.s.taps.deferred > 0)) return;
     if (this.batcher.nextTotal() === null) {
       // Taps are only credited from TikTok's room total. Never send a made-up 0: the site would take it as the
@@ -218,16 +274,17 @@ class Controller extends EventEmitter {
       if (!this._warnedNoTotal) { this._warnedNoTotal = true; this.log('warn', 'like events arrive without a room total; waiting for one'); }
       return;
     }
-    const { events, stale, dropped, sessionTotal } = this.batcher.take(this.now(), this.clockOffset);
+    const { events, stale, dropped, sessionTotal, rebaseline } = this.batcher.take(this.now(), this.clockOffset);
     if (stale || dropped) this.log('info', `push: ${stale} stale taps, ${dropped} events trimmed (credited via session_total)`);
     const body = {
       batch_id: crypto.randomUUID(),
       dry_run: !!this.s.dryRun,
-      tiktok_room_id: String(tk.roomId),
+      tiktok_room_id: String(room),
       session_total: sessionTotal,
       events,
       status: this._statusBody(false),
     };
+    if (rebaseline) body.rebaseline = true;   // count from session_total, credit nothing for the gap
     this.inFlight = body;
     await this._sendPush();
   }
@@ -235,29 +292,35 @@ class Controller extends EventEmitter {
   async _sendPush() {
     const body = this.inFlight;
     if (!body) return;
-    this.lastPushAt = this.now();
+    const ep = this.epoch;
+    this.lastPushAt = this.mono();
     try {
       const res = await this.api.push(body);
+      if (ep !== this.epoch) return;
       this.inFlight = null;
-      this.retryStep = 0;
-      this.batcher.markSent(body.session_total);
-      this.lastStatusAt = this.now();
-      this.lastStatusKey = this._statusKey();
+      this.pushRetryStep = 0;
       this.s.siteError = null;
+      this.lastStatusAt = this.mono();
+      this.lastStatusKey = this._statusKey();
+      const sameRoom = String(body.tiktok_room_id) === String(this.batcher.roomId);
+      if (sameRoom) {
+        this.batcher.markSent(body.session_total, body.rebaseline);
+        this.s.taps.deferred = body.dry_run ? 0 : (Number(res.deferred) || 0);
+      }
       const acc = Number(res.accepted) || 0;
       this.s.taps.lastAccepted = acc;
       if (!body.dry_run) this.s.taps.accepted += acc;
-      this.s.taps.deferred = Number(res.deferred) || 0;
-      this.s.taps.lastPushAt = new Date().toISOString();
+      this.s.taps.lastPushAt = new Date(this.now()).toISOString();
       if ('target' in res) this.s.target = res.target || null;
       if (this.cfg && res.next_push_ms) this.cfg.push_interval_ms = Math.max(1000, Number(res.next_push_ms));
       this._render();
       if (this.batcher.hasNews() || this.s.taps.deferred > 0) this._pushSoon();
     } catch (e) {
+      if (ep !== this.epoch) return;
       const kept = this._handleApiError(e, 'push');
       if (kept && !this.stopped) {
         // Same batch_id again: the server returns the stored answer if the first try actually landed.
-        const wait = e.retryAfterMs || this._retryDelay(e);
+        const wait = e.retryAfterMs ? Math.max(2000, e.retryAfterMs) : this._retryDelay(e, 'push');
         this.clearTimeout(this.timers.push);
         this.timers.push = this.setTimeout(() => { this.timers.push = null; this._sendPush(); }, wait);
       } else {
@@ -267,9 +330,20 @@ class Controller extends EventEmitter {
     }
   }
 
-  _retryDelay(e) {
+  // Best effort: one push of a finished room's last taps before its batcher is replaced (no retry).
+  async _flushOldRoom(old) {
+    if (this.s.phase !== 'ready' || old.nextTotal() === null) return;
+    const { events, sessionTotal, rebaseline } = old.take(this.now(), this.clockOffset);
+    const body = { batch_id: crypto.randomUUID(), dry_run: !!this.s.dryRun, tiktok_room_id: String(old.roomId), session_total: sessionTotal, events, status: this._statusBody(false) };
+    if (rebaseline) body.rebaseline = true;
+    try { const r = await this.api.push(body); if (!body.dry_run) this.s.taps.accepted += Number(r.accepted) || 0; this._render(); }
+    catch (e) { this.log('info', `final push for room ${old.roomId}: ${e.code || e.message}`); }
+  }
+
+  _retryDelay(e, which) {
     if (e && e.retryAfterMs) return Math.max(2000, e.retryAfterMs);
-    return RETRY_STEPS_MS[Math.min(this.retryStep++, RETRY_STEPS_MS.length - 1)];
+    const key = which === 'push' ? 'pushRetryStep' : 'configRetryStep';
+    return RETRY_STEPS_MS[Math.min(this[key]++, RETRY_STEPS_MS.length - 1)];
   }
 
   // ---------------------------------------------------------------- status
@@ -282,35 +356,50 @@ class Controller extends EventEmitter {
       last_error: tk.error || this.s.siteError || null,
     };
     if (withTotal) {
-      body.tiktok_room_id = tk.roomId ? String(tk.roomId) : null;
+      body.tiktok_room_id = tk.roomId ? String(tk.roomId) : (this.batcher.roomId || null);
       body.session_total = this.batcher.sessionTotal;
     }
     return body;
   }
-  _statusKey() { const b = this._statusBody(false); return `${b.connected}|${b.tiktok_live}|${this.s.tiktok.roomId}|${b.last_error}`; }
+  _statusKey() { const b = this._statusBody(false); return `${b.connected}|${b.tiktok_live}|${this.s.tiktok.roomId}|${this.s.tiktok.error || ''}`; }
 
   // Status rides inside each push; a separate call goes out only when the state changes or after 60 s without one.
   _statusSoon() {
+    if (this._statusBackoff) return;                 // a failed status call is waiting out its backoff
     this.clearTimeout(this.timers.status);
     if (this.stopped || this.s.phase !== 'ready' || !this.store.getToken()) return;
     const every = (this.cfg && this.cfg.status_interval_ms) || DEFAULTS.status_interval_ms;
     const changed = this._statusKey() !== this.lastStatusKey;
-    const wait = changed ? 1500 : Math.max(1000, this.lastStatusAt + every - this.now());
+    const wait = changed ? 1500 : Math.max(1000, this.lastStatusAt + every - this.mono());
     this.timers.status = this.setTimeout(() => this._sendStatus(), wait);
   }
 
   async _sendStatus() {
     this.timers.status = null;
+    this._statusBackoff = false;
     if (this.stopped || this.s.phase !== 'ready') return;
     const every = (this.cfg && this.cfg.status_interval_ms) || DEFAULTS.status_interval_ms;
-    if (this._statusKey() === this.lastStatusKey && this.now() - this.lastStatusAt < every - 500) { this._statusSoon(); return; }
+    if (this._statusKey() === this.lastStatusKey && this.mono() - this.lastStatusAt < every - 500) { this._statusSoon(); return; }
+    const ep = this.epoch;
     try {
       await this.api.status(this._statusBody(true));
-      this.lastStatusAt = this.now();
-      this.lastStatusKey = this._statusKey();
+      if (ep !== this.epoch) return;
       this.s.siteError = null;
+      this.statusRetryStep = 0;
+      this.lastStatusAt = this.mono();
+      this.lastStatusKey = this._statusKey();
     } catch (e) {
+      if (ep !== this.epoch) return;
       this._handleApiError(e, 'status');
+      this.lastStatusAt = this.mono();
+      if (!e.isNetwork && e.code !== 'rate_limited') this.lastStatusKey = this._statusKey();
+      if (!this.stopped && this.s.phase === 'ready') {
+        const wait = Math.max(e.retryAfterMs || 0, STATUS_RETRY_MS[Math.min(this.statusRetryStep++, STATUS_RETRY_MS.length - 1)]);
+        this._statusBackoff = true;
+        this.timers.status = this.setTimeout(() => this._sendStatus(), wait);
+      }
+      this._render();
+      return;
     }
     this._render();
     this._statusSoon();
@@ -323,8 +412,11 @@ class Controller extends EventEmitter {
     this.log(e.isNetwork ? 'warn' : 'info', `${where}: ${e.status} ${e.code} ${e.message}`);
     switch (e.code) {
       case 'device_revoked':
+        // A request that carried a token the app has since rotated says nothing about the current token.
+        if (e.tokenUsed && e.tokenUsed !== this.store.getToken()) return where === 'push';
         this.link.stop();
         this.store.setToken(null);
+        this.inFlight = null;
         this._setPhase('revoked');
         return false;
       case 'pending_approval':
@@ -335,6 +427,7 @@ class Controller extends EventEmitter {
       case 'host_suspended':
         this.link.stop();
         this._setPhase('suspended');
+        this._scheduleConfig(CONFIG_EVERY_MS);
         return false;
       case 'live_link_disabled':
         this.s.enabled = false;
@@ -352,15 +445,20 @@ class Controller extends EventEmitter {
         return false;
       case 'not_live':
       case 'stale_room':
-        this._statusSoon();
+        if (where === 'push') {
+          // The site isn't taking taps now: forget taps from this stretch and wait for the show to be on.
+          this.batcher.rebaseNow();
+          this.s.taps.deferred = 0;
+          this.pausedForSite = true;
+          this._scheduleConfig(CONFIG_WATCH_SITE_MS);
+        }
         return false;
       case 'rate_limited':
         return where === 'push';
       default:
-        if (e.isNetwork) { this.s.siteError = e.message; this._render(); return where === 'push'; }
         this.s.siteError = e.message;
         this._render();
-        return false;
+        return e.isNetwork && where === 'push';
     }
   }
 
@@ -385,6 +483,7 @@ class Controller extends EventEmitter {
     if (s.siteError && !tk.error) return { level: 'warn', text: `Can't reach reactivvibeai.com right now. Taps still count and are sent when it's back.` };
     switch (tk.status) {
       case 'live':
+        if (this.pausedForSite || !s.siteLive) return { level: 'ok', text: `Connected to @${s.tiktokUsername}. Start your show on the site and taps will fill the hype bar.` };
         if (!s.target) return { level: 'ok', text: `Connected to @${s.tiktokUsername}. Start a song on the site and taps will fill its hype bar.` };
         return { level: 'ok', text: `Connected to @${s.tiktokUsername}. Taps are going to the hype bar.` + (s.dryRun ? ' (Test mode: nothing is added.)' : '') };
       case 'connecting': return { level: 'info', text: `Connecting to @${s.tiktokUsername}...` };
@@ -398,8 +497,8 @@ class Controller extends EventEmitter {
   }
 
   _render(throttle = false) {
-    const now = this.now();
-    if (throttle && now - (this._lastRender || 0) < 250) {
+    const now = this.mono();
+    if (throttle && now - (this._lastRender || -Infinity) < 250) {
       if (!this._renderTimer) this._renderTimer = this.setTimeout(() => { this._renderTimer = null; this._render(); }, 250);
       return;
     }

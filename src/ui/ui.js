@@ -43,6 +43,7 @@
     code_expired: 'That code has expired. Click Connect on your dashboard for a new one.',
     too_many_attempts: 'Too many tries. Wait 10 minutes, then get a new code.',
     network: "Can't reach reactivvibeai.com. Check the internet and try again.",
+    not_found: "The site isn't ready for LIVE Link yet. Try again once it's switched on.",
   };
 
   // code box: letters and numbers only, shown as XXXX-XXXX
