@@ -1,0 +1,67 @@
+{
+  "name": "reactivvibe-live-link",
+  "productName": "ReactivVibe LIVE Link",
+  "version": "1.0.0",
+  "description": "Sends your TikTok LIVE taps to the ReactivVibe hype bar.",
+  "main": "src/main.js",
+  "license": "AGPL-3.0-only",
+  "author": "ReactivVibeAI",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test \"test/*.test.js\"",
+    "mock": "node test/mock-server.js",
+    "smoke": "node scripts/smoke.js",
+    "dist": "node scripts/make-source.js && electron-builder --win nsis && node scripts/release.js"
+  },
+  "dependencies": {
+    "tiktok-live-connector": "2.4.4"
+  },
+  "devDependencies": {
+    "electron": "44.4.5",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "ai.reactivvibe.livelink",
+    "productName": "ReactivVibe LIVE Link",
+    "artifactName": "LIVE-Link-Setup-${version}.${ext}",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "build/icon.*",
+      "package.json",
+      "LICENSE.txt"
+    ],
+    "extraResources": [
+      {
+        "from": "LICENSE.txt",
+        "to": "LICENSE.txt"
+      },
+      {
+        "from": "dist-source",
+        "to": "source"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "ReactivVibe LIVE Link",
+      "runAfterFinish": true
+    }
+  }
+}
