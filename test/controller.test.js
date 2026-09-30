@@ -248,3 +248,15 @@ test('a 2xx with a garbled body is not treated as a config', async () => {
   const bad = new LiveLinkApi({ baseUrl: 'http://x/', getToken: () => 't', fetch: async () => ({ ok: true, status: 200, text: async () => '<html>proxy</html>', headers: { get: () => null } }) });
   await assert.rejects(() => bad.config(), (e) => e.code === 'network');
 });
+
+
+test('config: dashboard link (site only) and signed update link are picked up', async () => {
+  const t = await setup({ autoApprove: true, latest: { version: '1.0.1', download_url: 'https://bxiejoktoknybpraxebm.supabase.co/storage/v1/object/sign/live-link/1.0.1/LIVE-Link-Setup-1.0.1.exe?token=x', sha256: 'ab' } });
+  await t.ctl.pair('TEST2345');
+  assert.strictEqual(t.ctl.s.dashboardUrl, 'https://reactivvibeai.com/dashboard?tab=live-link');
+  assert.deepStrictEqual([t.ctl.s.update.available, t.ctl.s.update.version], [true, '1.0.1']);
+  t.ctl.cfg.dashboard_url = 'https://evil.example/phish';
+  t.ctl._applyConfig();
+  assert.strictEqual(t.ctl.s.dashboardUrl, null, 'only reactivvibeai.com links are opened');
+  await t.done();
+});

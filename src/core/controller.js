@@ -67,6 +67,8 @@ class Controller extends EventEmitter {
       siteError: null,
       message: null,
       appVersion: this.appVersion,
+      dashboardUrl: null,          // from live-link-config (reactivvibeai.com only)
+      update: { available: false },  // from live-link-config `latest` (signed download link)
     };
 
     this.link.on('state', (st) => {
@@ -224,6 +226,12 @@ class Controller extends EventEmitter {
     this.s.enabled = !!c.live_link_enabled;
     this.s.siteLive = !!c.site_live;
     this.s.target = c.target || null;
+    const du = String(c.dashboard_url || '');
+    this.s.dashboardUrl = /^https:\/\/(www\.)?reactivvibeai\.com\//.test(du) ? du : null;
+    const L = c.latest;
+    this.s.update = (L && L.version)
+      ? { available: semverLess(this.appVersion, L.version), version: String(L.version), url: /^https:\/\//.test(String(L.download_url || '')) ? L.download_url : null, sha256: L.sha256 || null }
+      : { available: false };
     if (this.s.siteLive && (!wasSiteLive || this.pausedForSite)) {
       if (this.pausedForSite) this.batcher.rebaseNow();   // count from the moment the show is on, not before
       this.pausedForSite = false;

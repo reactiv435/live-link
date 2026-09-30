@@ -27,7 +27,7 @@ This app is free software under the GNU Affero General Public License v3.0 (see 
 It includes tiktok-live-connector and tiktok-live-proto (AGPL-3.0-only), plus MIT-licensed libraries.
 
 - Complete source for this version: ${zipName} (in this folder), commit ${commit}.
-- The same zip is published next to the installer: https://bxiejoktoknybpraxebm.supabase.co/storage/v1/object/public/live-link/${zipName}
+- The same zip is published next to the installer in the site's live-link bucket (${pkg.version}/${zipName}).
 - Third-party libraries are installed from npm with \`npm ci\` using the package-lock.json inside the zip.
 `);
 console.log(`source: ${zipName} (${commit.slice(0, 7)})`);

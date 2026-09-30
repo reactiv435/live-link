@@ -31,3 +31,14 @@ Please confirm or adjust these points while building Phase 1:
 7. **Files to host** in the public `live-link` bucket: `LIVE-Link-Setup-<v>.exe`, `LIVE-Link-source-<v>.zip`,
    `latest.json` `{version, url, sha256, source_url, released_at}`. The dashboard card links the exe and the
    source zip (AGPL).
+
+## After Phase 1 (2026-09-30)
+Phase 1 shipped as migration `0027_live_link_phase1` (commit 74f3d33): six functions deployed, refresh grace,
+`dashboard_url`, `rebaseline`, clamp-at-0 and `session_total <= 0 -> 400` all verified by the site's own dry run.
+The `live-link` bucket is PRIVATE (the project blocks public buckets), files live under `<version>/`.
+
+11. **Update link (Phase 2):** please add to the `live-link-config` response
+    `latest: { version, download_url, sha256 }`, where `download_url` is a short-lived signed URL for
+    `<version>/LIVE-Link-Setup-<version>.exe`. The app shows "a new version is ready" when `version` is newer and
+    opens `download_url` (only links on bxiejoktoknybpraxebm.supabase.co or reactivvibeai.com are opened).
+    The dashboard card uses the same kind of signed link for the Download button and the source zip.

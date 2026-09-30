@@ -8,7 +8,6 @@ const { TikTokLink } = require('./core/tiktok-link');
 const { LiveLinkApi } = require('./core/api');
 const { Controller } = require('./core/controller');
 const { Store } = require('./core/store');
-const { checkForUpdate } = require('./core/updates');
 const SITE = require('./site-config.json');
 
 const APP_ID = 'ai.reactivvibe.livelink';
@@ -37,7 +36,6 @@ process.on('unhandledRejection', (e) => log('error', `unhandled: ${e && e.stack 
 
 let win = null, tray = null, ctl = null, store = null;
 let quitting = false;
-let update = { available: false };
 let lastState = null;
 
 function iconPath(name) { return path.join(__dirname, '..', 'build', name); }
@@ -89,11 +87,16 @@ function updateTray(s) {
 }
 
 function allowedUrl(which) {
-  const s = lastState;
+  const s = lastState || {};
+  const dash = s.dashboardUrl || SITE.dashboardUrl;
   switch (which) {
-    case 'dashboard': return SITE.dashboardUrl;
+    case 'dashboard': return dash;
     case 'site': return SITE.siteUrl;
-    case 'update': return update.url || SITE.dashboardUrl;
+    case 'update': {
+      // Only signed links from our own Supabase project or the site itself.
+      const u = s.update && s.update.url;
+      return u && /^https:\/\/(bxiejoktoknybpraxebm\.supabase\.co|(www\.)?reactivvibeai\.com)\//.test(u) ? u : dash;
+    }
     default: return null;
   }
 }
@@ -116,10 +119,10 @@ app.whenReady().then(async () => {
   ctl.on('state', (s) => {
     lastState = s;
     updateTray(s);
-    if (win && !win.isDestroyed()) win.webContents.send('state', { ...s, update });
+    if (win && !win.isDestroyed()) win.webContents.send('state', s);
   });
 
-  ipcMain.handle('getState', () => ({ ...(lastState || ctl.getState()), update }));
+  ipcMain.handle('getState', () => lastState || ctl.getState());
   ipcMain.handle('getSettings', () => ({
     startWithWindows: app.getLoginItemSettings().openAtLogin,
     dryRun: !!store.get('dryRun'),
@@ -166,13 +169,7 @@ app.whenReady().then(async () => {
     }, 6000);
   }
 
-  const checkUpdates = async () => {
-    update = await checkForUpdate({ url: SITE.latestUrl, currentVersion: VERSION });
-    if (update.available) log('info', `update available: ${update.version}`);
-    if (win && !win.isDestroyed()) win.webContents.send('state', { ...(lastState || ctl.getState()), update });
-  };
-  checkUpdates();
-  setInterval(checkUpdates, 6 * 3600 * 1000);
+  // Update info arrives inside live-link-config (`latest` with a short-lived signed link): see Controller.
 });
 
 app.on('second-instance', showWindow);

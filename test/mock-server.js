@@ -65,6 +65,7 @@ function createMock(opts = {}) {
           live_link_enabled: st.host.enabled, site_live: st.host.site_live, target: st.target,
           push_interval_ms: opts.pushIntervalMs || 2000, idle_push_interval_ms: opts.idlePushIntervalMs || 10000,
           status_interval_ms: 60000, status_stale_after_ms: 180000, max_likes_per_push: 500, max_events_per_push: 200,
+          dashboard_url: opts.dashboardUrl || 'https://reactivvibeai.com/dashboard?tab=live-link', ...(opts.latest ? { latest: opts.latest } : {}),
           min_app_version: opts.minAppVersion || '1.0.0', server_time: new Date(Date.now() + (opts.serverSkewMs || 0)).toISOString(),
         });
       }
