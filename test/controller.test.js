@@ -495,3 +495,60 @@ test('a token refresh whose answer is lost is retried while the previous token s
   assert.strictEqual(t.ctl.s.phase, 'ready');
   await t.done();
 });
+
+test('a new LIVE does not drop the taps the site still owes the last one (deferred backlog is drained)', async () => {
+  const t = await setup({ autoApprove: true });
+  await t.ctl.pair('TEST2345');
+  t.link.goLive('R1');
+  t.link.like(10, '110');
+  assert.ok(await until(() => t.mock.state.pushes.length === 1));   // baseline 100
+  t.link.like(2000, '2110');                                         // 2,010 owed; the site credits 500 per push
+  assert.ok(await until(() => t.mock.state.credited >= 500), `credited ${t.mock.state.credited}`);
+  t.link._set({ status: 'offline', roomId: null });
+  t.link.goLive('R2');                                               // the next LIVE begins at once
+  assert.ok(await until(() => t.mock.state.credited === 2010, 15000), `credited ${t.mock.state.credited}`);
+  await t.done();
+});
+
+test('Disconnect right after a burst still delivers the whole backlog it saw', async () => {
+  const t = await setup({ autoApprove: true });
+  await t.ctl.pair('TEST2345');
+  t.link.goLive('R1');
+  t.link.like(10, '110');
+  assert.ok(await until(() => t.mock.state.pushes.length === 1));   // baseline 100
+  t.link.like(1200, '1310');
+  t.ctl.setPaused(true);
+  assert.ok(await until(() => t.mock.state.credited === 1210, 10000), `credited ${t.mock.state.credited}`);
+  await t.done();
+});
+
+test('turning Test mode on sends the real taps already seen as real', async () => {
+  const t = await setup({ autoApprove: true });
+  await t.ctl.pair('TEST2345');
+  t.link.goLive('R1');
+  t.link.like(10, '110');
+  assert.ok(await until(() => t.mock.state.pushes.length === 1));   // baseline 100
+  t.link.like(40, '150');
+  t.ctl.setDryRun(true);
+  assert.ok(await until(() => t.mock.state.credited === 50), `credited ${t.mock.state.credited}`);
+  await t.done();
+});
+
+test('Test mode turned off during a TikTok outage: the outage\'s test taps never count', async () => {
+  const t = await setup({ autoApprove: true });
+  await t.ctl.pair('TEST2345');
+  t.ctl.setDryRun(true);
+  t.link.goLive('R1');
+  t.link.like(10, '110');
+  assert.ok(await until(() => t.mock.state.pushes.some(p => p.dry_run)));
+  t.link._set({ status: 'reconnecting' });                           // TikTok drops...
+  t.ctl.setDryRun(false);                                            // ...Test mode ends during the outage
+  t.link._set({ status: 'live' });                                   // same room again; 90 test taps happened meanwhile
+  t.link.like(5, '205');
+  assert.ok(await until(() => t.mock.state.pushes.some(p => !p.dry_run && p.rebaseline && p.session_total === 200)), 'baselined at the fresh total');
+  t.link.like(5, '210');
+  assert.ok(await until(() => t.mock.state.credited === 10), `credited ${t.mock.state.credited}`);
+  await wait(300);
+  assert.strictEqual(t.mock.state.credited, 10);
+  await t.done();
+});

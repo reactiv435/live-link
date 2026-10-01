@@ -47,8 +47,11 @@ const fmtDur = (ms) => { const m = Math.max(1, Math.round(ms / 60000)); return m
 let prevAtom = 'off', dropTimer = null, dropNotified = false;
 // A real drop: TikTok is being re-tried. Stopping on purpose (idle) or the LIVE ending (offline) is not a drop.
 const DROP_STATES = ['reconnecting', 'connecting', 'error'];
+let pendingEnd = null;   // { timer, show } while an end-of-LIVE pop-up waits for its last pushes to land
+function flushPendingEnd() { if (pendingEnd) { clearTimeout(pendingEnd.timer); const p = pendingEnd; pendingEnd = null; p.show(); } }
 function watchConnection(s) {
   if (s.atom === 'live' && prevAtom !== 'live') {
+    flushPendingEnd();                                                      // the old LIVE's summary comes first
     if (dropTimer) { clearTimeout(dropTimer); dropTimer = null; }          // a quick blip: stay quiet
     else notify(dropNotified ? 'Reconnected to your LIVE' : 'Connected to your LIVE',
       `LIVE Link is reading @${s.tiktokUsername}'s taps${s.dryRun ? ' (test mode: nothing is added)' : ''}.`);
@@ -158,14 +161,18 @@ app.whenReady().then(async () => {
     dropNotified = false;
     if (dropTimer) { clearTimeout(dropTimer); dropTimer = null; }   // the next LIVE gets its "Connected" pop-up
     if (quitting) return;
-    // Read the controller's state after it has finished updating, so a stop that wasn't the host's choice says why.
-    setImmediate(() => {
+    flushPendingEnd();
+    const show = () => {
       if (quitting) return;
       const st = ctl.getState();
+      // The last pushes (and any backlog) land after the session closes: use the kept summary's count when it's this one.
+      const kept = st.lastSession && st.lastSession.startedAt === x.startedAt ? st.lastSession : x;
       const title = x.reason === 'disconnected' ? 'LIVE Link disconnected' : x.reason === 'stopped' ? 'LIVE Link stopped watching' : 'Your LIVE ended';
       const why = x.reason === 'stopped' && st.message && st.message.level !== 'ok' && st.message.level !== 'info' ? `${st.message.text}\n` : '';
-      notify(title, `${why}${fmtDur(x.endedAt - x.startedAt)} · ${x.taps.toLocaleString()} taps · ${x.accepted.toLocaleString()} sent to the bar · peak ${x.peakViewers.toLocaleString()} watching${x.dryRun ? ' (test mode)' : ''}`);
-    });
+      notify(title, `${why}${fmtDur(x.endedAt - x.startedAt)} · ${x.taps.toLocaleString()} taps · ${kept.accepted.toLocaleString()} sent to the bar · peak ${x.peakViewers.toLocaleString()} watching${x.dryRun ? ' (test mode)' : ''}`);
+    };
+    // A stop shows at once (after the controller settles, so it can say why); an end waits ~3 s for its last pushes.
+    pendingEnd = { show, timer: setTimeout(() => { pendingEnd = null; show(); }, x.reason === 'stopped' ? 0 : 3000) };
   });
   ctl.on('state', (s) => {
     lastState = s;

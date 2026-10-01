@@ -98,7 +98,7 @@ class Controller extends EventEmitter {
     this.link.on('roomChanged', (roomId) => {
       if (this.session && this.session.roomId && this.session.roomId !== roomId) this._endSession('ended');
       const old = this.batcher;
-      if (old.roomId && old.hasNews()) this._flushOldRoom(old);   // a LIVE ended and a new one began
+      if (old.roomId && (old.hasNews() || this.s.taps.deferred > 0)) this._drainRoom(old);   // a LIVE ended and a new one began
       this.batcher = new LikeBatcher(roomId);
       this.s.taps.session = 0; this.s.taps.deferred = 0;
       this.s.pushRejected = null;
@@ -163,10 +163,14 @@ class Controller extends EventEmitter {
 
   setDryRun(on) {
     const was = this.s.dryRun;
+    const b = this.batcher;
+    // Entering test mode: real taps already seen (and any backlog the site still owes) go out as REAL first.
+    if (!was && on && !this.stopped && b.roomId && (b.hasNews() || this.s.taps.deferred > 0)) this._drainRoom(b, false);
     this.s.dryRun = !!on;
     this.store.set('dryRun', this.s.dryRun);
-    // Leaving test mode: taps seen during the test must never be credited afterwards.
-    if (was && !this.s.dryRun) { this.batcher.rebaseNow(); this.s.taps.deferred = 0; }
+    // Leaving test mode: taps seen during the test must never be credited afterwards. Marking the totals stale (not just
+    // re-baselining at the last one seen) also covers a TikTok outage at that moment: its test taps can't be told apart.
+    if (was && !this.s.dryRun) { b.markStale(); this.s.taps.deferred = 0; }
     this._applyConfig();
   }
 
@@ -188,7 +192,7 @@ class Controller extends EventEmitter {
   // until watching resumes is never credited.
   _stoppedWatching() {
     const b = this.batcher;
-    if (!this.stopped && this.s.phase === 'ready' && b.roomId && b.hasNews()) this._flushOldRoom(b);
+    if (!this.stopped && this.s.phase === 'ready' && b.roomId && (b.hasNews() || this.s.taps.deferred > 0)) this._drainRoom(b);
     b.markStale();
   }
 
@@ -250,10 +254,12 @@ class Controller extends EventEmitter {
   // ---------------------------------------------------------------- site calls
   async _refreshToken() {
     const ep = this.epoch;
+    const used = this.store.getToken();   // the token this call carries (read before its first await)
     try {
       const res = await this.api.refresh(this.appVersion);
+      // The site has rotated: keep the new token even if the app stopped meanwhile, unless it was unpaired/re-paired.
+      if (res.device_token && this.store.getToken() === used) this.store.setToken(res.device_token);
       if (ep !== this.epoch) return;
-      if (res.device_token) this.store.setToken(res.device_token);
       this.refreshRetryStep = 0;
       this.s.deviceId = res.device_id || this.s.deviceId;
       this.s.siteError = null;
@@ -500,20 +506,40 @@ class Controller extends EventEmitter {
     this.timers.push = this.setTimeout(() => { this.timers.push = null; this._pushOnce(); }, wait);
   }
 
-  // Best effort: one push of a finished room's last taps before its batcher is replaced (no retry).
-  async _flushOldRoom(old) {
-    if (this.s.phase !== 'ready' || old.nextTotal() === null) return;
-    const { events, sessionTotal, rebaseline } = old.take(this.now(), this.clockOffset);
-    const body = { batch_id: crypto.randomUUID(), dry_run: !!this.s.dryRun, tiktok_room_id: String(old.roomId), session_total: sessionTotal, events, status: this._statusBody(false) };
-    if (rebaseline) body.rebaseline = true;
-    try {
-      const r = await this.api.push(body);
-      const acc = Number(r.accepted) || 0;
-      if (!body.dry_run) { this.s.taps.accepted += acc; this._creditLastSession(old.roomId, acc); }
-      this._render();
+  // A room LIVE Link stops pushing for (a new LIVE began, Disconnect, switched off, Test mode on): send its last total
+  // until the site has credited everything it owes (deferred 0). It only ever resends a total LIVE Link actually saw,
+  // so even a late drain can't credit taps from after it stopped watching (the site ignores totals <= its last).
+  // A room whose baseline never reached the site has nothing creditable, and sending that baseline late could move
+  // the site backwards, so it is skipped. Best effort: ~100 tries, stops on a refusal or when the app stops.
+  async _drainRoom(old, dryRun = !!this.s.dryRun) {
+    if (this.s.phase !== 'ready' || old.nextTotal() === null || old.rebase) return;
+    const ep = this.epoch;
+    const { events, sessionTotal } = old.take(this.now(), this.clockOffset);
+    let body = { batch_id: crypto.randomUUID(), dry_run: dryRun, tiktok_room_id: String(old.roomId), session_total: sessionTotal, events, status: this._statusBody(false) };
+    for (let i = 0; i < 100; i++) {
+      if (ep !== this.epoch || this.stopped || this.s.phase !== 'ready') return;
+      try {
+        const r = await this.api.push(body);
+        if (ep !== this.epoch) return;
+        const acc = Number(r.accepted) || 0;
+        if (!body.dry_run) { this.s.taps.accepted += acc; this._creditLastSession(old.roomId, acc); }
+        this._render();
+        if (body.dry_run || !(Number(r.deferred) > 0)) return;
+        body = { ...body, batch_id: crypto.randomUUID(), events: [], status: this._statusBody(false) };
+        await this._sleep(this._pushInterval());
+      } catch (e) {
+        if (ep !== this.epoch) return;
+        if (e instanceof ApiError && (e.code === 'rate_limited' || e.isNetwork)) {
+          await this._sleep(Math.max(1000, e.retryAfterMs || 2000));   // same batch id: a repeat gets the stored answer
+          continue;
+        }
+        this.log('info', `final push for room ${old.roomId}: ${e.code || e.message}`);
+        return;
+      }
     }
-    catch (e) { this.log('info', `final push for room ${old.roomId}: ${e.code || e.message}`); }
   }
+
+  _sleep(ms) { return new Promise((r) => this.setTimeout(r, ms)); }
 
   _retryDelay(e, which) {
     if (e && e.retryAfterMs) return Math.max(2000, e.retryAfterMs);
