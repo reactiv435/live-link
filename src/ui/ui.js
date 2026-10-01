@@ -56,7 +56,7 @@
     const tk = s.tiktok || {};
     const label = $('atom-label');
     label.className = 'atom-label' + (kind === 'live' ? ' live' : '');
-    label.textContent = kind === 'live' ? 'CONNECTED TO YOUR LIVE'
+    label.textContent = kind === 'live' ? (s.dryRun ? 'CONNECTED · TEST MODE' : 'CONNECTED TO YOUR LIVE')
       : kind === 'paused' ? 'DISCONNECTED'
       : kind === 'connecting' ? 'CONNECTING...'
       : (tk.status === 'offline' ? 'WAITING FOR YOUR LIVE' : 'NOT CONNECTED');
@@ -86,7 +86,8 @@
     $('last-live').classList.toggle('hidden', !show);
     if (!show) return;
     const when = new Date(x.startedAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
-    $('last-live-text').textContent = `${when} \u00b7 ${fmtDur(x.endedAt - x.startedAt)} \u00b7 ${fmt(x.taps)} taps \u00b7 ${fmt(x.accepted)} sent to the bar \u00b7 peak ${fmt(x.peakViewers)} watching` + (x.dryRun ? ' (test mode)' : '');
+    $('last-live-text').textContent = `${when} \u00b7 ${fmtDur(x.endedAt - x.startedAt)} \u00b7 ${fmt(x.taps)} taps \u00b7 ${fmt(x.accepted)} sent to the bar \u00b7 peak ${fmt(x.peakViewers)} watching` + (x.dryRun ? ' (test mode)' : '')
+      + (x.reason === 'disconnected' ? ' \u00b7 ended by Disconnect' : x.reason === 'stopped' ? ' \u00b7 LIVE Link stopped watching' : '');
   }
   $('conn-btn').addEventListener('click', () => { if (current) bridge.setSetting('paused', !current.paused); });
 
@@ -140,7 +141,7 @@
   function showPairError(text) { const e = $('pair-error'); e.textContent = text; e.classList.toggle('hidden', !text); }
   const PAIR_ERRORS = {
     invalid_code: "That code doesn't match. Check it on your dashboard and try again.",
-    code_expired: 'That code has expired. Click Connect on your dashboard for a new one.',
+    code_expired: 'That code has expired. Click "Get a pair code" on your dashboard for a new one.',
     too_many_attempts: 'Too many tries. Wait 10 minutes, then get a new code.',
     network: "Can't reach reactivvibeai.com. Check the internet and try again.",
     not_found: "The site isn't ready for LIVE Link yet. Try again once it's switched on.",

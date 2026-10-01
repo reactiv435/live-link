@@ -16,6 +16,9 @@ const DEFAULTS = {
 const CONFIG_EVERY_MS = 60000;          // pick up username / enabled / target changes
 const CONFIG_WATCH_SITE_MS = 15000;     // TikTok is live but the site show isn't on yet: notice it starting quickly
 const CONFIG_WAITING_MS = 10000;        // while waiting for Approve
+// A token refresh that reached the site but whose answer was lost leaves the app on the previous token, which the
+// site honours for 5 minutes only: retry inside that window (about 3 minutes in total).
+const REFRESH_RETRY_MS = [10000, 30000, 60000, 90000];
 const CONFIG_UNVERIFIED_MS = 30000;
 const RETRY_STEPS_MS = [2000, 4000, 8000, 16000, 30000];
 const STATUS_RETRY_MS = [5000, 15000, 30000, 60000];
@@ -45,7 +48,9 @@ class Controller extends EventEmitter {
     this.batcher = new LikeBatcher();
     this.cfg = null;
     this.clockOffset = 0;
-    this.timers = { config: null, push: null, status: null, tpm: null };
+    this.timers = { config: null, push: null, status: null, tpm: null, refresh: null };
+    this.refreshRetryMs = opts.refreshRetryMs || REFRESH_RETRY_MS;
+    this.refreshRetryStep = 0;
     this.inFlight = null;          // the push being sent (kept for an idempotent retry)
     this.epoch = 0;                // bumped by stop(): any await that returns into an older epoch is ignored
     this.pushRetryStep = 0;
@@ -67,6 +72,7 @@ class Controller extends EventEmitter {
       liveSince: null,                    // when the current LIVE session started (wall ms)
       tapsPerMin: 0,                      // taps seen in the last 60 s
       lastSession: this.store.get('lastSession') || null,   // end-of-LIVE summary (kept across restarts)
+      pushRejected: null,                 // { field, at } when the site turned a push down (400 validation)
       tiktok: { ...this.link.state },
       taps: freshTaps(),
       siteError: null,
@@ -81,7 +87,9 @@ class Controller extends EventEmitter {
     this.session = null;           // the LIVE being counted right now
     this.tapWindow = [];           // [wall ms, taps] for taps per minute
     this.link.on('state', (st) => {
+      const wasIdle = this.s.tiktok.status === 'idle';
       this.s.tiktok = st;
+      if (st.status === 'idle' && !wasIdle) this._stoppedWatching();
       this._trackSession(st);
       if (st.status === 'live') this._pushSoon();
       this._statusSoon();
@@ -93,6 +101,7 @@ class Controller extends EventEmitter {
       if (old.roomId && old.hasNews()) this._flushOldRoom(old);   // a LIVE ended and a new one began
       this.batcher = new LikeBatcher(roomId);
       this.s.taps.session = 0; this.s.taps.deferred = 0;
+      this.s.pushRejected = null;
       this._render();
     });
     this.link.on('like', (l) => {
@@ -125,7 +134,7 @@ class Controller extends EventEmitter {
     for (const k of Object.keys(this.timers)) { this.clearTimeout(this.timers[k]); this.timers[k] = null; }
     this.clearTimeout(this._renderTimer); this._renderTimer = null;
     this.inFlight = null;
-    this.pushRetryStep = this.configRetryStep = this.statusRetryStep = 0;
+    this.pushRetryStep = this.configRetryStep = this.statusRetryStep = this.refreshRetryStep = 0;
     this.link.stop();
   }
 
@@ -147,7 +156,7 @@ class Controller extends EventEmitter {
     this.batcher = new LikeBatcher();
     this.pausedForSite = false;
     this.lastStatusKey = '';
-    Object.assign(this.s, { deviceId: null, hostName: null, tiktokUsername: null, verified: false, enabled: false, siteLive: false, target: null, taps: freshTaps(), siteError: null });
+    Object.assign(this.s, { deviceId: null, hostName: null, tiktokUsername: null, verified: false, enabled: false, siteLive: false, target: null, taps: freshTaps(), siteError: null, pushRejected: null });
     this.stopped = false;
     this._setPhase('unpaired');
   }
@@ -162,16 +171,25 @@ class Controller extends EventEmitter {
   }
 
   // The Connect / Disconnect button. Disconnect stops watching TikTok and is remembered across restarts, so a
-  // host who disconnected stays disconnected. Connect re-baselines first, so taps from the disconnected stretch
-  // are never credited to whatever song is playing when they come back.
+  // host who disconnected stays disconnected. Taps from the disconnected stretch are never credited: stopping marks
+  // the room totals stale (see _stoppedWatching), so Connect baselines at the first fresh TikTok total.
   setPaused(on) {
-    const was = this.s.paused;
     this.s.paused = !!on;
     this.store.set('paused', this.s.paused);
+    this.s.pushRejected = null;
     if (this.s.paused) { this._endSession('disconnected'); this.link.stop(); }
-    else if (was) { this.batcher.rebaseNow(); this.s.taps.deferred = 0; }
+    else this.s.taps.deferred = 0;
     this._applyConfig();
     this._statusSoon();
+  }
+
+  // The link just stopped watching TikTok (Disconnect, switched off, unverified, update needed, unpaired, quit).
+  // Send what was already collected (one best-effort push), then mark the totals stale: whatever happens on TikTok
+  // until watching resumes is never credited.
+  _stoppedWatching() {
+    const b = this.batcher;
+    if (!this.stopped && this.s.phase === 'ready' && b.roomId && b.hasNews()) this._flushOldRoom(b);
+    b.markStale();
   }
 
   // ---------------------------------------------------------------- LIVE sessions (for the timer + summary)
@@ -188,6 +206,8 @@ class Controller extends EventEmitter {
       this.session.droppedAt = this.now();
     } else if (st.status === 'offline' && this.session) {
       this._endSession('ended');        // TikTok says the account is no longer LIVE
+    } else if (st.status === 'idle' && this.session) {
+      this._endSession('stopped');      // LIVE Link stopped watching (unpaired, switched off, update needed, quit)
     }
     this.s.liveSince = this.session ? this.session.startedAt : null;
   }
@@ -199,16 +219,28 @@ class Controller extends EventEmitter {
     this.s.liveSince = null;
     const endedAt = se.droppedAt || this.now();
     if (endedAt - se.startedAt < 30000 && se.taps === 0) return;   // a blip, not a LIVE
-    const summary = { username: se.username, startedAt: se.startedAt, endedAt, taps: se.taps,
-      accepted: Math.max(0, this.s.taps.accepted - se.acceptedAtStart), peakViewers: se.peakViewers, dryRun: se.dryRun, reason };
+    const summary = { username: se.username, roomId: se.roomId, startedAt: se.startedAt, endedAt, taps: se.taps,
+      accepted: Math.max(0, this.s.taps.accepted - se.acceptedAtStart), peakViewers: se.peakViewers,
+      dryRun: !se.realPush && (se.dryRun || !!this.s.dryRun), reason };   // "test mode" only if nothing real was sent
     this.s.lastSession = summary;
     this.store.set('lastSession', summary);
     this.emit('sessionEnded', summary);
     this._render();
   }
 
+  // Taps of a finished LIVE can still be credited after it ended (a deferred backlog): keep its summary honest.
+  _creditLastSession(room, acc) {
+    if (!(acc > 0)) return;
+    if (this.session && String(this.session.roomId) === String(room)) return;   // counted by the running session
+    if (this.session) this.session.acceptedAtStart += acc;                      // not the running LIVE's taps
+    const x = this.s.lastSession;
+    if (!x || !x.roomId || String(x.roomId) !== String(room)) return;
+    x.accepted += acc;
+    this.store.set('lastSession', x);
+  }
+
   retryNow() {
-    if (this.s.phase === 'unpaired' || this.s.phase === 'starting' || this.refreshing) return;
+    if (this.s.phase === 'unpaired' || this.s.phase === 'starting') return;   // _loadConfig waits for a refresh itself
     this.link.retryNow();
     this._loadConfig();
   }
@@ -222,20 +254,46 @@ class Controller extends EventEmitter {
       const res = await this.api.refresh(this.appVersion);
       if (ep !== this.epoch) return;
       if (res.device_token) this.store.setToken(res.device_token);
+      this.refreshRetryStep = 0;
       this.s.deviceId = res.device_id || this.s.deviceId;
       this.s.siteError = null;
       if (res.status === 'pending_approval') this._setPhase('pending_approval');
+      this._render();
+      return true;
     } catch (e) {
-      if (ep !== this.epoch) return;
-      this._handleApiError(e, 'refresh');
+      if (ep !== this.epoch) return false;
+      const network = e instanceof ApiError && e.isNetwork;
+      // While everything else works, a failed background refresh is not "can't reach the site".
+      if (network && this.s.phase === 'ready') this.log('warn', `refresh: ${e.status} ${e.code} ${e.message}`);
+      else this._handleApiError(e, 'refresh');
+      if (network && !this.stopped && this.store.getToken()) this._retryRefresh();
+      return false;
     }
+  }
+
+  // Keeps going (at the last step) until the site answers: each refresh that reaches it restarts the 5-minute grace
+  // of the token we hold, so retrying is always safe, and stopping early could strand the PC on a dead token.
+  _retryRefresh() {
+    const step = this.refreshRetryStep;
+    this.refreshRetryStep = step + 1;
+    this.clearTimeout(this.timers.refresh);
+    this.timers.refresh = this.setTimeout(async () => {
+      this.timers.refresh = null;
+      if (this.stopped || this.refreshing || !this.store.getToken()) return;
+      this.refreshing = this._refreshToken();
+      const ok = await this.refreshing;
+      this.refreshing = null;
+      // Use the new token right away: that retires the previous one, so a late answer can't rotate it again.
+      if (ok && !this.stopped && this.store.getToken()) this._loadConfig();
+    }, this.refreshRetryMs[Math.min(step, this.refreshRetryMs.length - 1)]);
   }
 
   async _loadConfig() {
     this.clearTimeout(this.timers.config);
     if (this.stopped || !this.store.getToken()) return;
-    if (this.refreshing) await this.refreshing;          // never call with a token the refresh is rotating
     const ep = this.epoch;
+    if (this.refreshing) await this.refreshing;          // never call with a token the refresh is rotating
+    if (ep !== this.epoch || this.stopped || !this.store.getToken()) return;
     const t0 = this.now();
     try {
       const cfg = await this.api.config();
@@ -342,7 +400,7 @@ class Controller extends EventEmitter {
       if (!this._warnedNoTotal) { this._warnedNoTotal = true; this.log('warn', 'like events arrive without a room total; waiting for one'); }
       return;
     }
-    const { events, stale, dropped, sessionTotal, rebaseline } = this.batcher.take(this.now(), this.clockOffset);
+    const { events, stale, dropped, sessionTotal, rebaseline, gen } = this.batcher.take(this.now(), this.clockOffset);
     if (stale || dropped) this.log('info', `push: ${stale} stale taps, ${dropped} events trimmed (credited via session_total)`);
     const body = {
       batch_id: crypto.randomUUID(),
@@ -354,6 +412,7 @@ class Controller extends EventEmitter {
     };
     if (rebaseline) body.rebaseline = true;   // count from session_total, credit nothing for the gap
     this.inFlight = body;
+    this.inFlightMeta = { gen, stripped: false };
     await this._sendPush();
   }
 
@@ -365,20 +424,27 @@ class Controller extends EventEmitter {
     try {
       const res = await this.api.push(body);
       if (ep !== this.epoch) return;
+      const meta = this.inFlightMeta || {};
       this.inFlight = null;
+      this.inFlightMeta = null;
       this.pushRetryStep = 0;
+      this.refusals = 0;
       this.s.siteError = null;
+      this.s.pushRejected = null;
       this.s.siteOkAt = this.now();
-      this.lastStatusAt = this.mono();
-      this.lastStatusKey = this._statusKey();
+      if (!body.dry_run) {             // the site only files the status riding in a REAL push
+        this.lastStatusAt = this.mono();
+        this.lastStatusKey = this._statusKey();
+      }
       const sameRoom = String(body.tiktok_room_id) === String(this.batcher.roomId);
       if (sameRoom) {
-        this.batcher.markSent(body.session_total, body.rebaseline);
+        this.batcher.markSent(body.session_total, body.rebaseline, meta.gen);
+        if (!body.dry_run && this.session) this.session.realPush = true;
         this.s.taps.deferred = body.dry_run ? 0 : (Number(res.deferred) || 0);
       }
       const acc = Number(res.accepted) || 0;
       this.s.taps.lastAccepted = acc;
-      if (!body.dry_run) this.s.taps.accepted += acc;
+      if (!body.dry_run) { this.s.taps.accepted += acc; this._creditLastSession(body.tiktok_room_id, acc); }
       this.s.taps.lastPushAt = new Date(this.now()).toISOString();
       if ('target' in res) this.s.target = res.target || null;
       if (this.cfg && res.next_push_ms) this.cfg.push_interval_ms = Math.max(1000, Number(res.next_push_ms));
@@ -386,6 +452,7 @@ class Controller extends EventEmitter {
       if (this.batcher.hasNews() || this.s.taps.deferred > 0) this._pushSoon();
     } catch (e) {
       if (ep !== this.epoch) return;
+      if (e instanceof ApiError && e.code === 'validation') { this._pushRefused(e, body); return; }
       const kept = this._handleApiError(e, 'push');
       if (kept && !this.stopped) {
         // Same batch_id again: the server returns the stored answer if the first try actually landed.
@@ -394,9 +461,43 @@ class Controller extends EventEmitter {
         this.timers.push = this.setTimeout(() => { this.timers.push = null; this._sendPush(); }, wait);
       } else {
         this.inFlight = null;
+        this.inFlightMeta = null;
         if (!this.stopped && this.s.phase === 'ready') this._pushSoon();
       }
     }
+  }
+
+  // The site refused a push (400/413 'validation'). The session_total carries the credit; the events and status are
+  // diagnostics. So first resend the same totals without them (new batch id); only if that is refused too, or the
+  // total itself was the problem, count again from now. Never resend refused data as-is: it would be refused forever.
+  _pushRefused(e, body) {
+    const field = (e.details && e.details.field) || null;
+    const meta = this.inFlightMeta || {};
+    this.inFlight = null;
+    this.inFlightMeta = null;
+    this.refusals = (this.refusals || 0) + 1;
+    if (this.refusals <= 3 || this.refusals % 20 === 0) {
+      this.log('error', `push refused (${e.status} ${field || 'no field'}, ${this.refusals} in a row): ${e.message}`);
+    }
+    if (this.stopped || this.s.phase !== 'ready') return;
+    const sameRoom = String(body.tiktok_room_id) === String(this.batcher.roomId);
+    if (sameRoom && field !== 'session_total' && !meta.stripped) {
+      this.inFlight = { ...body, batch_id: crypto.randomUUID(), events: [], status: this._statusBody(false) };
+      this.inFlightMeta = { gen: meta.gen, stripped: true };
+      this.clearTimeout(this.timers.push);
+      this.timers.push = this.setTimeout(() => { this.timers.push = null; this._sendPush(); }, 1000);
+      return;
+    }
+    if (sameRoom) {
+      this.batcher.rebaseNow();
+      this.s.taps.deferred = 0;
+      this.s.pushRejected = { field, at: this.now() };
+      this._render();
+    }
+    // An old room's refused batch is simply dropped. Repeated refusals back off instead of retrying every push.
+    const wait = this.refusals >= 2 ? RETRY_STEPS_MS[Math.min(this.refusals - 2, RETRY_STEPS_MS.length - 1)] : this._pushInterval();
+    this.clearTimeout(this.timers.push);
+    this.timers.push = this.setTimeout(() => { this.timers.push = null; this._pushOnce(); }, wait);
   }
 
   // Best effort: one push of a finished room's last taps before its batcher is replaced (no retry).
@@ -405,7 +506,12 @@ class Controller extends EventEmitter {
     const { events, sessionTotal, rebaseline } = old.take(this.now(), this.clockOffset);
     const body = { batch_id: crypto.randomUUID(), dry_run: !!this.s.dryRun, tiktok_room_id: String(old.roomId), session_total: sessionTotal, events, status: this._statusBody(false) };
     if (rebaseline) body.rebaseline = true;
-    try { const r = await this.api.push(body); if (!body.dry_run) this.s.taps.accepted += Number(r.accepted) || 0; this._render(); }
+    try {
+      const r = await this.api.push(body);
+      const acc = Number(r.accepted) || 0;
+      if (!body.dry_run) { this.s.taps.accepted += acc; this._creditLastSession(old.roomId, acc); }
+      this._render();
+    }
     catch (e) { this.log('info', `final push for room ${old.roomId}: ${e.code || e.message}`); }
   }
 
@@ -422,7 +528,7 @@ class Controller extends EventEmitter {
       connected: this.link.running,                 // the app is running and watching this host's TikTok
       tiktok_live: tk.status === 'live',
       app_version: this.appVersion,
-      last_error: tk.error || this.s.siteError || null,
+      last_error: String(tk.error || this.s.siteError || '').slice(0, 500) || null,
     };
     if (withTotal) {
       body.tiktok_room_id = tk.roomId ? String(tk.roomId) : (this.batcher.roomId || null);
@@ -540,7 +646,7 @@ class Controller extends EventEmitter {
     const at = (ms) => ms ? new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '';
     const secs = (ms) => ms ? Math.max(1, Math.round((ms - this.now()) / 1000)) : 0;
     switch (s.phase) {
-      case 'unpaired': return { level: 'setup', text: 'Connect this computer: on your host dashboard, click "Connect LIVE Link" and type the code here.' };
+      case 'unpaired': return { level: 'setup', text: 'Connect this computer: on your host dashboard (LIVE Link tab, Connect a PC), click "Get a pair code" and type the code here.' };
       case 'starting': return s.siteError ? { level: 'warn', text: `Can't reach reactivvibeai.com (${s.siteError}). Retrying...` } : { level: 'info', text: 'Starting...' };
       case 'pending_approval': return { level: 'setup', text: `Almost there. On your host dashboard, click Approve for "${this.deviceName}".` };
       case 'revoked': return { level: 'error', text: 'This computer was disconnected from your account. Connect it again from your host dashboard.' };
@@ -553,6 +659,7 @@ class Controller extends EventEmitter {
     if (!s.tiktokUsername) return { level: 'setup', text: 'Add your TikTok username on your dashboard (LIVE Link tab).' };
     if (!s.enabled && !s.dryRun) return { level: 'setup', text: "LIVE Link isn't switched on for your account yet." };
     if (s.siteError && !tk.error) return { level: 'warn', text: `Can't reach reactivvibeai.com right now. Taps still count and are sent when it's back.` };
+    if (s.pushRejected && tk.status === 'live' && this.now() - s.pushRejected.at < 60000) return { level: 'warn', text: 'The site turned down some tap data, so LIVE Link started counting again from now. If this keeps happening, send your log folder to support.' };
     switch (tk.status) {
       case 'live':
         if (this.pausedForSite || !s.siteLive) return { level: 'ok', text: `Connected to @${s.tiktokUsername}. Start your show on the site and taps will fill the hype bar.` };
@@ -598,6 +705,7 @@ class Controller extends EventEmitter {
     else live = { key: 'live', label: 'TikTok LIVE', state: 'wait', text: 'Getting ready...' };
     rows.push(live);
     rows.push(s.siteError ? { key: 'site', label: 'reactivvibeai.com', state: 'problem', text: "Can't reach the site. Retrying by itself; taps still count." }
+      : s.pushRejected && this.now() - s.pushRejected.at < 60000 ? { key: 'site', label: 'reactivvibeai.com', state: 'problem', text: 'The site turned down some tap data. Counting again from now.' }
       : s.siteOkAt ? { key: 'site', label: 'reactivvibeai.com', state: 'done', text: 'Connected.', at: s.siteOkAt }
       : { key: 'site', label: 'reactivvibeai.com', state: 'wait', text: 'Connecting...' });
     return rows;

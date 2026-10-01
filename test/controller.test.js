@@ -26,7 +26,7 @@ class FakeLink extends EventEmitter {
 const wait = (ms) => new Promise(r => setTimeout(r, ms));
 async function until(fn, ms = 3000) { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (fn()) return true; await wait(20); } return false; }
 
-async function setup(mockOpts = {}) {
+async function setup(mockOpts = {}, ctlOpts = {}) {
   const mock = createMock({ pushIntervalMs: 60, ...mockOpts });
   const port = await mock.listen(0);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'livelink-'));
@@ -34,7 +34,7 @@ async function setup(mockOpts = {}) {
   const link = new FakeLink();
   const api = new LiveLinkApi({ baseUrl: `http://127.0.0.1:${port}/functions/v1/`, getToken: () => store.getToken() });
   const logs = [];
-  const ctl = new Controller({ api, link, store, appVersion: '1.0.0', deviceName: 'TEST-PC', log: (l, m) => logs.push(`${l} ${m}`) });
+  const ctl = new Controller({ api, link, store, appVersion: '1.0.0', deviceName: 'TEST-PC', log: (l, m) => logs.push(`${l} ${m}`), ...ctlOpts });
   return { mock, store, link, api, ctl, logs, done: async () => { ctl.stop(); await mock.close(); } };
 }
 
@@ -178,11 +178,11 @@ test('leaving test mode never credits the taps seen during the test', async () =
   assert.ok(await until(() => t.mock.state.pushes.some(p => p.dry_run)));
   t.ctl.setDryRun(false);
   t.link.like(7, '627');
-  assert.ok(await until(() => t.mock.state.pushes.some(p => p.rebaseline)), 'asked the site to re-baseline');
+  assert.ok(await until(() => t.mock.state.pushes.some(p => p.rebaseline && !p.dry_run && p.session_total === 620)), 'baselined where Test mode ended');
   t.link.like(3, '630');
-  assert.ok(await until(() => t.mock.state.credited === 23, 4000), `credited ${t.mock.state.credited}`);
+  assert.ok(await until(() => t.mock.state.credited === 30, 4000), `credited ${t.mock.state.credited}`);
   await wait(300);
-  assert.strictEqual(t.mock.state.credited, 23, 'the 500 test taps (and the re-baseline gap) were not credited');
+  assert.strictEqual(t.mock.state.credited, 30, 'the 500 test taps were not credited; the 10 after Test mode ended were');
   await t.done();
 });
 
@@ -306,10 +306,10 @@ test('Disconnect stops watching TikTok and is remembered; Connect resumes and re
   t.ctl.setPaused(false);
   assert.strictEqual(t.link.username, 'test_host', 'Connect starts watching again');
   t.link.goLive('R1');
-  t.link.like(500, '900');                 // 780 taps happened while disconnected + this batch
-  assert.ok(await until(() => t.mock.state.pushes.some((p) => p.rebaseline)), 're-baselined after reconnecting');
+  t.link.like(500, '900');                 // 380 taps happened while disconnected, then this batch of 500
+  assert.ok(await until(() => t.mock.state.pushes.some((p) => p.rebaseline && p.session_total === 400)), 'baselined just before the first fresh batch');
   t.link.like(5, '905');
-  assert.ok(await until(() => t.mock.state.credited === 25, 4000), `credited ${t.mock.state.credited}`);
+  assert.ok(await until(() => t.mock.state.credited === 525, 4000), `credited ${t.mock.state.credited}`);
   await t.done();
 });
 
@@ -355,5 +355,143 @@ test('Disconnect ends the session; a blip with no taps leaves no summary', async
   assert.strictEqual(t.ctl.s.lastSession.taps, 3);
   assert.strictEqual(t.ctl.s.lastSession.reason, 'disconnected');
   assert.strictEqual(t.ctl.s.atom, 'off');
+  await t.done();
+});
+
+test('connected before the first tap (total == count): the baseline is 1, never the 0 the site refuses', async () => {
+  const t = await setup({ autoApprove: true });
+  await t.ctl.pair('TEST2345');
+  t.link.goLive('R1');
+  t.link.like(10, '10');                               // a fresh room: the first batch IS the whole room total
+  assert.ok(await until(() => t.mock.state.pushes.length === 1), 'baseline push accepted');
+  assert.strictEqual(t.mock.state.pushes[0].session_total, 1);
+  t.link.like(5, '15');
+  assert.ok(await until(() => t.mock.state.credited === 14), `credited ${t.mock.state.credited}`);
+  assert.ok(!t.mock.state.rejected, `the site refused ${t.mock.state.rejected} pushes`);
+  await t.done();
+});
+
+test('a refused push keeps its totals: resent without the events, nothing lost', async () => {
+  const t = await setup({ autoApprove: true });
+  await t.ctl.pair('TEST2345');
+  t.link.goLive('R1');
+  t.link.like(10, '110');
+  assert.ok(await until(() => t.mock.state.pushes.length === 1));   // baseline 100
+  t.mock.state.failNext.push({ path: 'live-link-push', status: 400, error: 'validation', extra: { details: { field: 'events.at' } } });
+  t.link.like(20, '130');
+  assert.ok(await until(() => t.mock.state.credited === 30), `credited ${t.mock.state.credited}`);
+  assert.ok(t.mock.state.pushes.some(p => p.session_total === 130 && p.events.length === 0), 'same total, no events');
+  t.link.like(5, '135');
+  assert.ok(await until(() => t.mock.state.credited === 35), `credited ${t.mock.state.credited}`);
+  assert.strictEqual(t.ctl.s.pushRejected, null);
+  await t.done();
+});
+
+test('a refused session_total: the app counts again from now, says so, and is not stuck', async () => {
+  const t = await setup({ autoApprove: true });
+  await t.ctl.pair('TEST2345');
+  t.link.goLive('R1');
+  t.link.like(10, '110');
+  assert.ok(await until(() => t.mock.state.pushes.length === 1));   // baseline 100
+  t.mock.state.failNext.push({ path: 'live-link-push', status: 400, error: 'validation', extra: { details: { field: 'session_total' } } });
+  t.link.like(20, '130');
+  assert.ok(await until(() => t.ctl.s.pushRejected !== null), 'the refusal is shown');
+  assert.strictEqual(t.ctl.s.pushRejected.field, 'session_total');
+  assert.ok(await until(() => t.mock.state.pushes.some(p => p.rebaseline && p.session_total === 130)), 'counts from now');
+  t.link.like(5, '135');
+  assert.ok(await until(() => t.mock.state.credited === 5), `credited ${t.mock.state.credited}`);
+  assert.strictEqual(t.ctl.s.pushRejected, null, 'cleared by the next good push');
+  await t.done();
+});
+
+test('Connect in the same LIVE: taps from the disconnected stretch never count, even when the first push would race the first like', async () => {
+  const t = await setup({ autoApprove: true });
+  await t.ctl.pair('TEST2345');
+  t.link.goLive('R1');
+  t.link.like(10, '110');
+  t.link.like(10, '120');
+  assert.ok(await until(() => t.mock.state.credited === 20), `credited ${t.mock.state.credited}`);
+  t.ctl.setPaused(true);
+  t.ctl.setPaused(false);
+  t.link.goLive('R1');                     // same room: no roomChanged, same batcher
+  await wait(1300);                        // longer than a push interval: nothing stale may go out meanwhile
+  assert.ok(!t.mock.state.pushes.some(p => p.session_total === 120 && p.rebaseline), 'no baseline at the stale total');
+  t.link.like(5, '905');                   // 780 taps happened while disconnected
+  assert.ok(await until(() => t.mock.state.credited === 25, 4000), `credited ${t.mock.state.credited}`);
+  await wait(300);
+  assert.strictEqual(t.mock.state.credited, 25);
+  await t.done();
+});
+
+test('Disconnect sends the taps already collected before it stops', async () => {
+  const t = await setup({ autoApprove: true });
+  await t.ctl.pair('TEST2345');
+  t.link.goLive('R1');
+  t.link.like(10, '110');
+  assert.ok(await until(() => t.mock.state.pushes.length === 1));   // baseline 100
+  t.link.like(40, '150');
+  t.ctl.setPaused(true);                   // before the next push would have gone out
+  assert.ok(await until(() => t.mock.state.credited === 50), `credited ${t.mock.state.credited}`);
+  await t.done();
+});
+
+test('the error text sent with a status is capped (an oversized body would be refused)', async () => {
+  const t = await setup({ autoApprove: true });
+  await t.ctl.pair('TEST2345');
+  t.link._set({ status: 'error', error: 'x'.repeat(20000) });
+  assert.strictEqual(t.ctl._statusBody(false).last_error.length, 500);
+  await t.done();
+});
+
+test('the token refresh keeps retrying past its schedule until the site answers', async () => {
+  const t = await setup({ autoApprove: true }, { refreshRetryMs: [30, 30] });
+  await t.ctl.pair('TEST2345');
+  const before = t.store.getToken();
+  for (let i = 0; i < 4; i++) t.mock.state.failNext.push({ path: 'live-link-refresh', status: 503 });
+  await t.ctl._refreshToken();
+  assert.ok(await until(() => t.store.getToken() !== before), 'rotated on the 5th try');
+  assert.strictEqual(t.ctl.s.siteError, null, 'background failures never claimed the site was down');
+  await t.done();
+});
+
+test('stopping the link on purpose closes the LIVE session as "stopped"', async () => {
+  const t = await setup({ autoApprove: true });
+  await t.ctl.pair('TEST2345');
+  const ended = [];
+  t.ctl.on('sessionEnded', (x) => ended.push(x));
+  t.link.goLive('R1');
+  t.link.like(4, '104');
+  t.link.stop();
+  assert.strictEqual(ended.length, 1);
+  assert.strictEqual(ended[0].reason, 'stopped');
+  assert.strictEqual(ended[0].roomId, 'R1');
+  assert.strictEqual(t.ctl.s.liveSince, null);
+  await t.done();
+});
+
+test('taps credited after the LIVE ended (deferred backlog) still land in its summary', async () => {
+  const t = await setup({ autoApprove: true });
+  await t.ctl.pair('TEST2345');
+  t.link.goLive('R1');
+  t.link.like(10, '110');
+  assert.ok(await until(() => t.mock.state.pushes.length === 1));   // baseline 100
+  t.link.like(1200, '1310');
+  t.link._set({ status: 'offline', roomId: null });                  // the LIVE ends with 1,210 taps still to credit
+  assert.ok(await until(() => t.mock.state.credited === 1210, 6000), `credited ${t.mock.state.credited}`);
+  assert.ok(await until(() => t.ctl.s.lastSession && t.ctl.s.lastSession.accepted === 1210),
+    `summary says ${t.ctl.s.lastSession && t.ctl.s.lastSession.accepted}`);
+  assert.strictEqual(t.store.get('lastSession').accepted, 1210);
+  await t.done();
+});
+
+test('a token refresh whose answer is lost is retried while the previous token still works', async () => {
+  const t = await setup({ autoApprove: true }, { refreshRetryMs: [50, 50, 50, 50] });
+  await t.ctl.pair('TEST2345');
+  const before = t.store.getToken();
+  t.mock.state.failNext.push({ path: 'live-link-refresh', status: 503 });
+  await t.ctl._refreshToken();                         // fails: the app keeps its token and schedules a retry
+  assert.strictEqual(t.store.getToken(), before);
+  assert.ok(await until(() => t.store.getToken() !== before), 'the retry rotated the token');
+  assert.strictEqual(t.ctl.s.phase, 'ready');
   await t.done();
 });

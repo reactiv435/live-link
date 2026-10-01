@@ -76,7 +76,9 @@ function createMock(opts = {}) {
         if (opts.notLiveReturns409 && !st.host.site_live) return err(res, 409, 'not_live');
         if (!st.host.verified) return err(res, 403, 'tiktok_unverified');
         const events = Array.isArray(body.events) ? body.events : null;
-        if (!events || events.length > 200 || typeof body.batch_id !== 'string' || !Number.isInteger(body.session_total)) return err(res, 400, 'validation', 'bad body', { details: { events: !!events } });
+        if (!events || events.length > 200 || typeof body.batch_id !== 'string') return err(res, 400, 'validation', 'bad body', { details: { field: 'events' } });
+        // Like the real live-link-push + ll_push: session_total must be a POSITIVE integer (0 is a 400).
+        if (!Number.isInteger(body.session_total) || body.session_total <= 0) { st.rejected = (st.rejected || 0) + 1; return err(res, 400, 'validation', 'session_total must be a positive integer', { details: { field: 'session_total' } }); }
         for (const e of events) if (!Number.isInteger(e.count) || e.count < 1 || e.count > 500) return err(res, 400, 'validation', 'bad count', { details: e });
         if (st.batches.has(body.batch_id)) return send(res, 200, { ...st.batches.get(body.batch_id), duplicate: true });
         const serverNow = Date.now() + (opts.serverSkewMs || 0);

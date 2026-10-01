@@ -23,10 +23,13 @@ class LikeBatcher {
   reset(roomId) {
     this.roomId = roomId || null;
     this.buckets = new Map();   // second (local ms / 1000) -> taps
-    this.sessionTotal = null;   // largest room total seen in this room
+    this.sessionTotal = null;   // largest room total seen since we (re)started watching this room
     this.lastSentTotal = null;  // session_total of the last successful push
-    this.firstBase = null;      // the room total just BEFORE the first batch we saw
-    this.rebase = false;        // next push asks the site to re-baseline at session_total (credit 0)
+    this.firstBase = null;      // while a baseline is pending: the room total just BEFORE the first batch we saw
+    // The next push asks the site to baseline (credit 0). A new batcher (app start, new room) always starts this
+    // way, so taps from before LIVE Link was watching (app closed, crashed, restarting) are never credited.
+    this.rebase = true;
+    this.gen = 0;               // bumps on every new baseline request, so a push already in flight can't cancel it
     this.sessionTaps = 0;       // taps seen since we joined this room (for the UI)
   }
 
@@ -39,29 +42,40 @@ class LikeBatcher {
     }
     const t = usableTotal(total, c);
     if (t !== null) {
-      if (this.firstBase === null) this.firstBase = Math.max(0, t - c);
+      if (this.rebase && this.firstBase === null) this.firstBase = Math.max(0, t - c);
       if (this.sessionTotal === null || t > this.sessionTotal) this.sessionTotal = t;
     }
   }
 
-  // Start counting from "now": taps seen so far in this room will never be credited.
+  // Start counting from "now": taps seen so far in this room will never be credited (Test mode off, show not on).
   rebaseNow() {
     this.buckets.clear();
-    if (this.sessionTotal === null) return;
-    if (this.lastSentTotal === null) this.firstBase = this.sessionTotal;   // the site has no baseline yet
-    else this.rebase = true;                                              // the site has one: ask it to move
+    this.firstBase = this.sessionTotal;   // null: the next batch with a total sets it
+    this.rebase = true;
+    this.gen++;
   }
 
-  // The session_total to send next. The site treats the FIRST push for a room as the baseline (credits 0), so the
-  // first push reports the total from just before our first batch; the next push then credits every tap we saw.
+  // LIVE Link stopped watching (Disconnect, switched off, quit...): the totals held are stale. Wait for a fresh total
+  // once watching resumes and baseline just before its first batch, so taps from the gap are never credited.
+  markStale() {
+    this.buckets.clear();
+    this.sessionTotal = null;
+    this.firstBase = null;
+    this.rebase = true;
+    this.gen++;
+  }
+
+  // The session_total to send next. A baseline push reports the total from just before our first batch, so the
+  // next push credits every tap we saw. The site only accepts a POSITIVE total (0 is a 400), so report at least 1:
+  // at most one tap of a brand-new room goes uncredited.
   nextTotal() {
     if (this.sessionTotal === null) return null;
-    if (this.lastSentTotal === null && this.firstBase !== null) return this.firstBase;
+    if (this.rebase) return Math.max(1, this.firstBase === null ? this.sessionTotal : this.firstBase);
     return this.sessionTotal;
   }
 
   hasNews() {
-    return this.buckets.size > 0 || this.rebase || (this.sessionTotal !== null && this.nextTotal() !== this.lastSentTotal);
+    return this.buckets.size > 0 || (this.sessionTotal !== null && (this.rebase || this.nextTotal() !== this.lastSentTotal));
   }
 
   // Build the events array for one push. clockOffsetMs = server time - local time.
@@ -79,12 +93,13 @@ class LikeBatcher {
     this.buckets.clear();
     // Keep the newest events if a huge burst would exceed the per-push limit (crediting uses session_total anyway).
     const dropped = events.length > MAX_EVENTS ? events.length - MAX_EVENTS : 0;
-    return { events: dropped ? events.slice(dropped) : events, stale, dropped, sessionTotal: this.nextTotal(), rebaseline: this.rebase };
+    return { events: dropped ? events.slice(dropped) : events, stale, dropped, sessionTotal: this.nextTotal(), rebaseline: this.rebase, gen: this.gen };
   }
 
-  markSent(sessionTotal, rebaseline) {
+  // gen = the batcher generation the push was taken at: a baseline requested after it stays pending.
+  markSent(sessionTotal, rebaseline, gen = this.gen) {
     if (sessionTotal !== null && sessionTotal !== undefined) this.lastSentTotal = sessionTotal;
-    if (rebaseline) this.rebase = false;
+    if (rebaseline && gen === this.gen) { this.rebase = false; this.firstBase = null; }
   }
 }
 

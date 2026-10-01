@@ -10,8 +10,9 @@ test('first push reports the total from before our first batch, then the real to
   b.add({ count: 5, total: '1020', at: now + 200 });
   let t = b.take(now + 300, 0);
   assert.strictEqual(t.sessionTotal, 1000, 'baseline = total before the first batch');
+  assert.strictEqual(t.rebaseline, true, 'a new batcher asks the site to baseline: nothing from before we watched counts');
   assert.deepStrictEqual(t.events.map(e => e.count), [20]);
-  b.markSent(t.sessionTotal);
+  b.markSent(t.sessionTotal, t.rebaseline, t.gen);
   assert.ok(b.hasNews(), 'the real total is still unsent');
   t = b.take(now + 2300, 0);
   assert.strictEqual(t.sessionTotal, 1020);
@@ -71,4 +72,40 @@ test('rebaseNow: before a baseline it moves the baseline, after one it asks the 
   assert.strictEqual(t.sessionTotal, 600);
   b.markSent(600, true);
   assert.strictEqual(b.rebase, false);
+});
+
+test('stale after a stop: waits for a fresh total, then baselines just before its first batch', () => {
+  const b = new LikeBatcher('r');
+  b.add({ count: 10, total: 110, at: 1000 });
+  let t = b.take(1100, 0);
+  b.markSent(t.sessionTotal, t.rebaseline, t.gen);           // baseline 100
+  b.add({ count: 10, total: 120, at: 1200 });
+  t = b.take(1300, 0);
+  b.markSent(t.sessionTotal, t.rebaseline, t.gen);           // 120 sent, 20 credited
+  b.markStale();                                             // Disconnect
+  assert.strictEqual(b.nextTotal(), null, 'nothing to send until TikTok gives a fresh total');
+  assert.ok(!b.hasNews());
+  b.add({ count: 5, total: 905, at: 9000 });                 // 780 taps happened while not watching
+  t = b.take(9100, 0);
+  assert.strictEqual(t.sessionTotal, 900);
+  assert.strictEqual(t.rebaseline, true);
+  b.markSent(t.sessionTotal, t.rebaseline, t.gen);
+  assert.strictEqual(b.nextTotal(), 905, 'the next push credits only the 5 seen after reconnecting');
+});
+
+test('a baseline requested while a push is in flight is not cancelled by that push', () => {
+  const b = new LikeBatcher('r');
+  b.add({ count: 10, total: 110, at: 1000 });
+  const t = b.take(1100, 0);                                 // first push (baseline 100) goes out...
+  b.add({ count: 300, total: 410, at: 1150 });
+  b.rebaseNow();                                             // ...Test mode ends before its answer
+  b.markSent(t.sessionTotal, t.rebaseline, t.gen);
+  assert.strictEqual(b.rebase, true, 'still pending');
+  assert.strictEqual(b.nextTotal(), 410, 'baseline at the moment of the request');
+});
+
+test('a fresh room (total == count) never reports 0', () => {
+  const b = new LikeBatcher('r');
+  b.add({ count: 7, total: '7', at: 1000 });
+  assert.strictEqual(b.nextTotal(), 1);
 });

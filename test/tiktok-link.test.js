@@ -117,3 +117,19 @@ test('a connect still in flight when stop() runs can not change the state later'
   assert.strictEqual(link.state.roomId, null);
   assert.strictEqual(stale.disconnected, true, 'the late connection is closed');
 });
+
+test('TikTok "stream ended" goes straight to offline: no reconnect attempt, no drop', async () => {
+  const f = fakeLib(['live']);
+  const tm = timers();
+  const link = new TikTokLink({ lib: f.lib, ...tm });
+  const states = [];
+  link.on('state', (st) => states.push(st.status));
+  link.start('host');
+  await tick(); await tick();
+  assert.strictEqual(link.state.status, 'live');
+  f.made[0].emit('streamEnd', { action: 3 });
+  f.made[0].emit('disconnected');
+  assert.strictEqual(link.state.status, 'offline');
+  assert.ok(!states.includes('reconnecting'));
+  assert.strictEqual(tm.list[tm.list.length - 1].ms, link.offlinePollMs, 'next check at the offline interval');
+});

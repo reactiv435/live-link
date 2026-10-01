@@ -141,7 +141,7 @@ class TikTokLink extends EventEmitter {
   }
 
   _failed(e) {
-    const msg = String((e && e.message) || e);
+    const msg = String((e && e.message) || e).slice(0, 500);   // sign-server errors can carry a whole HTML page
     const f = this._classify(e);
     this.connectStartedAt = 0;
     const retryAt = this._schedule(f.ms);
@@ -154,6 +154,7 @@ class TikTokLink extends EventEmitter {
     if (!this.lib) this.lib = loadConnector();
     const L = this.lib;
     const generation = ++this.generation;
+    this.streamEnded = false;
     this.clearTimeout(this.reconnectTimer); this.reconnectTimer = null;
     this._dropConnection();
     this.lastFrameAt = this.mono();
@@ -179,13 +180,23 @@ class TikTokLink extends EventEmitter {
       this.log('info', `Connected to @${this.username} room ${this.state.roomId}`);
     });
     on(C.DISCONNECTED, () => {
+      if (this.streamEnded) {
+        this.streamEnded = false;
+        this.retryStep = 0;
+        const retryAt = this._schedule(this.offlinePollMs);
+        this._setState({ status: 'offline', roomId: null, viewers: 0, error: null, errorKind: 'offline', retryAt });
+        this.log('info', `@${this.username}'s LIVE ended; checking again in ${Math.round(this.offlinePollMs / 1000)} s`);
+        return;
+      }
       this.retryStep = 1;                          // a real drop of a LIVE room: 10 s, then the normal backoff
       const retryAt = this._schedule(RETRY_BACKOFF_MS[0]);
       this._setState({ status: 'reconnecting', retryAt });
       this.log('info', `Disconnected from @${this.username}; retrying in 10 s`);
     });
     on(C.ERROR, (e) => this.log('warn', `${(e && e.info) || 'connector'}: ${(e && e.exception && e.exception.message) || (e && e.message) || String(e)}`));
-    on(W.STREAM_END, () => this.log('info', 'TikTok says the LIVE ended'));
+    // TikTok says the LIVE ended (or was suspended); the connector disconnects right after. Report 'offline' at
+    // once instead of a reconnect attempt, so the app neither cries "lost" nor dates the end 10-20 s late.
+    on(W.STREAM_END, () => { this.streamEnded = true; this.log('info', 'TikTok says the LIVE ended'); });
     on(W.ROOM_USER, (d) => {
       const v = Number((d && (d.viewerCount || d.total || d.totalUser)) || 0);
       if (v !== this.state.viewers) this._setState({ viewers: v });

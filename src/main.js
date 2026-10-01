@@ -40,25 +40,32 @@ let trayKind = '';
 // Pop-ups: connected to the LIVE, lost it for more than 20 s, and the end-of-LIVE summary.
 function notify(title, body) {
   if (!store || store.get('notify') === false || !Notification.isSupported()) return;
-  try { new Notification({ title, body, icon: iconPath('icon.png'), silent: false }).show(); } catch {}
+  // silent: a hosting PC is usually capturing its own audio into the stream
+  try { new Notification({ title, body, icon: iconPath('icon.png'), silent: true }).show(); } catch {}
 }
 const fmtDur = (ms) => { const m = Math.max(1, Math.round(ms / 60000)); return m >= 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m} min`; };
 let prevAtom = 'off', dropTimer = null, dropNotified = false;
+// A real drop: TikTok is being re-tried. Stopping on purpose (idle) or the LIVE ending (offline) is not a drop.
+const DROP_STATES = ['reconnecting', 'connecting', 'error'];
 function watchConnection(s) {
   if (s.atom === 'live' && prevAtom !== 'live') {
     if (dropTimer) { clearTimeout(dropTimer); dropTimer = null; }          // a quick blip: stay quiet
     else notify(dropNotified ? 'Reconnected to your LIVE' : 'Connected to your LIVE',
       `LIVE Link is reading @${s.tiktokUsername}'s taps${s.dryRun ? ' (test mode: nothing is added)' : ''}.`);
     dropNotified = false;
-  } else if (prevAtom === 'live' && s.atom !== 'live' && !s.paused && s.tiktok.status !== 'offline') {
+  } else if (prevAtom === 'live' && s.atom !== 'live' && !s.paused && DROP_STATES.includes(s.tiktok.status)) {
     dropTimer = setTimeout(() => {
       dropTimer = null;
       const l = lastState || {};
-      if (l.atom !== 'live' && !l.paused && (l.tiktok || {}).status !== 'offline') {
+      if (l.atom !== 'live' && !l.paused && DROP_STATES.includes((l.tiktok || {}).status)) {
         dropNotified = true;
         notify('Lost your LIVE', 'LIVE Link lost the connection to TikTok and is reconnecting by itself.');
       }
     }, 20000);
+  }
+  if (s.tiktok.status === 'offline' || s.tiktok.status === 'idle') {
+    if (dropTimer) { clearTimeout(dropTimer); dropTimer = null; }
+    dropNotified = false;
   }
   prevAtom = s.atom;
 }
@@ -84,7 +91,7 @@ function createWindow() {
     e.preventDefault();
     win.hide();
     if (!store.get('trayHintShown') && Notification.isSupported()) {
-      new Notification({ title: 'LIVE Link is still running', body: 'It keeps sending your TikTok taps from the tray. Right-click the tray icon to quit.', icon: iconPath('icon.png') }).show();
+      new Notification({ title: 'LIVE Link is still running', body: 'It keeps sending your TikTok taps from the tray. Right-click the tray icon to quit.', icon: iconPath('icon.png'), silent: true }).show();
       store.set('trayHintShown', true);
     }
   });
@@ -96,7 +103,7 @@ function trayLabel(s) {
   if (!s) return 'Starting...';
   if (s.phase !== 'ready') return s.message ? s.message.text.slice(0, 60) : s.phase;
   if (s.paused) return 'Disconnected (press Connect in the app)';
-  if (s.tiktok.status === 'live') return `LIVE on @${s.tiktokUsername} · ${s.taps.accepted} taps sent`;
+  if (s.tiktok.status === 'live') return `LIVE on @${s.tiktokUsername} · ${s.dryRun ? 'TEST MODE (nothing is added)' : `${s.taps.accepted} taps sent`}`;
   return s.message ? s.message.text.slice(0, 60) : 'Ready';
 }
 
@@ -147,8 +154,19 @@ app.whenReady().then(async () => {
   const api = new LiveLinkApi({ baseUrl: API_BASE, apiKey: SITE.publishableKey, getToken: () => store.getToken(), userAgent: `ReactivVibe-LIVE-Link/${VERSION}` });
   ctl = new Controller({ api, link, store, log, appVersion: VERSION, deviceName: store.get('deviceName') });
 
-  ctl.on('sessionEnded', (x) => notify('Your LIVE ended',
-    `${fmtDur(x.endedAt - x.startedAt)} · ${x.taps.toLocaleString()} taps · ${x.accepted.toLocaleString()} sent to the bar · peak ${x.peakViewers.toLocaleString()} watching${x.dryRun ? ' (test mode)' : ''}`));
+  ctl.on('sessionEnded', (x) => {
+    dropNotified = false;
+    if (dropTimer) { clearTimeout(dropTimer); dropTimer = null; }   // the next LIVE gets its "Connected" pop-up
+    if (quitting) return;
+    // Read the controller's state after it has finished updating, so a stop that wasn't the host's choice says why.
+    setImmediate(() => {
+      if (quitting) return;
+      const st = ctl.getState();
+      const title = x.reason === 'disconnected' ? 'LIVE Link disconnected' : x.reason === 'stopped' ? 'LIVE Link stopped watching' : 'Your LIVE ended';
+      const why = x.reason === 'stopped' && st.message && st.message.level !== 'ok' && st.message.level !== 'info' ? `${st.message.text}\n` : '';
+      notify(title, `${why}${fmtDur(x.endedAt - x.startedAt)} · ${x.taps.toLocaleString()} taps · ${x.accepted.toLocaleString()} sent to the bar · peak ${x.peakViewers.toLocaleString()} watching${x.dryRun ? ' (test mode)' : ''}`);
+    });
+  });
   ctl.on('state', (s) => {
     lastState = s;
     watchConnection(s);
