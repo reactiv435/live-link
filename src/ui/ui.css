@@ -124,3 +124,12 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .conn { margin: 14px auto 0; display: block; min-width: 180px; border-radius: 12px; padding: 12px 18px; font-weight: 800; font-size: 14px; letter-spacing: .04em; border: 0; color: #fff; background: linear-gradient(180deg, #2ee88a, #13a457); }
 .conn.disconnect { background: transparent; border: 1px solid rgba(224,38,63,.55); color: #ffb3bd; }
 .conn:disabled { opacity: .5; cursor: default; }
+
+/* tap pulse, LIVE timer, last LIVE */
+.atom .core, .atom .halo { transition: transform .18s ease-out, opacity .18s ease-out; transform-origin: 100px 100px; }
+.atom.pulse .core { transform: scale(1.28); }
+.atom.pulse .halo { opacity: .7 !important; }
+.live-meta { font: 600 12.5px/1.2 var(--font); color: #b8ffd6; font-variant-numeric: tabular-nums; }
+.last { padding: 12px 16px; }
+.last small { display: block; color: var(--muted); font-size: 11px; letter-spacing: .14em; text-transform: uppercase; }
+.last span { display: block; margin-top: 5px; font-size: 13.5px; line-height: 1.45; }

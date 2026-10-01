@@ -77,6 +77,7 @@
           <g transform="rotate(-60 100 100)"><circle class="electron" r="6"><animateMotion dur="5.2s" begin="-3.1s" repeatCount="indefinite" path="M14,100 a86,30 0 1,0 172,0 a86,30 0 1,0 -172,0"/></circle></g>
         </svg>
         <div class="atom-label" id="atom-label">NOT CONNECTED</div>
+        <div class="live-meta hidden" id="live-meta"></div>
       </div>
       <p class="msg" id="msg">Starting...</p>
       <p class="who" id="who"></p>
@@ -90,6 +91,7 @@
       <div class="tile glass"><small>Sent to the bar</small><b id="t-sent">0</b></div>
     </section>
     <section class="now glass"><small>Hype bar song</small><span id="t-song">No song playing yet</span></section>
+    <section class="last glass hidden" id="last-live"><small>Last LIVE</small><span id="last-live-text"></span></section>
     <details class="about glass">
       <summary>What does LIVE Link read?</summary>
       <p>Only the <b>number of taps (hearts)</b> on your TikTok LIVE. It watches your LIVE the way a viewer does, so it never asks for your TikTok password and can't post, read your messages, or see your account.</p>
@@ -105,6 +107,7 @@
   <aside id="settings" class="drawer hidden" aria-label="Settings">
     <div class="drawer-head"><h2>Settings</h2><button class="icon-btn" id="close-settings" aria-label="Close">&times;</button></div>
     <label class="row"><span>Start with Windows<small>Runs quietly in the tray after you sign in to Windows.</small></span><input type="checkbox" id="s-autostart"></label>
+    <label class="row"><span>Pop-up notifications<small>When it connects to your LIVE, loses it, and when your LIVE ends.</small></span><input type="checkbox" id="s-notify"></label>
     <label class="row"><span>Test mode<small>Checks everything with the site but adds nothing to the bar.</small></span><input type="checkbox" id="s-dry"></label>
     <div class="row static"><span>This computer<small id="s-device">-</small></span></div>
     <div class="row static"><span>Version<small id="s-version">-</small></span></div>

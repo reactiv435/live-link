@@ -1,7 +1,7 @@
 {
   "name": "reactivvibe-live-link",
   "productName": "ReactivVibe LIVE Link",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Sends your TikTok LIVE taps to the ReactivVibe hype bar.",
   "main": "src/main.js",
   "license": "AGPL-3.0-only",
@@ -32,7 +32,8 @@
       "src/**/*",
       "build/icon.*",
       "package.json",
-      "LICENSE.txt"
+      "LICENSE.txt",
+      "build/tray-*.png"
     ],
     "extraResources": [
       {

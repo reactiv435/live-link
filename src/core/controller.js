@@ -45,7 +45,7 @@ class Controller extends EventEmitter {
     this.batcher = new LikeBatcher();
     this.cfg = null;
     this.clockOffset = 0;
-    this.timers = { config: null, push: null, status: null };
+    this.timers = { config: null, push: null, status: null, tpm: null };
     this.inFlight = null;          // the push being sent (kept for an idempotent retry)
     this.epoch = 0;                // bumped by stop(): any await that returns into an older epoch is ignored
     this.pushRetryStep = 0;
@@ -64,6 +64,9 @@ class Controller extends EventEmitter {
       dryRun: !!this.store.get('dryRun'),
       paused: !!this.store.get('paused'),   // the host pressed Disconnect (remembered across restarts)
       atom: 'off',                        // live | connecting | off: drives the atom's colour
+      liveSince: null,                    // when the current LIVE session started (wall ms)
+      tapsPerMin: 0,                      // taps seen in the last 60 s
+      lastSession: this.store.get('lastSession') || null,   // end-of-LIVE summary (kept across restarts)
       tiktok: { ...this.link.state },
       taps: freshTaps(),
       siteError: null,
@@ -75,13 +78,17 @@ class Controller extends EventEmitter {
       update: { available: false },  // from live-link-config `latest` (signed download link)
     };
 
+    this.session = null;           // the LIVE being counted right now
+    this.tapWindow = [];           // [wall ms, taps] for taps per minute
     this.link.on('state', (st) => {
       this.s.tiktok = st;
+      this._trackSession(st);
       if (st.status === 'live') this._pushSoon();
       this._statusSoon();
       this._render();
     });
     this.link.on('roomChanged', (roomId) => {
+      if (this.session && this.session.roomId && this.session.roomId !== roomId) this._endSession('ended');
       const old = this.batcher;
       if (old.roomId && old.hasNews()) this._flushOldRoom(old);   // a LIVE ended and a new one began
       this.batcher = new LikeBatcher(roomId);
@@ -92,6 +99,8 @@ class Controller extends EventEmitter {
       if (!this.batcher.roomId && this.link.state.roomId) this.batcher.reset(this.link.state.roomId);
       this.batcher.add(l);
       this.s.taps.session = this.batcher.sessionTaps;
+      const c = Math.max(0, Number(l.count) || 0);
+      if (c > 0) { this.tapWindow.push([this.mono(), c]); if (this.session) this.session.taps += c; }
       this._pushSoon();
       this._render(true);
     });
@@ -159,10 +168,43 @@ class Controller extends EventEmitter {
     const was = this.s.paused;
     this.s.paused = !!on;
     this.store.set('paused', this.s.paused);
-    if (this.s.paused) this.link.stop();
+    if (this.s.paused) { this._endSession('disconnected'); this.link.stop(); }
     else if (was) { this.batcher.rebaseNow(); this.s.taps.deferred = 0; }
     this._applyConfig();
     this._statusSoon();
+  }
+
+  // ---------------------------------------------------------------- LIVE sessions (for the timer + summary)
+  _trackSession(st) {
+    if (st.status === 'live') {
+      if (!this.session) {
+        this.session = { roomId: st.roomId || null, startedAt: this.now(), taps: 0, peakViewers: 0,
+          acceptedAtStart: this.s.taps.accepted, username: this.s.tiktokUsername, dryRun: !!this.s.dryRun };
+      }
+      this.session.droppedAt = null;
+      if (st.roomId && !this.session.roomId) this.session.roomId = st.roomId;
+      this.session.peakViewers = Math.max(this.session.peakViewers, Number(st.viewers) || 0);
+    } else if (this.session && st.status === 'reconnecting' && !this.session.droppedAt) {
+      this.session.droppedAt = this.now();
+    } else if (st.status === 'offline' && this.session) {
+      this._endSession('ended');        // TikTok says the account is no longer LIVE
+    }
+    this.s.liveSince = this.session ? this.session.startedAt : null;
+  }
+
+  _endSession(reason) {
+    const se = this.session;
+    if (!se) return;
+    this.session = null;
+    this.s.liveSince = null;
+    const endedAt = se.droppedAt || this.now();
+    if (endedAt - se.startedAt < 30000 && se.taps === 0) return;   // a blip, not a LIVE
+    const summary = { username: se.username, startedAt: se.startedAt, endedAt, taps: se.taps,
+      accepted: Math.max(0, this.s.taps.accepted - se.acceptedAtStart), peakViewers: se.peakViewers, dryRun: se.dryRun, reason };
+    this.s.lastSession = summary;
+    this.store.set('lastSession', summary);
+    this.emit('sessionEnded', summary);
+    this._render();
   }
 
   retryNow() {
@@ -570,6 +612,11 @@ class Controller extends EventEmitter {
     this._lastRender = now;
     this.s.message = this._message();
     this.s.steps = this._steps();
+    const cutoff = now - 60000;
+    while (this.tapWindow.length && this.tapWindow[0][0] < cutoff) this.tapWindow.shift();
+    this.s.tapsPerMin = this.tapWindow.reduce((a, [, c]) => a + c, 0);
+    // keep re-counting while taps are in the window, so taps/min falls back to 0 when the tapping stops
+    if (this.tapWindow.length && !this.timers.tpm && !this.stopped) this.timers.tpm = this.setTimeout(() => { this.timers.tpm = null; this._render(); }, 5000);
     const st = this.s.tiktok.status;
     this.s.atom = this.s.paused || !this.link.running ? 'off' : st === 'live' ? 'live' : (st === 'connecting' || st === 'reconnecting') ? 'connecting' : 'off';
     this.emit('state', this.getState());

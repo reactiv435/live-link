@@ -35,6 +35,33 @@ process.on('uncaughtException', (e) => log('error', `uncaught: ${e && e.stack ||
 process.on('unhandledRejection', (e) => log('error', `unhandled: ${e && e.stack || e}`));
 
 let win = null, tray = null, ctl = null, store = null;
+let trayKind = '';
+
+// Pop-ups: connected to the LIVE, lost it for more than 20 s, and the end-of-LIVE summary.
+function notify(title, body) {
+  if (!store || store.get('notify') === false || !Notification.isSupported()) return;
+  try { new Notification({ title, body, icon: iconPath('icon.png'), silent: false }).show(); } catch {}
+}
+const fmtDur = (ms) => { const m = Math.max(1, Math.round(ms / 60000)); return m >= 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m} min`; };
+let prevAtom = 'off', dropTimer = null, dropNotified = false;
+function watchConnection(s) {
+  if (s.atom === 'live' && prevAtom !== 'live') {
+    if (dropTimer) { clearTimeout(dropTimer); dropTimer = null; }          // a quick blip: stay quiet
+    else notify(dropNotified ? 'Reconnected to your LIVE' : 'Connected to your LIVE',
+      `LIVE Link is reading @${s.tiktokUsername}'s taps${s.dryRun ? ' (test mode: nothing is added)' : ''}.`);
+    dropNotified = false;
+  } else if (prevAtom === 'live' && s.atom !== 'live' && !s.paused && s.tiktok.status !== 'offline') {
+    dropTimer = setTimeout(() => {
+      dropTimer = null;
+      const l = lastState || {};
+      if (l.atom !== 'live' && !l.paused && (l.tiktok || {}).status !== 'offline') {
+        dropNotified = true;
+        notify('Lost your LIVE', 'LIVE Link lost the connection to TikTok and is reconnecting by itself.');
+      }
+    }, 20000);
+  }
+  prevAtom = s.atom;
+}
 let quitting = false;
 let lastState = null;
 
@@ -77,11 +104,14 @@ function updateTray(s) {
   if (!tray) return;
   const label = trayLabel(s);
   tray.setToolTip(`ReactivVibe LIVE Link\n${label}`);
+  const want = s && s.atom === 'live' ? 'live' : 'off';
+  if (want !== trayKind) { trayKind = want; tray.setImage(nativeImage.createFromPath(iconPath(want === 'live' ? 'tray-live.png' : 'tray-off.png'))); }
   tray.setContextMenu(Menu.buildFromTemplate([
     { label, enabled: false },
     { type: 'separator' },
     { label: 'Open LIVE Link', click: showWindow },
-    { label: 'Reconnect now', click: () => ctl && ctl.retryNow() },
+    { label: s && s.paused ? 'Connect' : 'Disconnect', enabled: !!(s && s.phase === 'ready'), click: () => ctl && ctl.setPaused(!(s && s.paused)) },
+    { label: 'Check TikTok now', click: () => ctl && ctl.retryNow() },
     { type: 'separator' },
     { label: 'Quit (stops sending taps)', click: () => { quitting = true; app.quit(); } },
   ]));
@@ -117,8 +147,11 @@ app.whenReady().then(async () => {
   const api = new LiveLinkApi({ baseUrl: API_BASE, apiKey: SITE.publishableKey, getToken: () => store.getToken(), userAgent: `ReactivVibe-LIVE-Link/${VERSION}` });
   ctl = new Controller({ api, link, store, log, appVersion: VERSION, deviceName: store.get('deviceName') });
 
+  ctl.on('sessionEnded', (x) => notify('Your LIVE ended',
+    `${fmtDur(x.endedAt - x.startedAt)} · ${x.taps.toLocaleString()} taps · ${x.accepted.toLocaleString()} sent to the bar · peak ${x.peakViewers.toLocaleString()} watching${x.dryRun ? ' (test mode)' : ''}`));
   ctl.on('state', (s) => {
     lastState = s;
+    watchConnection(s);
     updateTray(s);
     if (win && !win.isDestroyed()) win.webContents.send('state', s);
   });
@@ -127,6 +160,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('getSettings', () => ({
     startWithWindows: app.getLoginItemSettings().openAtLogin,
     dryRun: !!store.get('dryRun'),
+    notify: store.get('notify') !== false,
     deviceName: store.get('deviceName'),
     version: VERSION,
     testServer: API_BASE !== SITE.apiBase ? API_BASE : null,
@@ -141,6 +175,7 @@ app.whenReady().then(async () => {
     if (key === 'startWithWindows') app.setLoginItemSettings({ openAtLogin: !!value, args: ['--hidden'] });
     else if (key === 'dryRun') ctl.setDryRun(!!value);
     else if (key === 'paused') ctl.setPaused(!!value);
+    else if (key === 'notify') store.set('notify', !!value);
     else return false;
     return true;
   });
@@ -154,7 +189,8 @@ app.whenReady().then(async () => {
   });
 
   createWindow();
-  tray = new Tray(nativeImage.createFromPath(iconPath('icon.ico')));
+  tray = new Tray(nativeImage.createFromPath(iconPath('tray-off.png')));
+  trayKind = 'off';
   tray.on('click', showWindow);
   updateTray(null);
 

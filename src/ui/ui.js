@@ -42,7 +42,13 @@
     current = s;
     const kind = s.paused ? 'paused' : (s.atom || 'off');
     const atom = $('atom');
-    atom.setAttribute('class', 'atom ' + (kind === 'live' ? 'live' : 'off') + (kind === 'paused' ? ' paused' : ''));
+    // a pulse for every new batch of taps (at most ~4 a second); kept through re-renders until it finishes
+    const taps = (s.taps && s.taps.session) || 0;
+    if (taps > lastTaps && kind === 'live' && Date.now() - pulseAt > 250) pulseAt = Date.now();
+    lastTaps = taps;
+    const pulseLeft = 200 - (Date.now() - pulseAt);
+    atom.setAttribute('class', 'atom ' + (kind === 'live' ? 'live' : 'off') + (kind === 'paused' ? ' paused' : '') + (pulseLeft > 0 ? ' pulse' : ''));
+    if (pulseLeft > 0) { clearTimeout(pulseTimer); pulseTimer = setTimeout(() => atom.classList.remove('pulse'), pulseLeft); }
     if (kind !== lastAtom) {   // change orbit speed only when the state changes (SMIL restarts the motion)
       lastAtom = kind;
       atom.querySelectorAll('animateMotion').forEach((am, i) => am.setAttribute('dur', SPEED[kind][i] + 's'));
@@ -58,6 +64,29 @@
     btn.textContent = s.paused ? 'Connect' : 'Disconnect';
     btn.classList.toggle('disconnect', !s.paused);
     btn.disabled = s.phase !== 'ready';
+    renderLiveMeta();
+    renderLast(s);
+  }
+  let lastTaps = 0, pulseAt = 0, pulseTimer = null;
+  function fmtDur(ms) {
+    const m = Math.max(0, Math.floor(ms / 60000));
+    return m >= 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m} min`;
+  }
+  function renderLiveMeta() {
+    const el = $('live-meta');
+    const s = current;
+    const on = s && s.atom === 'live' && s.liveSince;
+    el.classList.toggle('hidden', !on);
+    if (on) el.textContent = `LIVE for ${fmtDur(Date.now() - s.liveSince)} \u00b7 ${fmt(s.tapsPerMin)} taps/min`;
+  }
+  setInterval(renderLiveMeta, 1000);
+  function renderLast(s) {
+    const x = s.lastSession;
+    const show = !!x && s.atom !== 'live';
+    $('last-live').classList.toggle('hidden', !show);
+    if (!show) return;
+    const when = new Date(x.startedAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+    $('last-live-text').textContent = `${when} \u00b7 ${fmtDur(x.endedAt - x.startedAt)} \u00b7 ${fmt(x.taps)} taps \u00b7 ${fmt(x.accepted)} sent to the bar \u00b7 peak ${fmt(x.peakViewers)} watching` + (x.dryRun ? ' (test mode)' : '');
   }
   $('conn-btn').addEventListener('click', () => { if (current) bridge.setSetting('paused', !current.paused); });
 
@@ -143,6 +172,7 @@
     const st = await bridge.getSettings();
     $('s-autostart').checked = !!st.startWithWindows;
     $('s-dry').checked = !!st.dryRun;
+    $('s-notify').checked = st.notify !== false;
     $('s-device').textContent = st.deviceName || '-';
     $('s-version').textContent = st.version || '-';
     const ts = $('s-testserver');
@@ -154,6 +184,7 @@
   $('close-settings').addEventListener('click', () => $('settings').classList.add('hidden'));
   $('s-autostart').addEventListener('change', (e) => bridge.setSetting('startWithWindows', e.target.checked));
   $('s-dry').addEventListener('change', (e) => bridge.setSetting('dryRun', e.target.checked));
+  $('s-notify').addEventListener('change', (e) => bridge.setSetting('notify', e.target.checked));
   $('unpair').addEventListener('click', async () => {
     if (!confirm('Disconnect this computer? It stops sending taps until you connect it again with a new code.')) return;
     await bridge.unpair();
@@ -168,7 +199,7 @@
     const listeners = [];
     const base = { phase: 'ready', dryRun: false, tiktokUsername: 'the_boneyard_ai', hostName: 'Bone Daddy', update: { available: false },
       tiktok: { status: 'live', viewers: 214 }, taps: { session: 4821, accepted: 4790 }, target: { title: 'Midnight Engine (AI remix)' },
-      atom: 'live', paused: false,
+      atom: 'live', paused: false, liveSince: Date.now() - 42 * 60000, tapsPerMin: 1234,
       message: { level: 'ok', text: 'Connected to @the_boneyard_ai. Taps are going to the hype bar.' },
       steps: [
         { key: 'pc', label: 'This PC', state: 'done', text: 'Connected to Bone Daddy.' },
@@ -180,7 +211,7 @@
     const states = {
       live: base,
       paused: { ...base, paused: true, atom: 'off', tiktok: { status: 'idle' }, message: { level: 'off', text: "Disconnected. LIVE Link isn't watching your TikTok. Press Connect when you're ready." } },
-      waiting: { ...base, atom: 'off', tiktok: { status: 'offline' }, taps: { session: 0, accepted: 0 }, target: null, message: { level: 'info', text: 'Ready. Waiting for @reactivvibeai to go LIVE on TikTok.' },
+      waiting: { ...base, atom: 'off', lastSession: { startedAt: Date.now() - 26 * 3600000, endedAt: Date.now() - 24.8 * 3600000, taps: 4821, accepted: 4790, peakViewers: 214, dryRun: false }, tiktok: { status: 'offline' }, taps: { session: 0, accepted: 0 }, target: null, message: { level: 'info', text: 'Ready. Waiting for @reactivvibeai to go LIVE on TikTok.' },
         steps: [
           { key: 'pc', label: 'This PC', state: 'done', text: 'Connected to ReactivVibeAI.' },
           { key: 'tt', label: 'TikTok account', state: 'done', text: 'Verified as @reactivvibeai.' },
@@ -206,7 +237,7 @@
     setTimeout(() => listeners.forEach((f) => f(states[pick] || base)), 0);
     return {
       getState: async () => states[pick] || base,
-      getSettings: async () => ({ startWithWindows: true, dryRun: pick === 'test', deviceName: 'STREAM-PC', version: '1.0.0', testServer: null }),
+      getSettings: async () => ({ notify: true, startWithWindows: true, dryRun: pick === 'test', deviceName: 'STREAM-PC', version: '1.0.0', testServer: null }),
       pair: async (c) => (c === 'TEST2345' ? { ok: true } : { ok: false, code: 'invalid_code' }),
       unpair: async () => true, retry: async () => true, setSetting: async () => true, open: async () => true,
       onState: (f) => { listeners.push(f); return () => {}; },

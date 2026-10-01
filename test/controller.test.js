@@ -312,3 +312,48 @@ test('Disconnect stops watching TikTok and is remembered; Connect resumes and re
   assert.ok(await until(() => t.mock.state.credited === 25, 4000), `credited ${t.mock.state.credited}`);
   await t.done();
 });
+
+test('a LIVE session: timer + taps/min while live, end-of-LIVE summary when TikTok says offline', async () => {
+  const t = await setup({ autoApprove: true });
+  await t.ctl.pair('TEST2345');
+  const ended = [];
+  t.ctl.on('sessionEnded', (x) => ended.push(x));
+  t.link.goLive('R1');
+  assert.strictEqual(typeof t.ctl.s.liveSince, 'number', 'LIVE timer starts');
+  t.link._set({ viewers: 42 });
+  t.link.like(10, '110');                              // baseline 100: both batches count
+  t.link.like(5, '115');
+  t.ctl._render();
+  assert.strictEqual(t.ctl.s.tapsPerMin, 15);
+  assert.ok(await until(() => t.ctl.s.taps.accepted === 15), `accepted ${t.ctl.s.taps.accepted}`);
+  t.link._set({ viewers: 30 });
+  t.link._set({ status: 'reconnecting' });             // the stream dropped...
+  assert.strictEqual(ended.length, 0, 'a drop alone is not the end');
+  t.link._set({ status: 'offline', roomId: null });    // ...and TikTok confirms the LIVE is over
+  assert.strictEqual(ended.length, 1);
+  const x = ended[0];
+  assert.strictEqual(x.taps, 15);
+  assert.strictEqual(x.accepted, 15);
+  assert.strictEqual(x.peakViewers, 42);
+  assert.strictEqual(x.reason, 'ended');
+  assert.ok(x.endedAt >= x.startedAt);
+  assert.strictEqual(t.ctl.s.liveSince, null);
+  assert.deepStrictEqual(t.store.get('lastSession'), x, 'summary kept across restarts');
+  await t.done();
+});
+
+test('Disconnect ends the session; a blip with no taps leaves no summary', async () => {
+  const t = await setup({ autoApprove: true });
+  await t.ctl.pair('TEST2345');
+  t.link.goLive('R1');
+  t.ctl.setPaused(true);
+  assert.strictEqual(t.ctl.s.lastSession, null, 'connected for a moment, no taps: nothing to report');
+  t.ctl.setPaused(false);
+  t.link.goLive('R2');
+  t.link.like(3, '53');
+  t.ctl.setPaused(true);
+  assert.strictEqual(t.ctl.s.lastSession.taps, 3);
+  assert.strictEqual(t.ctl.s.lastSession.reason, 'disconnected');
+  assert.strictEqual(t.ctl.s.atom, 'off');
+  await t.done();
+});
