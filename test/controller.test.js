@@ -288,3 +288,27 @@ test('checklist: test mode and a not-yet-live TikTok show as waiting with a Chec
   assert.match(t.ctl.s.message.text, /Waiting for @test_host to go LIVE/);
   await t.done();
 });
+
+test('Disconnect stops watching TikTok and is remembered; Connect resumes and re-baselines', async () => {
+  const t = await setup({ autoApprove: true });
+  await t.ctl.pair('TEST2345');
+  t.link.goLive('R1');
+  t.link.like(10, '110');
+  t.link.like(10, '120');
+  assert.ok(await until(() => t.mock.state.credited === 20), `credited ${t.mock.state.credited}`);
+  assert.strictEqual(t.ctl.s.atom, 'live');
+  t.ctl.setPaused(true);
+  assert.strictEqual(t.link.username, null, 'Disconnect stops the TikTok link');
+  assert.strictEqual(t.ctl.s.atom, 'off');
+  assert.strictEqual(t.store.get('paused'), true, 'remembered across restarts');
+  assert.match(t.ctl.s.message.text, /Disconnected/);
+  assert.strictEqual(t.ctl.s.steps.find((r) => r.key === 'live').state, 'off');
+  t.ctl.setPaused(false);
+  assert.strictEqual(t.link.username, 'test_host', 'Connect starts watching again');
+  t.link.goLive('R1');
+  t.link.like(500, '900');                 // 780 taps happened while disconnected + this batch
+  assert.ok(await until(() => t.mock.state.pushes.some((p) => p.rebaseline)), 're-baselined after reconnecting');
+  t.link.like(5, '905');
+  assert.ok(await until(() => t.mock.state.credited === 25, 4000), `credited ${t.mock.state.credited}`);
+  await t.done();
+});

@@ -55,9 +55,32 @@
   <!-- STATUS -->
   <main id="status" class="screen hidden">
     <section class="hero glass">
-      <div class="pill" id="pill"><i></i><span id="pill-text">READY</span></div>
+      <div class="atom-wrap">
+        <svg id="atom" class="atom off" viewBox="0 0 200 200" aria-hidden="true">
+          <defs>
+            <radialGradient id="coreFill" cx=".38" cy=".34" r=".75">
+              <stop offset="0" class="core-hi"/><stop offset=".5" class="core-mid"/><stop offset="1" class="core-lo"/>
+            </radialGradient>
+            <linearGradient id="orbitChrome" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#ffffff"/><stop offset=".5" stop-color="#8a8a8a"/><stop offset="1" stop-color="#dcdcdc"/>
+            </linearGradient>
+          </defs>
+          <g class="orbits" fill="none" stroke="url(#orbitChrome)" stroke-width="3">
+            <ellipse cx="100" cy="100" rx="86" ry="30"/>
+            <ellipse cx="100" cy="100" rx="86" ry="30" transform="rotate(60 100 100)"/>
+            <ellipse cx="100" cy="100" rx="86" ry="30" transform="rotate(-60 100 100)"/>
+          </g>
+          <circle class="halo" cx="100" cy="100" r="34"/>
+          <circle class="core" cx="100" cy="100" r="17" fill="url(#coreFill)"/>
+          <g><circle class="electron" r="6"><animateMotion dur="4.8s" repeatCount="indefinite" path="M14,100 a86,30 0 1,0 172,0 a86,30 0 1,0 -172,0"/></circle></g>
+          <g transform="rotate(60 100 100)"><circle class="electron" r="6"><animateMotion dur="5.6s" begin="-1.7s" repeatCount="indefinite" path="M14,100 a86,30 0 1,0 172,0 a86,30 0 1,0 -172,0"/></circle></g>
+          <g transform="rotate(-60 100 100)"><circle class="electron" r="6"><animateMotion dur="5.2s" begin="-3.1s" repeatCount="indefinite" path="M14,100 a86,30 0 1,0 172,0 a86,30 0 1,0 -172,0"/></circle></g>
+        </svg>
+        <div class="atom-label" id="atom-label">NOT CONNECTED</div>
+      </div>
       <p class="msg" id="msg">Starting...</p>
       <p class="who" id="who"></p>
+      <button class="conn" id="conn-btn" type="button">Disconnect</button>
     </section>
     <section class="steps-card glass" aria-label="Setup and status">
       <ol id="steps" class="checklist"></ol>

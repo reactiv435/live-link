@@ -62,6 +62,8 @@ class Controller extends EventEmitter {
       deviceId: null, hostName: null,
       tiktokUsername: null, verified: false, enabled: false, siteLive: false, target: null,
       dryRun: !!this.store.get('dryRun'),
+      paused: !!this.store.get('paused'),   // the host pressed Disconnect (remembered across restarts)
+      atom: 'off',                        // live | connecting | off: drives the atom's colour
       tiktok: { ...this.link.state },
       taps: freshTaps(),
       siteError: null,
@@ -148,6 +150,19 @@ class Controller extends EventEmitter {
     // Leaving test mode: taps seen during the test must never be credited afterwards.
     if (was && !this.s.dryRun) { this.batcher.rebaseNow(); this.s.taps.deferred = 0; }
     this._applyConfig();
+  }
+
+  // The Connect / Disconnect button. Disconnect stops watching TikTok and is remembered across restarts, so a
+  // host who disconnected stays disconnected. Connect re-baselines first, so taps from the disconnected stretch
+  // are never credited to whatever song is playing when they come back.
+  setPaused(on) {
+    const was = this.s.paused;
+    this.s.paused = !!on;
+    this.store.set('paused', this.s.paused);
+    if (this.s.paused) this.link.stop();
+    else if (was) { this.batcher.rebaseNow(); this.s.taps.deferred = 0; }
+    this._applyConfig();
+    this._statusSoon();
   }
 
   retryNow() {
@@ -248,7 +263,7 @@ class Controller extends EventEmitter {
     }
     if (this.s.phase === 'update_required') this._setPhase('ready');
 
-    const canRun = this.s.phase === 'ready' && this.s.tiktokUsername && this.s.verified && (this.s.enabled || this.s.dryRun);
+    const canRun = this.s.phase === 'ready' && !this.s.paused && this.s.tiktokUsername && this.s.verified && (this.s.enabled || this.s.dryRun);
     if (canRun) {
       // Check TikTok more often while the host's show is on the site.
       this.link.setOfflinePoll(this.s.siteLive ? 30000 : 90000);
@@ -490,6 +505,7 @@ class Controller extends EventEmitter {
       case 'suspended': return { level: 'error', text: 'Your host account is suspended, so LIVE Link is paused.' };
       case 'update_required': return { level: 'error', text: 'Please update LIVE Link to keep sending taps.' };
     }
+    if (s.paused) return { level: 'off', text: "Disconnected. LIVE Link isn't watching your TikTok. Press Connect when you're ready." };
     // The site hides the username until it is verified, so check verification first.
     if (!s.verified) return { level: 'setup', text: 'One step left: verify your TikTok on your dashboard (LIVE Link tab, TikTok verification).' };
     if (!s.tiktokUsername) return { level: 'setup', text: 'Add your TikTok username on your dashboard (LIVE Link tab).' };
@@ -530,7 +546,8 @@ class Controller extends EventEmitter {
       : { key: 'send', label: 'Sending taps', state: 'off', text: 'Not switched on for your channel yet. Turn on Test mode in Settings to try it.' });
     const running = this.link.running;
     let live;
-    if (!running) live = { key: 'live', label: 'TikTok LIVE', state: 'off', text: 'Starts watching once the steps above are done.' };
+    if (s.paused) live = { key: 'live', label: 'TikTok LIVE', state: 'off', text: 'Disconnected. Press Connect to start watching.' };
+    else if (!running) live = { key: 'live', label: 'TikTok LIVE', state: 'off', text: 'Starts watching once the steps above are done.' };
     else if (tk.status === 'live') live = { key: 'live', label: 'TikTok LIVE', state: 'done', text: `LIVE now${tk.viewers ? ` · ${tk.viewers.toLocaleString()} watching` : ''}.` };
     else if (tk.status === 'connecting' || tk.status === 'reconnecting') live = { key: 'live', label: 'TikTok LIVE', state: 'wait', text: tk.status === 'connecting' ? 'Connecting to TikTok...' : 'Reconnecting to TikTok...' };
     else if (tk.status === 'offline') live = { key: 'live', label: 'TikTok LIVE', state: 'wait', text: `@${s.tiktokUsername} isn't LIVE yet.`, retryAt: tk.retryAt, action: 'check' };
@@ -553,6 +570,8 @@ class Controller extends EventEmitter {
     this._lastRender = now;
     this.s.message = this._message();
     this.s.steps = this._steps();
+    const st = this.s.tiktok.status;
+    this.s.atom = this.s.paused || !this.link.running ? 'off' : st === 'live' ? 'live' : (st === 'connecting' || st === 'reconnecting') ? 'connecting' : 'off';
     this.emit('state', this.getState());
   }
 }

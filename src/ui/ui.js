@@ -5,7 +5,6 @@
   const $ = (id) => document.getElementById(id);
   const bridge = window.liveLink || demoBridge();
   const fmt = (n) => Number(n || 0).toLocaleString();
-  const PILL = { ok: 'LIVE', info: 'WAITING', setup: 'SETUP', warn: 'CHECK', error: 'STOPPED' };
 
   function render(s) {
     if (!s) return;
@@ -23,9 +22,7 @@
       return;
     }
     const m = s.message || { level: 'info', text: '' };
-    const pill = $('pill');
-    pill.className = 'pill ' + m.level;
-    $('pill-text').textContent = m.level === 'ok' && s.tiktok && s.tiktok.status !== 'live' ? 'READY' : (PILL[m.level] || 'READY');
+    renderAtom(s);
     $('msg').textContent = m.text;
     const who = [];
     if (s.tiktokUsername) who.push('@' + s.tiktokUsername);
@@ -37,6 +34,32 @@
     $('t-song').textContent = s.target ? (s.target.title || 'Current song') : 'No song playing yet';
     renderSteps(s.steps || []);
   }
+
+  // ---------------------------------------------------------------- atom + Connect / Disconnect
+  let current = null, lastAtom = '';
+  const SPEED = { live: [2.2, 2.7, 2.5], connecting: [1.3, 1.6, 1.45], off: [4.8, 5.6, 5.2], paused: [9, 10.5, 9.8] };
+  function renderAtom(s) {
+    current = s;
+    const kind = s.paused ? 'paused' : (s.atom || 'off');
+    const atom = $('atom');
+    atom.setAttribute('class', 'atom ' + (kind === 'live' ? 'live' : 'off') + (kind === 'paused' ? ' paused' : ''));
+    if (kind !== lastAtom) {   // change orbit speed only when the state changes (SMIL restarts the motion)
+      lastAtom = kind;
+      atom.querySelectorAll('animateMotion').forEach((am, i) => am.setAttribute('dur', SPEED[kind][i] + 's'));
+    }
+    const tk = s.tiktok || {};
+    const label = $('atom-label');
+    label.className = 'atom-label' + (kind === 'live' ? ' live' : '');
+    label.textContent = kind === 'live' ? 'CONNECTED TO YOUR LIVE'
+      : kind === 'paused' ? 'DISCONNECTED'
+      : kind === 'connecting' ? 'CONNECTING...'
+      : (tk.status === 'offline' ? 'WAITING FOR YOUR LIVE' : 'NOT CONNECTED');
+    const btn = $('conn-btn');
+    btn.textContent = s.paused ? 'Connect' : 'Disconnect';
+    btn.classList.toggle('disconnect', !s.paused);
+    btn.disabled = s.phase !== 'ready';
+  }
+  $('conn-btn').addEventListener('click', () => { if (current) bridge.setSetting('paused', !current.paused); });
 
   // ---------------------------------------------------------------- checklist
   const ICON = { done: '✓', todo: '!', problem: '!', wait: '', off: '', test: 'T' };
@@ -145,6 +168,7 @@
     const listeners = [];
     const base = { phase: 'ready', dryRun: false, tiktokUsername: 'the_boneyard_ai', hostName: 'Bone Daddy', update: { available: false },
       tiktok: { status: 'live', viewers: 214 }, taps: { session: 4821, accepted: 4790 }, target: { title: 'Midnight Engine (AI remix)' },
+      atom: 'live', paused: false,
       message: { level: 'ok', text: 'Connected to @the_boneyard_ai. Taps are going to the hype bar.' },
       steps: [
         { key: 'pc', label: 'This PC', state: 'done', text: 'Connected to Bone Daddy.' },
@@ -155,7 +179,8 @@
       ] };
     const states = {
       live: base,
-      waiting: { ...base, tiktok: { status: 'offline' }, taps: { session: 0, accepted: 0 }, target: null, message: { level: 'info', text: 'Ready. Waiting for @reactivvibeai to go LIVE on TikTok.' },
+      paused: { ...base, paused: true, atom: 'off', tiktok: { status: 'idle' }, message: { level: 'off', text: "Disconnected. LIVE Link isn't watching your TikTok. Press Connect when you're ready." } },
+      waiting: { ...base, atom: 'off', tiktok: { status: 'offline' }, taps: { session: 0, accepted: 0 }, target: null, message: { level: 'info', text: 'Ready. Waiting for @reactivvibeai to go LIVE on TikTok.' },
         steps: [
           { key: 'pc', label: 'This PC', state: 'done', text: 'Connected to ReactivVibeAI.' },
           { key: 'tt', label: 'TikTok account', state: 'done', text: 'Verified as @reactivvibeai.' },

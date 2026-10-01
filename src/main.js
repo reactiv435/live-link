@@ -68,6 +68,7 @@ function showWindow() { if (!win) createWindow(); win.show(); win.focus(); }
 function trayLabel(s) {
   if (!s) return 'Starting...';
   if (s.phase !== 'ready') return s.message ? s.message.text.slice(0, 60) : s.phase;
+  if (s.paused) return 'Disconnected (press Connect in the app)';
   if (s.tiktok.status === 'live') return `LIVE on @${s.tiktokUsername} · ${s.taps.accepted} taps sent`;
   return s.message ? s.message.text.slice(0, 60) : 'Ready';
 }
@@ -139,6 +140,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('setSetting', (_e, key, value) => {
     if (key === 'startWithWindows') app.setLoginItemSettings({ openAtLogin: !!value, args: ['--hidden'] });
     else if (key === 'dryRun') ctl.setDryRun(!!value);
+    else if (key === 'paused') ctl.setPaused(!!value);
     else return false;
     return true;
   });

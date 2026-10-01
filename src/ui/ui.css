@@ -89,7 +89,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .checklist li { display: grid; grid-template-columns: 22px 1fr auto; gap: 10px; align-items: start; padding: 10px 0; border-bottom: 1px solid var(--line); }
 .checklist li:last-child { border-bottom: 0; }
 .checklist .ico { width: 18px; height: 18px; border-radius: 50%; margin-top: 1px; display: grid; place-items: center; font: 700 11px/1 var(--font); box-sizing: border-box; }
-.checklist .done .ico { background: var(--crimson); color: #fff; }
+.checklist .done .ico { background: #16c46a; color: #04130a; }
 .checklist .wait .ico { border: 2px solid #cfcfcf; border-top-color: transparent; animation: spin 1s linear infinite; }
 .checklist .todo .ico { border: 2px solid #e6e6e6; color: #e6e6e6; }
 .checklist .problem .ico { background: #3a0a12; border: 1px solid var(--crimson); color: #ffb3bd; }
@@ -106,3 +106,21 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .about summary { cursor: pointer; font-weight: 600; color: var(--text); }
 .about p { margin: 8px 0 2px; line-height: 1.5; }
 .actions { margin-top: 4px; }
+
+/* animated atom status: red = not connected to the TikTok LIVE, green = connected */
+.hero { text-align: center; }
+.atom-wrap { display: flex; flex-direction: column; align-items: center; gap: 6px; margin: 2px 0 4px; }
+.atom { width: 150px; height: 150px; --atom: #e0263f; --atom-hi: #ff8a99; --atom-lo: #8d0f22; overflow: visible; }
+.atom.live { --atom: #22e07a; --atom-hi: #b8ffd6; --atom-lo: #0b7a3c; }
+.atom .orbits { opacity: .75; }
+.atom .core-hi { stop-color: var(--atom-hi); } .atom .core-mid { stop-color: var(--atom); } .atom .core-lo { stop-color: var(--atom-lo); }
+.atom .halo { fill: var(--atom); opacity: .22; filter: blur(9px); transform-origin: 100px 100px; animation: breathe 2.6s ease-in-out infinite; }
+.atom .electron { fill: var(--atom); filter: drop-shadow(0 0 5px var(--atom)); }
+.atom.live .halo { opacity: .38; animation-duration: 1.6s; }
+.atom.paused .orbits, .atom.paused .electron { opacity: .45; }
+@keyframes breathe { 0%, 100% { transform: scale(.9); } 50% { transform: scale(1.12); } }
+.atom-label { font: 800 12px/1 var(--font); letter-spacing: .22em; color: #ff8b9a; }
+.atom-label.live { color: #4dffa0; }
+.conn { margin: 14px auto 0; display: block; min-width: 180px; border-radius: 12px; padding: 12px 18px; font-weight: 800; font-size: 14px; letter-spacing: .04em; border: 0; color: #fff; background: linear-gradient(180deg, #2ee88a, #13a457); }
+.conn.disconnect { background: transparent; border: 1px solid rgba(224,38,63,.55); color: #ffb3bd; }
+.conn:disabled { opacity: .5; cursor: default; }
