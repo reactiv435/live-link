@@ -42,7 +42,7 @@ function iconPath(name) { return path.join(__dirname, '..', 'build', name); }
 
 function createWindow() {
   win = new BrowserWindow({
-    width: 440, height: 590, resizable: false, maximizable: false, fullscreenable: false,
+    width: 460, height: 780, resizable: true, minWidth: 420, minHeight: 600, maximizable: false, fullscreenable: false,
     backgroundColor: '#0a0a0a', title: 'ReactivVibe LIVE Link', autoHideMenuBar: true, show: !START_HIDDEN,
     icon: iconPath('icon.ico'),
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: false },

@@ -123,7 +123,7 @@ test('unverified TikTok / missing username never connects', async () => {
   const t = await setup({ autoApprove: true, verified: false });
   await t.ctl.pair('TEST2345');
   assert.strictEqual(t.link.username, null);
-  assert.match(t.ctl.s.message.text, /Add your TikTok username|Verify your TikTok/);
+  assert.match(t.ctl.s.message.text, /verify your TikTok|Add your TikTok username/i);
   await t.done();
 });
 
@@ -258,5 +258,33 @@ test('config: dashboard link (site only) and signed update link are picked up', 
   t.ctl.cfg.dashboard_url = 'https://evil.example/phish';
   t.ctl._applyConfig();
   assert.strictEqual(t.ctl.s.dashboardUrl, null, 'only reactivvibeai.com links are opened');
+  await t.done();
+});
+
+test('unverified TikTok says "verify", not "add your username", and the checklist shows each step', async () => {
+  const t = await setup({ autoApprove: true, verified: false });
+  await t.ctl.pair('TEST2345');
+  assert.match(t.ctl.s.message.text, /verify your TikTok/i);
+  const byKey = Object.fromEntries(t.ctl.s.steps.map((r) => [r.key, r]));
+  assert.strictEqual(byKey.pc.state, 'done');
+  assert.strictEqual(byKey.tt.state, 'todo');
+  assert.strictEqual(byKey.tt.action, 'dashboard');
+  assert.strictEqual(byKey.live.state, 'off');
+  assert.strictEqual(byKey.site.state, 'done');
+  await t.done();
+});
+
+test('checklist: test mode and a not-yet-live TikTok show as waiting with a Check now action', async () => {
+  const t = await setup({ autoApprove: true, enabled: false });
+  await t.ctl.pair('TEST2345');
+  t.ctl.setDryRun(true);
+  t.link._set({ status: 'offline', roomId: null, retryAt: Date.now() + 30000 });
+  const byKey = Object.fromEntries(t.ctl.s.steps.map((r) => [r.key, r]));
+  assert.strictEqual(byKey.tt.state, 'done');
+  assert.strictEqual(byKey.send.state, 'test');
+  assert.strictEqual(byKey.live.state, 'wait');
+  assert.strictEqual(byKey.live.action, 'check');
+  assert.ok(byKey.live.retryAt > Date.now());
+  assert.match(t.ctl.s.message.text, /Waiting for @test_host to go LIVE/);
   await t.done();
 });

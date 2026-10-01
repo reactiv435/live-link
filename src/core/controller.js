@@ -68,6 +68,8 @@ class Controller extends EventEmitter {
       message: null,
       appVersion: this.appVersion,
       dashboardUrl: null,          // from live-link-config (reactivvibeai.com only)
+      siteOkAt: null,              // last successful call to the site
+      steps: [],                   // the setup/status checklist the window shows
       update: { available: false },  // from live-link-config `latest` (signed download link)
     };
 
@@ -187,6 +189,7 @@ class Controller extends EventEmitter {
       if (Number.isFinite(st)) this.clockOffset = st - Math.round((t0 + t1) / 2);
       this.cfg = { ...DEFAULTS, ...cfg };
       this.s.siteError = null;
+      this.s.siteOkAt = this.now();
       this.configRetryStep = 0;
       if (['starting', 'pending_approval', 'suspended'].includes(this.s.phase)) this._setPhase('ready');
       this._applyConfig();
@@ -308,6 +311,7 @@ class Controller extends EventEmitter {
       this.inFlight = null;
       this.pushRetryStep = 0;
       this.s.siteError = null;
+      this.s.siteOkAt = this.now();
       this.lastStatusAt = this.mono();
       this.lastStatusKey = this._statusKey();
       const sameRoom = String(body.tiktok_room_id) === String(this.batcher.roomId);
@@ -393,6 +397,7 @@ class Controller extends EventEmitter {
       await this.api.status(this._statusBody(true));
       if (ep !== this.epoch) return;
       this.s.siteError = null;
+      this.s.siteOkAt = this.now();
       this.statusRetryStep = 0;
       this.lastStatusAt = this.mono();
       this.lastStatusKey = this._statusKey();
@@ -485,8 +490,9 @@ class Controller extends EventEmitter {
       case 'suspended': return { level: 'error', text: 'Your host account is suspended, so LIVE Link is paused.' };
       case 'update_required': return { level: 'error', text: 'Please update LIVE Link to keep sending taps.' };
     }
-    if (!s.tiktokUsername) return { level: 'setup', text: 'Add your TikTok username on your host dashboard.' };
-    if (!s.verified) return { level: 'setup', text: 'Verify your TikTok on your host dashboard (a one-time code in your bio).' };
+    // The site hides the username until it is verified, so check verification first.
+    if (!s.verified) return { level: 'setup', text: 'One step left: verify your TikTok on your dashboard (LIVE Link tab, TikTok verification).' };
+    if (!s.tiktokUsername) return { level: 'setup', text: 'Add your TikTok username on your dashboard (LIVE Link tab).' };
     if (!s.enabled && !s.dryRun) return { level: 'setup', text: "LIVE Link isn't switched on for your account yet." };
     if (s.siteError && !tk.error) return { level: 'warn', text: `Can't reach reactivvibeai.com right now. Taps still count and are sent when it's back.` };
     switch (tk.status) {
@@ -496,12 +502,46 @@ class Controller extends EventEmitter {
         return { level: 'ok', text: `Connected to @${s.tiktokUsername}. Taps are going to the hype bar.` + (s.dryRun ? ' (Test mode: nothing is added.)' : '') };
       case 'connecting': return { level: 'info', text: `Connecting to @${s.tiktokUsername}...` };
       case 'reconnecting': return { level: 'warn', text: `Reconnecting to @${s.tiktokUsername}...` };
-      case 'offline': return { level: 'info', text: `Waiting for your TikTok LIVE to start. Checking again in ${secs(tk.retryAt)} s.` };
+      case 'offline': return { level: 'info', text: `Ready. Waiting for @${s.tiktokUsername} to go LIVE on TikTok.` };
       case 'error':
         if (tk.errorKind === 'rate-limit') return { level: 'warn', text: `TikTok asked us to slow down. Trying again at ${at(tk.retryAt)}.` };
-        return { level: 'warn', text: `Can't reach TikTok (${tk.error}). Trying again in ${secs(tk.retryAt)} s.` };
+        return { level: 'warn', text: `Can't reach TikTok right now. It will try again by itself.` };
       default: return { level: 'info', text: 'Ready.' };
     }
+  }
+
+  // The checklist the window shows: one row per thing that has to be true for taps to reach the bar.
+  // state: done | wait | todo | problem | off.  action: 'dashboard' | 'check' (Check TikTok now).
+  _steps() {
+    const s = this.s, tk = s.tiktok;
+    const paired = ['ready', 'starting', 'update_required'].includes(s.phase);
+    const rows = [];
+    rows.push(s.phase === 'pending_approval'
+      ? { key: 'pc', label: 'This PC', state: 'todo', text: 'Waiting for you to click Approve on your dashboard.', action: 'dashboard' }
+      : paired ? { key: 'pc', label: 'This PC', state: 'done', text: `Connected to ${s.hostName || 'your channel'}.` }
+      : { key: 'pc', label: 'This PC', state: 'problem', text: 'Not connected to your account.', action: 'dashboard' });
+    rows.push(!paired ? { key: 'tt', label: 'TikTok account', state: 'off', text: 'After this PC is approved.' }
+      : s.verified && s.tiktokUsername ? { key: 'tt', label: 'TikTok account', state: 'done', text: `Verified as @${s.tiktokUsername}.` }
+      : s.verified ? { key: 'tt', label: 'TikTok account', state: 'todo', text: 'Add your TikTok username on your dashboard.', action: 'dashboard' }
+      : { key: 'tt', label: 'TikTok account', state: 'todo', text: 'Not verified yet. Dashboard: LIVE Link tab, TikTok verification.', action: 'dashboard' });
+    rows.push(!paired ? { key: 'send', label: 'Sending taps', state: 'off', text: 'After this PC is approved.' }
+      : s.enabled ? (s.dryRun ? { key: 'send', label: 'Sending taps', state: 'test', text: 'Test mode is on: taps are checked, nothing is added.' } : { key: 'send', label: 'Sending taps', state: 'done', text: 'On: taps fill your hype bar.' })
+      : s.dryRun ? { key: 'send', label: 'Sending taps', state: 'test', text: 'Test mode: taps are checked, nothing is added.' }
+      : { key: 'send', label: 'Sending taps', state: 'off', text: 'Not switched on for your channel yet. Turn on Test mode in Settings to try it.' });
+    const running = this.link.running;
+    let live;
+    if (!running) live = { key: 'live', label: 'TikTok LIVE', state: 'off', text: 'Starts watching once the steps above are done.' };
+    else if (tk.status === 'live') live = { key: 'live', label: 'TikTok LIVE', state: 'done', text: `LIVE now${tk.viewers ? ` · ${tk.viewers.toLocaleString()} watching` : ''}.` };
+    else if (tk.status === 'connecting' || tk.status === 'reconnecting') live = { key: 'live', label: 'TikTok LIVE', state: 'wait', text: tk.status === 'connecting' ? 'Connecting to TikTok...' : 'Reconnecting to TikTok...' };
+    else if (tk.status === 'offline') live = { key: 'live', label: 'TikTok LIVE', state: 'wait', text: `@${s.tiktokUsername} isn't LIVE yet.`, retryAt: tk.retryAt, action: 'check' };
+    else if (tk.status === 'error' && tk.errorKind === 'rate-limit') live = { key: 'live', label: 'TikTok LIVE', state: 'problem', text: 'TikTok asked us to slow down.', retryAt: tk.retryAt };
+    else if (tk.status === 'error') live = { key: 'live', label: 'TikTok LIVE', state: 'problem', text: `Can't reach TikTok (${tk.error || 'no answer'}).`, retryAt: tk.retryAt, action: 'check' };
+    else live = { key: 'live', label: 'TikTok LIVE', state: 'wait', text: 'Getting ready...' };
+    rows.push(live);
+    rows.push(s.siteError ? { key: 'site', label: 'reactivvibeai.com', state: 'problem', text: "Can't reach the site. Retrying by itself; taps still count." }
+      : s.siteOkAt ? { key: 'site', label: 'reactivvibeai.com', state: 'done', text: 'Connected.', at: s.siteOkAt }
+      : { key: 'site', label: 'reactivvibeai.com', state: 'wait', text: 'Connecting...' });
+    return rows;
   }
 
   _render(throttle = false) {
@@ -512,6 +552,7 @@ class Controller extends EventEmitter {
     }
     this._lastRender = now;
     this.s.message = this._message();
+    this.s.steps = this._steps();
     this.emit('state', this.getState());
   }
 }

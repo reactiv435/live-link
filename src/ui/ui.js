@@ -35,7 +35,55 @@
     $('t-session').textContent = fmt(s.taps && s.taps.session);
     $('t-sent').textContent = fmt(s.taps && s.taps.accepted);
     $('t-song').textContent = s.target ? (s.target.title || 'Current song') : 'No song playing yet';
+    renderSteps(s.steps || []);
   }
+
+  // ---------------------------------------------------------------- checklist
+  const ICON = { done: '✓', todo: '!', problem: '!', wait: '', off: '', test: 'T' };
+  function fmtLeft(ms) {
+    const sec = Math.max(0, Math.round((ms - Date.now()) / 1000));
+    return sec >= 90 ? `${Math.round(sec / 60)} min` : `${sec} s`;
+  }
+  function fmtAgo(ms) {
+    const sec = Math.max(0, Math.round((Date.now() - ms) / 1000));
+    return sec < 60 ? 'just now' : `${Math.round(sec / 60)} min ago`;
+  }
+  function renderSteps(steps) {
+    const ol = $('steps');
+    ol.textContent = '';
+    for (const st of steps) {
+      const li = document.createElement('li');
+      li.className = st.state;
+      const ico = document.createElement('span'); ico.className = 'ico'; ico.textContent = ICON[st.state] || '';
+      const body = document.createElement('div');
+      const lbl = document.createElement('span'); lbl.className = 'lbl'; lbl.textContent = st.label;
+      const txt = document.createElement('span'); txt.className = 'txt'; txt.textContent = st.text;
+      body.append(lbl, txt);
+      if (st.retryAt || st.at) {
+        const sub = document.createElement('span'); sub.className = 'sub';
+        sub.dataset.retryAt = st.retryAt || ''; sub.dataset.at = st.at || '';
+        body.append(sub);
+      }
+      li.append(ico, body);
+      if (st.action) {
+        const btn = document.createElement('button'); btn.className = 'act';
+        btn.textContent = st.action === 'check' ? 'Check now' : 'Open dashboard';
+        btn.addEventListener('click', () => (st.action === 'check' ? bridge.retry() : bridge.open('dashboard')));
+        li.append(btn);
+      } else li.append(document.createElement('span'));
+      ol.append(li);
+    }
+    tickSteps();
+  }
+  function tickSteps() {
+    document.querySelectorAll('#steps .sub').forEach((el) => {
+      const r = Number(el.dataset.retryAt), at = Number(el.dataset.at);
+      if (r) el.textContent = r > Date.now() ? `Checking again in ${fmtLeft(r)}` : 'Checking now...';
+      else if (at) el.textContent = `Last update ${fmtAgo(at)}`;
+    });
+  }
+  setInterval(tickSteps, 1000);
+
 
   function showPairError(text) { const e = $('pair-error'); e.textContent = text; e.classList.toggle('hidden', !text); }
   const PAIR_ERRORS = {
@@ -97,10 +145,33 @@
     const listeners = [];
     const base = { phase: 'ready', dryRun: false, tiktokUsername: 'the_boneyard_ai', hostName: 'Bone Daddy', update: { available: false },
       tiktok: { status: 'live', viewers: 214 }, taps: { session: 4821, accepted: 4790 }, target: { title: 'Midnight Engine (AI remix)' },
-      message: { level: 'ok', text: 'Connected to @the_boneyard_ai. Taps are going to the hype bar.' } };
+      message: { level: 'ok', text: 'Connected to @the_boneyard_ai. Taps are going to the hype bar.' },
+      steps: [
+        { key: 'pc', label: 'This PC', state: 'done', text: 'Connected to Bone Daddy.' },
+        { key: 'tt', label: 'TikTok account', state: 'done', text: 'Verified as @the_boneyard_ai.' },
+        { key: 'send', label: 'Sending taps', state: 'done', text: 'On: taps fill your hype bar.' },
+        { key: 'live', label: 'TikTok LIVE', state: 'done', text: 'LIVE now · 214 watching.' },
+        { key: 'site', label: 'reactivvibeai.com', state: 'done', text: 'Connected.', at: Date.now() - 4000 },
+      ] };
     const states = {
       live: base,
-      waiting: { ...base, tiktok: { status: 'offline' }, taps: { session: 0, accepted: 0 }, target: null, message: { level: 'info', text: 'Waiting for your TikTok LIVE to start. Checking again in 24 s.' } },
+      waiting: { ...base, tiktok: { status: 'offline' }, taps: { session: 0, accepted: 0 }, target: null, message: { level: 'info', text: 'Ready. Waiting for @reactivvibeai to go LIVE on TikTok.' },
+        steps: [
+          { key: 'pc', label: 'This PC', state: 'done', text: 'Connected to ReactivVibeAI.' },
+          { key: 'tt', label: 'TikTok account', state: 'done', text: 'Verified as @reactivvibeai.' },
+          { key: 'send', label: 'Sending taps', state: 'test', text: 'Test mode: taps are checked, nothing is added.' },
+          { key: 'live', label: 'TikTok LIVE', state: 'wait', text: "@reactivvibeai isn't LIVE yet.", retryAt: Date.now() + 24000, action: 'check' },
+          { key: 'site', label: 'reactivvibeai.com', state: 'done', text: 'Connected.', at: Date.now() - 30000 },
+        ] },
+      verify: { ...base, tiktokUsername: null, tiktok: { status: 'idle' }, taps: { session: 0, accepted: 0 }, target: null,
+        message: { level: 'setup', text: 'One step left: verify your TikTok on your dashboard (LIVE Link tab, TikTok verification).' },
+        steps: [
+          { key: 'pc', label: 'This PC', state: 'done', text: 'Connected to ReactivVibeAI.' },
+          { key: 'tt', label: 'TikTok account', state: 'todo', text: 'Not verified yet. Dashboard: LIVE Link tab, TikTok verification.', action: 'dashboard' },
+          { key: 'send', label: 'Sending taps', state: 'off', text: 'Not switched on for your channel yet. Turn on Test mode in Settings to try it.' },
+          { key: 'live', label: 'TikTok LIVE', state: 'off', text: 'Starts watching once the steps above are done.' },
+          { key: 'site', label: 'reactivvibeai.com', state: 'done', text: 'Connected.', at: Date.now() - 8000 },
+        ] },
       pending: { ...base, phase: 'pending_approval', message: { level: 'setup', text: 'Almost there. On your host dashboard, click Approve for "STREAM-PC".' } },
       pair: { ...base, phase: 'unpaired' },
       test: { ...base, dryRun: true },
