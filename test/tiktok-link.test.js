@@ -140,7 +140,7 @@ function giftFrame({ count = 1, end = 0, coins = 1, type = 1, combo = true, grou
     user: { userId: 'u-' + user, displayId: user, nickname: user.toUpperCase() }, toUser: to ? { displayId: to } : undefined };
 }
 
-test('gifts: a combo credits each new step once; a repeated end and stale frames add nothing; a new combo gets a new key', async () => {
+test('gifts (no group id): a combo credits each new step once; a repeated end and stale frames add nothing; a new combo gets a new key', async () => {
   const f = fakeLib(['live']);
   const link = new TikTokLink({ lib: f.lib, ...timers() });
   const got = [];
@@ -148,12 +148,12 @@ test('gifts: a combo credits each new step once; a repeated end and stale frames
   link.start('host');
   await tick(); await tick();
   const c = f.made[0];
-  c.emit('gift', giftFrame({ count: 1 }));
-  c.emit('gift', giftFrame({ count: 2 }));
-  c.emit('gift', giftFrame({ count: 2 }));            // repeated frame
-  c.emit('gift', giftFrame({ count: 5, end: 1 }));     // end (frames 3-4 were lost)
-  c.emit('gift', giftFrame({ count: 5, end: 1 }));     // the same end again
-  c.emit('gift', giftFrame({ count: 1 }));             // a NEW combo reusing the group
+  c.emit('gift', giftFrame({ count: 1, group: '0' }));   // no group id: the end/gap rules apply
+  c.emit('gift', giftFrame({ count: 2, group: '0' }));
+  c.emit('gift', giftFrame({ count: 2, group: '0' }));            // repeated frame
+  c.emit('gift', giftFrame({ count: 5, end: 1, group: '0' }));     // end (frames 3-4 were lost)
+  c.emit('gift', giftFrame({ count: 5, end: 1, group: '0' }));     // the same end again
+  c.emit('gift', giftFrame({ count: 1, group: '0' }));             // a NEW combo (lower count after an end)
   assert.deepStrictEqual(got.map((g) => [g.count, g.units]), [[1, 1], [2, 1], [5, 3], [1, 1]]);
   assert.strictEqual(got[0].key, got[2].key, 'same combo, same key');
   assert.notStrictEqual(got[3].key, got[0].key, 'new combo, new key');
@@ -197,4 +197,21 @@ test('gifts: names are cut without splitting an emoji, and a missing handle fall
   assert.ok(g.userName.length <= 80);
   assert.ok(g.name.length <= 60);
   for (const v of [g.userHandle, g.userName, g.name]) assert.ok(!/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(v), `no lone surrogate in ${JSON.stringify(v)}`);
+});
+
+test('gifts with a real group id: a late lower frame is stale, never a new combo; the end frame is recorded', async () => {
+  const f = fakeLib(['live']);
+  const link = new TikTokLink({ lib: f.lib, ...timers() });
+  const got = [];
+  link.on('gift', (g) => got.push(g));
+  link.start('host');
+  await tick(); await tick();
+  const c = f.made[0];
+  for (let n = 1; n <= 5; n++) c.emit('gift', giftFrame({ count: n, group: '1759900000123' }));
+  c.emit('gift', giftFrame({ count: 5, end: 1, group: '1759900000123' }));   // real end frames repeat the last count
+  c.emit('gift', giftFrame({ count: 4, group: '1759900000123' }));           // a stray late frame
+  assert.deepStrictEqual(got.map((g) => g.units), [1, 1, 1, 1, 1], '5 units, nothing extra');
+  assert.ok(got.every((g) => g.key === got[0].key));
+  c.emit('gift', giftFrame({ type: 0, combo: false, coins: 60000, msgId: '99999999' }));   // out of range: skipped
+  assert.strictEqual(got.length, 5);
 });

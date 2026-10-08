@@ -119,3 +119,12 @@ test('gift batches stay under the size cap but always take at least one frame', 
   assert.strictEqual(one.length, 1, 'a frame bigger than the cap still goes out alone');
   assert.strictEqual(b.gifts.length, 40 - first.length - 1);
 });
+
+test('frames of one combo still waiting to be sent merge into one item with the latest count', () => {
+  const b = new LikeBatcher('r');
+  const item = (count) => ({ key: 'c:abcdefabcdef:0', count, coins: 1, gift_id: '1', name: 'Rose', user_handle: 'm', user_name: 'M', at: new Date(1000 + count).toISOString() });
+  for (let n = 1; n <= 5; n++) b.addGift(item(n));
+  b.addGift(item(3));   // a stale lower frame never lowers it
+  assert.strictEqual(b.gifts.length, 1);
+  assert.strictEqual(b.gifts[0].count, 5);
+});

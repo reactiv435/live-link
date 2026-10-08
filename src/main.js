@@ -256,4 +256,15 @@ app.on('second-instance', showWindow);
 let skipActivate = true;
 app.on('activate', () => { if (skipActivate && START_HIDDEN) { skipActivate = false; return; } skipActivate = false; showWindow(); });
 app.on('window-all-closed', (e) => { /* stay in the tray */ });
-app.on('before-quit', () => { quitting = true; if (ctl) ctl.stop(); });
+// Quitting right after a gift must not lose it: hold the quit up to 3 s while queued gifts go out, then quit.
+let quitFlushed = false;
+app.on('before-quit', (e) => {
+  quitting = true;
+  if (!quitFlushed && ctl && ctl.hasPendingGifts()) {
+    e.preventDefault();
+    quitFlushed = true;
+    ctl.flushBeforeQuit(3000).catch(() => {}).finally(() => app.quit());
+    return;
+  }
+  if (ctl) ctl.stop();
+});

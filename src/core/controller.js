@@ -3,7 +3,7 @@
 // Electron-free so it can be tested headlessly against test/mock-server.js.
 const EventEmitter = require('events');
 const crypto = require('crypto');
-const { LikeBatcher } = require('./batcher');
+const { LikeBatcher, takeGiftChunk } = require('./batcher');
 const { ApiError } = require('./api');
 
 const DEFAULTS = {
@@ -186,7 +186,7 @@ class Controller extends EventEmitter {
     this.store.set('dryRun', this.s.dryRun);
     // Leaving test mode: taps seen during the test must never be credited afterwards. Marking the totals stale (not just
     // re-baselining at the last one seen) also covers a TikTok outage at that moment: its test taps can't be told apart.
-    if (was && !this.s.dryRun) { b.markStale(); this.s.taps.deferred = 0; }
+    if (was && !this.s.dryRun) { b.markStale(); b.gifts.length = 0; this.s.taps.deferred = 0; }   // test gifts never count
     this._applyConfig();
   }
 
@@ -556,6 +556,7 @@ class Controller extends EventEmitter {
     const tooBig = e.status === 413 && giftCount > 0;
     if (tooBig) {
       if (sameRoom) this.batcher.restoreGifts(body.gifts);
+      else this._drainLoop(String(body.tiktok_room_id), body.gifts.slice(), null, !!body.dry_run);
       this.giftsPerPush = Math.max(5, Math.floor(giftCount / 2));
       this.log('warn', `push too big for the site: ${giftCount} gifts requeued, next batches of ${this.giftsPerPush}`);
     }
@@ -592,26 +593,43 @@ class Controller extends EventEmitter {
   async _drainRoom(old, dryRun = !!this.s.dryRun) {
     if (this.s.phase !== 'ready') return;
     const hasTotal = old.nextTotal() !== null && !old.rebase;
-    if (!hasTotal && !old.gifts.length) return;
+    const pending = old.gifts.splice(0);            // EVERY queued gift, now, so nothing else can send them
+    if (!hasTotal && !pending.length) return;
+    const { events, sessionTotal } = old.take(this.now(), this.clockOffset, 0);
+    return this._drainLoop(String(old.roomId), pending, hasTotal ? { sessionTotal, events } : null, dryRun);
+  }
+
+  // Sends a room's last seen total until the site owes nothing (deferred 0) and every pending gift in chunks.
+  // Retries 429 / network errors with the same batch; a 413 puts the chunk back and halves it. Best effort: it stops on
+  // any other refusal, after ~200 tries, or when the app stops/unpairs.
+  async _drainLoop(roomId, pending, total, dryRun) {
     const ep = this.epoch;
-    const { events, sessionTotal, gifts } = old.take(this.now(), this.clockOffset);
-    let body = { batch_id: crypto.randomUUID(), dry_run: dryRun, tiktok_room_id: String(old.roomId), events: hasTotal ? events : [], status: this._statusBody(false) };
-    if (hasTotal) body.session_total = sessionTotal;
-    if (gifts.length) body.gifts = gifts;
-    for (let i = 0; i < 100; i++) {
-      if (ep !== this.epoch || this.stopped || this.s.phase !== 'ready') return;
+    let chunkMax = this.giftsPerPush, first = true, needTotal = !!total, body = null;
+    for (let i = 0; i < 200; i++) {
+      if (ep !== this.epoch || this.stopped || this.s.phase !== 'ready') {
+        if (pending.length) this.log('warn', `${pending.length} gift frames for room ${roomId} not delivered (LIVE Link stopped)`);
+        return;
+      }
+      if (!body) {
+        const chunk = takeGiftChunk(pending, chunkMax);
+        body = { batch_id: crypto.randomUUID(), dry_run: dryRun, tiktok_room_id: roomId,
+          events: first && total ? total.events : [], status: this._statusBody(false) };
+        if (needTotal) body.session_total = total.sessionTotal;
+        if (chunk.length) body.gifts = chunk;
+        if (!body.gifts && body.session_total === undefined) return;
+      }
       try {
         const r = await this.api.push(body);
         if (ep !== this.epoch) return;
-        const acc = Number(r.accepted) || 0;
         if (!body.dry_run) {
-          this.s.taps.accepted += acc; this._creditLastSession(old.roomId, acc);
-          this._creditGifts(old.roomId, Number(r.gift_taps) || 0);
+          const acc = Number(r.accepted) || 0;
+          this.s.taps.accepted += acc; this._creditLastSession(roomId, acc);
+          this._creditGifts(roomId, Number(r.gift_taps) || 0);
         }
         this._render();
-        if (body.dry_run || !hasTotal || !(Number(r.deferred) > 0)) return;
-        body = { ...body, batch_id: crypto.randomUUID(), events: [], status: this._statusBody(false) };
-        delete body.gifts;                                            // gifts went out with the first body
+        needTotal = !!total && body.session_total !== undefined && !body.dry_run && Number(r.deferred) > 0;
+        first = false; body = null;
+        if (!pending.length && !needTotal) return;
         await this._sleep(this._pushInterval());
       } catch (e) {
         if (ep !== this.epoch) return;
@@ -619,9 +637,26 @@ class Controller extends EventEmitter {
           await this._sleep(Math.max(1000, e.retryAfterMs || 2000));   // same batch id: a repeat gets the stored answer
           continue;
         }
-        this.log('info', `final push for room ${old.roomId}: ${e.code || e.message}`);
+        if (e instanceof ApiError && e.status === 413 && body.gifts && body.gifts.length > 1) {
+          pending.unshift(...body.gifts);
+          chunkMax = Math.max(1, Math.floor(body.gifts.length / 2));
+          delete body.gifts; body = body.session_total !== undefined ? body : null;
+          if (body) body.batch_id = crypto.randomUUID();
+          continue;
+        }
+        this.log('info', `final push for room ${roomId}: ${e.code || e.message}${pending.length ? ` (${pending.length} gift frames left)` : ''}`);
         return;
       }
+    }
+  }
+
+  // Before the app quits: give queued gifts (and a push waiting to be retried) up to `ms` to reach the site.
+  hasPendingGifts() { return this.batcher.gifts.length > 0 || !!(this.inFlight && this.inFlight.gifts); }
+  async flushBeforeQuit(ms = 3000) {
+    const end = this.mono() + ms;
+    while (this.hasPendingGifts() && this.mono() < end && !this.stopped && this.s.phase === 'ready') {
+      if (!this.inFlight) this._pushOnce();
+      await this._sleep(100);
     }
   }
 
@@ -736,6 +771,7 @@ class Controller extends EventEmitter {
         if (where === 'push') {
           // The site isn't taking taps now: forget taps from this stretch and wait for the show to be on.
           this.batcher.rebaseNow();
+          this.batcher.gifts.length = 0;   // gifts while the show is off are consumed, never credited later
           this.s.taps.deferred = 0;
           this.pausedForSite = true;
           this._scheduleConfig(CONFIG_WATCH_SITE_MS);

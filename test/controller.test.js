@@ -668,3 +668,43 @@ test('a push the site finds too big (413) keeps its gifts and sends them in smal
   assert.ok(!t.logs.some((l) => /gift frames dropped/.test(l)), 'no gift was dropped');
   await t.done();
 });
+
+test('Disconnect right after a big gift burst delivers EVERY queued gift, in chunks', async () => {
+  const t = await setup({ autoApprove: true });
+  await t.ctl.pair('TEST2345');
+  t.link.goLive('R1');
+  t.link.like(10, '110');
+  assert.ok(await until(() => t.mock.state.pushes.length === 1));
+  for (let i = 0; i < 80; i++) t.link.emit('gift', gift(`m:81000000${String(i).padStart(2, '0')}`, 1, { name: 'Rose ' + 'x'.repeat(40), handle: 'fan_' + 'y'.repeat(30) + i }));
+  t.ctl.setPaused(true);                                             // before the next push would have gone out
+  assert.ok(await until(() => t.mock.state.giftTaps === 800, 15000), `gift taps ${t.mock.state.giftTaps}`);
+  assert.strictEqual(t.ctl.batcher.gifts.length, 0);
+  await t.done();
+});
+
+test('gifts seen during Test mode never count after Test mode ends', async () => {
+  const t = await setup({ autoApprove: true });
+  await t.ctl.pair('TEST2345');
+  t.ctl.setDryRun(true);
+  t.link.goLive('R1');
+  t.link.like(10, '110');
+  t.link.emit('gift', gift('m:8200000001', 1, { coins: 1000, name: 'Galaxy' }));
+  t.ctl.setDryRun(false);                                            // before the dry push went out
+  await wait(2500);
+  assert.strictEqual(t.mock.state.giftTaps, 0);
+  await t.done();
+});
+
+test('quitting right after a gift sends it first', async () => {
+  const t = await setup({ autoApprove: true });
+  await t.ctl.pair('TEST2345');
+  t.link.goLive('R1');
+  t.link.like(10, '110');
+  assert.ok(await until(() => t.mock.state.pushes.length === 1));
+  t.link.emit('gift', gift('m:8300000001', 1, { coins: 1000, name: 'Galaxy' }));
+  assert.ok(t.ctl.hasPendingGifts());
+  await t.ctl.flushBeforeQuit(3000);
+  assert.strictEqual(t.mock.state.giftTaps, 10000);
+  assert.ok(!t.ctl.hasPendingGifts());
+  await t.done();
+});

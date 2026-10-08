@@ -19,6 +19,18 @@ function usableTotal(total, count) {
   return Number.isFinite(t) && t > 0 && t >= (count || 0) ? Math.floor(t) : null;
 }
 
+// Takes (removes) up to `max` gift items from the front of `list` whose JSON stays under `maxChars`; always at least one,
+// so a single big item can't block the queue.
+function takeGiftChunk(list, max = MAX_GIFTS, maxChars = MAX_GIFT_CHARS) {
+  let n = 0, chars = 2;
+  while (n < list.length && n < max) {
+    const c = Buffer.byteLength(JSON.stringify(list[n])) + 1;   // bytes: the site's cap counts bytes
+    if (n > 0 && chars + c > maxChars) break;
+    chars += c; n++;
+  }
+  return list.splice(0, n);
+}
+
 class LikeBatcher {
   constructor(roomId = null) { this.reset(roomId); }
 
@@ -36,17 +48,15 @@ class LikeBatcher {
     this.gifts = [];            // gift frames waiting to be sent (contract shape); kept through stale marks: they were seen
   }
 
-  addGift(g) { this.gifts.push(g); if (this.gifts.length > 2000) this.gifts.splice(0, this.gifts.length - 2000); }
-  // Up to `max` frames whose JSON stays under `maxChars` (always at least one, so a big frame can't block the queue).
-  takeGifts(max = MAX_GIFTS, maxChars = MAX_GIFT_CHARS) {
-    let n = 0, chars = 2;
-    while (n < this.gifts.length && n < max) {
-      const c = JSON.stringify(this.gifts[n]).length + 1;
-      if (n > 0 && chars + c > maxChars) break;
-      chars += c; n++;
-    }
-    return this.gifts.splice(0, n);
+  // The site only needs each combo's latest running count, so frames of a combo still waiting to be sent merge into
+  // one item. A busy room then queues one item per combo, not one per tap of the gift button.
+  addGift(g) {
+    const q = this.gifts.find((x) => x.key === g.key);
+    if (q) { if (g.count > q.count) { q.count = g.count; q.at = g.at; } return; }
+    this.gifts.push(g);
+    if (this.gifts.length > 2000) this.gifts.splice(0, this.gifts.length - 2000);
   }
+  takeGifts(max = MAX_GIFTS, maxChars = MAX_GIFT_CHARS) { return takeGiftChunk(this.gifts, max, maxChars); }
   restoreGifts(list) { if (list && list.length) this.gifts.unshift(...list); }
 
   add({ count, total, at }) {
@@ -119,4 +129,4 @@ class LikeBatcher {
   }
 }
 
-module.exports = { LikeBatcher, usableTotal, MAX_EVENTS, MAX_COUNT, STALE_MS, MAX_GIFTS, MAX_GIFT_CHARS };
+module.exports = { LikeBatcher, usableTotal, takeGiftChunk, MAX_EVENTS, MAX_COUNT, STALE_MS, MAX_GIFTS, MAX_GIFT_CHARS };
