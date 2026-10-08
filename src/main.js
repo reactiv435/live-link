@@ -285,12 +285,14 @@ app.on('window-all-closed', (e) => { /* stay in the tray */ });
 let quitFlushed = false;
 app.on('before-quit', (e) => {
   quitting = true;
-  if (!quitFlushed && ctl) {
-    e.preventDefault();
-    quitFlushed = true;
-    const gifts = ctl.hasPendingGifts() ? ctl.flushBeforeQuit(3000).catch(() => {}) : Promise.resolve();
-    gifts.then(() => ctl.sendFinalStatus(1500)).catch(() => {}).finally(() => app.quit());
-    return;
-  }
-  if (ctl) ctl.stop();
+  if (quitFlushed || !ctl) { if (ctl) ctl.stop(); return; }
+  quitFlushed = true;
+  const needGifts = ctl.hasPendingGifts(), needStatus = ctl.getState().phase === 'ready';
+  if (!needGifts && !needStatus) { ctl.stop(); return; }          // nothing to send: quit right away
+  e.preventDefault();
+  const gifts = needGifts ? ctl.flushBeforeQuit(3000).catch(() => {}) : Promise.resolve();
+  // Quit again from a FRESH task. Called from this handler's own promise callbacks it can run nested inside the first
+  // quit, whose "prevented" result then cancels it: on macOS the app never exited (Cmd+Q / SIGTERM did nothing).
+  gifts.then(() => ctl.sendFinalStatus(1500)).catch(() => {}).finally(() => setTimeout(() => app.quit(), 0));
+  setTimeout(() => { log('warn', 'quit did not finish in 6 s: exiting'); app.exit(0); }, 6000).unref();
 });
