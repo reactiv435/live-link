@@ -17,7 +17,8 @@ class FakeLink extends EventEmitter {
   setOfflinePoll(ms) { this.offlinePoll = ms; }
   start(u) { if (u === this.username) return; this.username = u; this.starts++; }
   stop() { this.username = null; this._set({ status: 'idle', roomId: null }); }
-  retryNow() {}
+  retryNow() { this.retries = (this.retries || 0) + 1; }
+  wake(fromSleep) { this.wakes = (this.wakes || []).concat(fromSleep); }
   _set(p) { this.state = { ...this.state, ...p }; if (p.roomId && p.roomId !== this.lastRoom) { this.lastRoom = p.roomId; this.emit('roomChanged', p.roomId); } this.emit('state', { ...this.state }); }
   goLive(room = 'R1') { this._set({ status: 'live', roomId: room }); }
   like(count, total) { this.emit('like', { count, total, at: Date.now() }); }
@@ -96,7 +97,7 @@ test('dry run checks everything but credits nothing', async () => {
   const t = await setup({ autoApprove: true, enabled: false });
   await t.ctl.pair('TEST2345');
   assert.strictEqual(t.link.username, null, 'disabled + not dry run -> no TikTok');
-  assert.match(t.ctl.s.message.text, /isn't switched on/);
+  assert.match(t.ctl.s.message.text, /switched on for your channel yet/);
   t.ctl.setDryRun(true);
   assert.strictEqual(t.link.username, 'test_host');
   t.link.goLive('R2');
@@ -289,7 +290,7 @@ test('checklist: test mode and a not-yet-live TikTok show as waiting with a Chec
   await t.done();
 });
 
-test('Disconnect stops watching TikTok and is remembered; Connect resumes and re-baselines', async () => {
+test('Pause stops watching TikTok (not kept across a restart); Resume re-baselines', async () => {
   const t = await setup({ autoApprove: true });
   await t.ctl.pair('TEST2345');
   t.link.goLive('R1');
@@ -300,11 +301,11 @@ test('Disconnect stops watching TikTok and is remembered; Connect resumes and re
   t.ctl.setPaused(true);
   assert.strictEqual(t.link.username, null, 'Disconnect stops the TikTok link');
   assert.strictEqual(t.ctl.s.atom, 'off');
-  assert.strictEqual(t.store.get('paused'), true, 'remembered across restarts');
-  assert.match(t.ctl.s.message.text, /Disconnected/);
+  assert.strictEqual(t.store.get('paused'), undefined, 'not saved: a restart always watches again');
+  assert.match(t.ctl.s.message.text, /^Paused/);
   assert.strictEqual(t.ctl.s.steps.find((r) => r.key === 'live').state, 'off');
   t.ctl.setPaused(false);
-  assert.strictEqual(t.link.username, 'test_host', 'Connect starts watching again');
+  assert.strictEqual(t.link.username, 'test_host', 'Resume starts watching again');
   t.link.goLive('R1');
   t.link.like(500, '900');                 // 380 taps happened while disconnected, then this batch of 500
   assert.ok(await until(() => t.mock.state.pushes.some((p) => p.rebaseline && p.session_total === 400)), 'baselined just before the first fresh batch');
@@ -706,5 +707,233 @@ test('quitting right after a gift sends it first', async () => {
   await t.ctl.flushBeforeQuit(3000);
   assert.strictEqual(t.mock.state.giftTaps, 10000);
   assert.ok(!t.ctl.hasPendingGifts());
+  await t.done();
+});
+
+// ---------------------------------------------------------------- 1.0.5: smooth-running review fixes
+
+test('Pause is never restored after a restart (an older version\'s saved flag is dropped)', async () => {
+  const t = await setup({ autoApprove: true });
+  t.store.set('paused', true);                                        // what 1.0.4 saved
+  const ctl2 = new Controller({ api: t.api, link: t.link, store: t.store, appVersion: '1.0.5', deviceName: 'TEST-PC' });
+  assert.strictEqual(ctl2.s.paused, false);
+  assert.strictEqual(t.store.get('paused'), undefined);
+  ctl2.stop();
+  await t.done();
+});
+
+test('paused: the site is told why, and it resumes by itself when the next show starts', async () => {
+  const t = await setup({ autoApprove: true });
+  await t.ctl.pair('TEST2345');
+  t.link.goLive('R1');
+  const resumed = [];
+  t.ctl.on('autoResumed', () => resumed.push(1));
+  t.ctl.setPaused(true);
+  assert.ok(await until(() => t.mock.state.statuses.some((x) => x.last_error === 'Paused in the app' && x.connected === false)), 'status says "Paused in the app"');
+  t.mock.state.host.site_live = true;
+  await t.ctl._loadConfig();
+  assert.strictEqual(t.ctl.s.paused, true, 'a show that was already on does not resume it');
+  t.mock.state.host.site_live = false;                                // the show ends...
+  await t.ctl._loadConfig();
+  assert.strictEqual(t.ctl.s.paused, true);
+  assert.strictEqual(t.ctl._configEvery(), 15000, 'while paused, the site is checked often for the next show');
+  t.mock.state.host.site_live = true;                                 // ...and the next one starts
+  await t.ctl._loadConfig();
+  assert.strictEqual(t.ctl.s.paused, false);
+  assert.strictEqual(t.link.username, 'test_host', 'watching TikTok again');
+  assert.strictEqual(resumed.length, 1, 'the app shows a pop-up');
+  await t.done();
+});
+
+test('"Check TikTok now" resumes a paused app', async () => {
+  const t = await setup({ autoApprove: true });
+  await t.ctl.pair('TEST2345');
+  t.ctl.setPaused(true);
+  t.ctl.retryNow();
+  assert.strictEqual(t.ctl.s.paused, false);
+  assert.strictEqual(t.link.username, 'test_host');
+  await t.done();
+});
+
+test('the atom is green only while taps fill the bar: gold for test mode, no song, or the show not on', async () => {
+  const t = await setup({ autoApprove: true, target: null });
+  await t.ctl.pair('TEST2345');
+  t.link.goLive('R1');
+  assert.strictEqual(t.ctl.s.atom, 'hold');
+  assert.strictEqual(t.ctl.s.hold, 'song');
+  assert.strictEqual(t.ctl.s.connected, true);
+  assert.match(t.ctl.s.message.text, /Put a song on air/);
+  t.mock.state.target = { submission_id: 'sub-1', title: 'Test Song' };
+  await t.ctl._loadConfig();
+  assert.strictEqual(t.ctl.s.atom, 'live');
+  assert.strictEqual(t.ctl.s.hold, null);
+  t.ctl.setDryRun(true);
+  assert.strictEqual(t.ctl.s.atom, 'hold');
+  assert.strictEqual(t.ctl.s.hold, 'test');
+  t.ctl.setDryRun(false);
+  t.mock.state.host.site_live = false;
+  await t.ctl._loadConfig();
+  assert.strictEqual(t.ctl.s.hold, 'show');
+  assert.match(t.ctl.s.message.text, /Start your show/);
+  t.link._set({ status: 'reconnecting' });
+  assert.strictEqual(t.ctl.s.atom, 'connecting');
+  assert.strictEqual(t.ctl.s.connected, false);
+  await t.done();
+});
+
+test('a dropped LIVE says so ("lost") while it reconnects', async () => {
+  const t = await setup({ autoApprove: true });
+  await t.ctl.pair('TEST2345');
+  t.link.goLive('R1');
+  t.link._set({ status: 'reconnecting' });
+  assert.strictEqual(t.ctl.s.lost, true);
+  assert.match(t.ctl.s.message.text, /^Lost the connection to your LIVE/);
+  t.link._set({ status: 'live' });
+  assert.strictEqual(t.ctl.s.lost, false);
+  await t.done();
+});
+
+test('TikTok trouble with working internet never says "check the internet"; without it, it does', async () => {
+  const t = await setup({ autoApprove: true });
+  await t.ctl.pair('TEST2345');
+  t.link._set({ status: 'error', errorKind: 'timeout', error: 'TikTok did not answer for 90 s' });
+  assert.match(t.ctl.s.message.text, /your internet works/);
+  assert.doesNotMatch(t.ctl.s.message.text, /Check this computer's internet/);
+  assert.match(t.ctl.s.steps.find((r) => r.key === 'live').text, /your internet works/);
+  t.ctl.s.siteError = "Can't reach the site (getaddrinfo ENOTFOUND).";
+  t.ctl._render();
+  assert.match(t.ctl.s.steps.find((r) => r.key === 'live').text, /Check this computer's internet/);
+  await t.done();
+});
+
+test('the site coming back after a network outage makes TikTok try again at once', async () => {
+  const t = await setup({ autoApprove: true });
+  await t.ctl.pair('TEST2345');
+  const before = t.link.retries || 0;
+  t.ctl._handleApiError(new ApiError(0, 'network', "Can't reach the site (ENOTFOUND)."), 'config');
+  await t.ctl._loadConfig();
+  assert.strictEqual(t.link.retries, before + 1);
+  await t.ctl._loadConfig();
+  assert.strictEqual(t.link.retries, before + 1, 'only once per outage');
+  await t.done();
+});
+
+test('a push the site keeps failing on (5xx) while the rest of the site answers is resent without its events', async () => {
+  const t = await setup({ autoApprove: true }, { retryStepsMs: [40, 40, 40, 40, 40] });
+  await t.ctl.pair('TEST2345');
+  t.link.goLive('R1');
+  t.link.like(10, '110');
+  assert.ok(await until(() => t.mock.state.pushes.length === 1));    // baseline 100
+  t.mock.state.failWhen = (p, body) => p === 'live-link-push' && body.events && body.events.length > 0;
+  t.link.like(40, '150');
+  assert.ok(await until(() => t.mock.state.credited === 50, 5000), `credited ${t.mock.state.credited}`);
+  assert.ok(t.logs.some((l) => /resending without its events/.test(l)), 'logged');
+  t.mock.state.failWhen = null;
+  t.link.like(5, '155');
+  assert.ok(await until(() => t.mock.state.credited === 55, 3000), 'taps keep flowing afterwards');
+  await t.done();
+});
+
+test('while the WHOLE site fails, a push is only retried (never peeled)', async () => {
+  const t = await setup({ autoApprove: true }, { retryStepsMs: [40, 40, 40, 40, 40] });
+  await t.ctl.pair('TEST2345');
+  t.link.goLive('R1');
+  t.link.like(10, '110');
+  assert.ok(await until(() => t.mock.state.pushes.length === 1));
+  t.mock.state.failWhen = () => true;
+  t.link.like(40, '150');
+  await wait(800);
+  assert.ok(!t.logs.some((l) => /resending without/.test(l)), 'not treated as a poison batch');
+  t.mock.state.failWhen = null;
+  assert.ok(await until(() => t.mock.state.credited === 50, 4000), `credited ${t.mock.state.credited}`);
+  await t.done();
+});
+
+test('quitting tells the site this computer stopped watching, and nothing goes out after it', async () => {
+  const t = await setup({ autoApprove: true });
+  await t.ctl.pair('TEST2345');
+  t.link.goLive('R1');
+  assert.ok(await t.ctl.sendFinalStatus(1500));
+  const last = t.mock.state.statuses.at(-1);
+  assert.strictEqual(last.connected, false);
+  assert.match(last.last_error, /closed/);
+  const n = t.mock.state.calls.length;
+  t.link.like(10, '110');
+  await wait(400);
+  assert.strictEqual(t.mock.state.calls.length, n);
+  await t.mock.close();
+});
+
+test('waking from sleep looks at TikTok and the site right away; a paused app stays paused', async () => {
+  const t = await setup({ autoApprove: true });
+  await t.ctl.pair('TEST2345');
+  const configs = () => t.mock.state.calls.filter((c) => c.path.startsWith('live-link-config')).length;
+  const c0 = configs();
+  t.ctl.wake(true);
+  assert.deepStrictEqual(t.link.wakes, [true]);
+  assert.ok(await until(() => configs() === c0 + 1));
+  t.ctl.setPaused(true);
+  t.ctl.wake(false);
+  assert.deepStrictEqual(t.link.wakes, [true], 'a paused app does not touch TikTok');
+  await t.done();
+});
+
+test('a saved sign-in the OS refuses to open (Mac Keychain "Deny") is never wiped; Retry opens it once allowed', async () => {
+  const mock = createMock({ pushIntervalMs: 60, autoApprove: true });
+  const port = await mock.listen(0);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'livelink-'));
+  let allow = true;
+  const cipher = { available: () => true, encrypt: (s) => Buffer.from('enc:' + s), decrypt: (b) => { if (!allow) throw new Error('denied'); return b.toString().slice(4); } };
+  const s1 = new Store({ dir, cipher, allowPlain: false });
+  const api1 = new LiveLinkApi({ baseUrl: `http://127.0.0.1:${port}/functions/v1/`, getToken: () => s1.getToken() });
+  const c1 = new Controller({ api: api1, link: new FakeLink(), store: s1, appVersion: '1.0.5', deviceName: 'MAC' });
+  await c1.pair('TEST2345');
+  c1.stop();
+  allow = false;                                                      // the next launch: Keychain says no
+  const s2 = new Store({ dir, cipher, allowPlain: false });
+  const link = new FakeLink();
+  const api2 = new LiveLinkApi({ baseUrl: `http://127.0.0.1:${port}/functions/v1/`, getToken: () => s2.getToken() });
+  const c2 = new Controller({ api: api2, link, store: s2, appVersion: '1.0.5', deviceName: 'MAC', platform: 'darwin' });
+  await c2.start();
+  assert.strictEqual(c2.s.phase, 'locked');
+  assert.match(c2.s.message.text, /Always Allow/);
+  assert.ok(JSON.parse(fs.readFileSync(path.join(dir, 'settings.json'), 'utf8')).tokenEnc, 'the saved sign-in is kept');
+  c2.retryNow();                                                      // still denied
+  assert.strictEqual(c2.s.phase, 'locked');
+  allow = true;
+  c2.retryNow();
+  assert.ok(await until(() => c2.s.phase === 'ready'), `phase ${c2.s.phase}`);
+  assert.strictEqual(link.username, 'test_host');
+  c2.stop();
+  await mock.close();
+});
+
+test('a packaged app never writes the sign-in token in clear text', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'livelink-'));
+  const s = new Store({ dir, cipher: { available: () => false }, allowPlain: false });
+  s.setToken('secret-token');
+  assert.strictEqual(s.getToken(), 'secret-token', 'kept in memory for this run');
+  const saved = JSON.parse(fs.readFileSync(path.join(dir, 'settings.json'), 'utf8'));
+  assert.ok(!('tokenPlain' in saved) && !('tokenEnc' in saved));
+  // an old clear-text token moves into the OS store once one exists
+  fs.writeFileSync(path.join(dir, 'settings.json'), JSON.stringify({ tokenPlain: 'old-token' }));
+  const s2 = new Store({ dir, cipher: { available: () => true, encrypt: (x) => Buffer.from('enc:' + x), decrypt: (b) => b.toString().slice(4) }, allowPlain: false });
+  assert.strictEqual(s2.getToken(), 'old-token');
+  const moved = JSON.parse(fs.readFileSync(path.join(dir, 'settings.json'), 'utf8'));
+  assert.ok(moved.tokenEnc && !moved.tokenPlain);
+});
+
+test('after a 413 the gift batch size grows back once pushes are clean again', async () => {
+  const t = await setup({ autoApprove: true });
+  await t.ctl.pair('TEST2345');
+  t.link.goLive('R1');
+  t.link.like(10, '110');
+  assert.ok(await until(() => t.mock.state.pushes.length === 1));
+  t.ctl.giftsPerPush = 5;
+  for (let i = 0; i < 12; i++) {
+    t.link.emit('gift', gift(`m:84000000${String(i).padStart(2, '0')}`, 1));
+    assert.ok(await until(() => t.mock.state.pushes.filter((p) => p.gifts).length === i + 1, 3000), `gift push ${i}`);
+  }
+  assert.strictEqual(t.ctl.giftsPerPush, 10);
   await t.done();
 });

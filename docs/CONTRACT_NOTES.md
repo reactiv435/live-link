@@ -66,3 +66,15 @@ The `live-link` bucket is PRIVATE (the project blocks public buckets), files liv
     the site builds `latest` from `latest-mac.json` (bucket root):
     `{ version, file: "<v>/LIVE-Link-<v>-mac.dmg", sha256, size, zip_file, zip_sha256, zip_size, released_at }`.
     `latest.json` stays Windows-only for installed Windows apps. Mac builds come from `.github/workflows/mac.yml`.
+
+## 1.0.5: smooth-running review (2026-10-08)
+15. **Status while paused / on quit.** While the host has LIVE Link paused, status (and the status inside pushes) carries
+    `connected: false` and `last_error: "Paused in the app"`; the dashboard and the Go Live check show it as paused,
+    not broken. Quitting sends one last status `{ connected: false, tiktok_live: false, last_error:
+    "LIVE Link was closed on this computer", tiktok_room_id: null, session_total: null }` (best effort, 1.5 s).
+    Pause is not kept across a restart, and it ends by itself when `site_live` goes from false to true.
+16. **Poison batches.** A push that gets a 5xx three times while config/status calls succeed is resent with a new
+    `batch_id`: first without `events`, then without `gifts` (logged as dropped), then the app re-baselines
+    (`rebaseline: true`). While the whole site fails, pushes are only retried with the same `batch_id`.
+17. **Gift queue.** Up to 20,000 queued gift items (one per combo) are held through an outage; beyond that the oldest
+    are dropped and logged. Off-air gifts: the site answers them as a thank-you only (no hype); the app needs no change.

@@ -39,6 +39,8 @@ function createMock(opts = {}) {
       st.calls.push({ path, body });
       const fi = st.failNext.findIndex((f) => f.path === path);
       if (fi >= 0) { const f = st.failNext.splice(fi, 1)[0]; return err(res, f.status, f.error || 'server_error', 'injected', f.extra || {}); }
+      // A persistent server error for some requests only (a "poison" batch the site keeps choking on).
+      if (st.failWhen && st.failWhen(path, body)) return err(res, 500, 'server_error', 'injected (failWhen)');
 
       if (path === 'live-link-pair') {
         const c = st.codes.get(String(body.code || ''));

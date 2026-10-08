@@ -2,8 +2,10 @@
 # Trigger: push a tag like v1.0.4 (a tag with a suffix, e.g. v1.0.4-ci1, makes a pre-release for testing),
 # or run it by hand from the Actions tab (files are then kept as a build artifact, no release).
 #
-# Unsigned (no Apple Developer ID yet): the app is signed ad-hoc ("-"), which Apple Silicon requires before it will run
-# anything, and hosts click "Open Anyway" once in System Settings > Privacy & Security.
+# No Apple Developer ID yet, so hosts click "Open Anyway" once in System Settings > Privacy & Security. The app is signed
+# with ONE stable self-signed certificate (repo secrets MAC_CERT_P12 + MAC_CERT_PASSWORD, see docs/MAC_SIGNING.md): macOS
+# Keychain then keeps trusting each new version, so the saved sign-in survives updates. Without those secrets the build
+# uses a throwaway certificate (works, but the Keychain asks again after every update) and says so in a build warning.
 name: Mac build
 
 on:
@@ -45,11 +47,48 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
-      - name: Ad-hoc sign and verify
+      - name: Signing identity (the stable certificate from the repo secrets, or a throwaway one)
+        env:
+          MAC_CERT_P12: ${{ secrets.MAC_CERT_P12 }}
+          MAC_CERT_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
+        run: |
+          KC="$RUNNER_TEMP/signing.keychain-db"
+          KCPASS="$(openssl rand -hex 16)"
+          security create-keychain -p "$KCPASS" "$KC"
+          security set-keychain-settings -lut 21600 "$KC"
+          security unlock-keychain -p "$KCPASS" "$KC"
+          if [ -n "$MAC_CERT_P12" ] && [ -n "$MAC_CERT_PASSWORD" ]; then
+            printf '%s' "$MAC_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+            P12PASS="$MAC_CERT_PASSWORD"
+            echo "::notice title=Signing::the stable LIVE Link certificate (Keychain access survives updates)"
+          else
+            P12PASS="$(openssl rand -hex 16)"
+            printf '%s\n' '[req]' 'distinguished_name=dn' 'x509_extensions=ext' 'prompt=no' '[dn]' 'CN=LIVE Link throwaway build certificate' \
+              '[ext]' 'basicConstraints=critical,CA:FALSE' 'keyUsage=critical,digitalSignature' 'extendedKeyUsage=critical,codeSigning' > "$RUNNER_TEMP/req.cnf"
+            /usr/bin/openssl req -x509 -newkey rsa:2048 -nodes -days 30 -config "$RUNNER_TEMP/req.cnf" -keyout "$RUNNER_TEMP/k.pem" -out "$RUNNER_TEMP/c.pem"
+            /usr/bin/openssl pkcs12 -export -inkey "$RUNNER_TEMP/k.pem" -in "$RUNNER_TEMP/c.pem" -name "LIVE Link throwaway" -passout "pass:$P12PASS" -out "$RUNNER_TEMP/cert.p12"
+            rm -f "$RUNNER_TEMP/k.pem"
+            echo "::warning title=Signing::no MAC_CERT_P12 secret: signed with a throwaway certificate, so Mac hosts get a Keychain prompt after this update (see docs/MAC_SIGNING.md)"
+          fi
+          security import "$RUNNER_TEMP/cert.p12" -k "$KC" -P "$P12PASS" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KCPASS" "$KC" > /dev/null
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+          HASH="$(security find-certificate -a -Z "$KC" | awk '/SHA-1 hash/{print $NF; exit}')"
+          test -n "$HASH"
+          echo "certificate SHA-1 $HASH"
+          echo "SIGN_ID=$HASH" >> "$GITHUB_ENV"
+          echo "SIGN_KC=$KC" >> "$GITHUB_ENV"
+
+      - name: Sign and verify
         run: |
           APP="$(ls -d dist/mac-universal/*.app | head -1)"
-          codesign --force --deep --sign - "$APP"
+          codesign --force --deep --sign "$SIGN_ID" --keychain "$SIGN_KC" "$APP"
           codesign --verify --deep --strict --verbose=2 "$APP"
+          # The designated requirement is what the Keychain trusts: it must name the certificate, not this build's hash.
+          DR="$(codesign -d -r- "$APP" 2>&1 | grep -E '^designated' || true)"
+          echo "::notice title=Designated requirement::$DR"
+          echo "$DR" | grep -q 'certificate'
           EXE="$(find "$APP/Contents/MacOS" -type f -perm +111 | head -1)"
           echo "Architectures: $(lipo -archs "$EXE")"
           lipo -archs "$EXE" | grep -q x86_64

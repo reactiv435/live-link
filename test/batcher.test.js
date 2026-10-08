@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert');
-const { LikeBatcher } = require('../src/core/batcher');
+const { LikeBatcher, MAX_QUEUED_GIFTS } = require('../src/core/batcher');
 
 test('first push reports the total from before our first batch, then the real total', () => {
   const b = new LikeBatcher('room1');
@@ -127,4 +127,15 @@ test('frames of one combo still waiting to be sent merge into one item with the 
   b.addGift(item(3));   // a stale lower frame never lowers it
   assert.strictEqual(b.gifts.length, 1);
   assert.strictEqual(b.gifts[0].count, 5);
+});
+
+test('the gift queue holds up to 20,000 items through a long outage, then drops the oldest and counts them', () => {
+  const b = new LikeBatcher('R1');
+  for (let i = 0; i < MAX_QUEUED_GIFTS + 5; i++) b.addGift({ key: 'm:' + String(i).padStart(10, '0'), count: 1 });
+  assert.strictEqual(b.gifts.length, MAX_QUEUED_GIFTS);
+  assert.strictEqual(b.droppedGifts, 5);
+  assert.strictEqual(b.gifts[0].key, 'm:0000000005', 'the oldest went first');
+  b.addGift({ key: 'm:' + String(MAX_QUEUED_GIFTS + 4).padStart(10, '0'), count: 3 });   // a newer frame of a queued combo merges
+  assert.strictEqual(b.gifts.length, MAX_QUEUED_GIFTS);
+  assert.strictEqual(b.gifts.at(-1).count, 3);
 });

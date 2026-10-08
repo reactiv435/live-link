@@ -215,3 +215,111 @@ test('gifts with a real group id: a late lower frame is stale, never a new combo
   c.emit('gift', giftFrame({ type: 0, combo: false, coins: 60000, msgId: '99999999' }));   // out of range: skipped
   assert.strictEqual(got.length, 5);
 });
+
+// ---------------------------------------------------------------- 1.0.5
+
+function clockLink(scenario) {
+  const f = fakeLib(scenario);
+  const T = timers();
+  const clock = { t: 1000 };
+  const link = new TikTokLink({ lib: f.lib, ...T, mono: () => clock.t, now: () => clock.t });
+  return { f, T, clock, link, fire: () => { const h = T.list.at(-1); T.list = []; h.fn(); return h.ms; } };
+}
+
+test('an ended LIVE that TikTok hands out again is "not live" until real LIVE data arrives; each repeat waits longer', async () => {
+  const { f, T, clock, link, fire } = clockLink(['live', 'live', 'live', 'live']);
+  link.setOfflinePoll(30000);
+  const states = [];
+  link.on('state', (st) => states.push(st.status));
+  link.start('host');
+  await tick(); await tick();
+  assert.strictEqual(link.state.status, 'live');
+  f.made[0].emit('streamEnd', { action: 3 });
+  f.made[0].emit('disconnected');
+  assert.strictEqual(link.state.status, 'offline');
+  assert.strictEqual(fire(), 30000);
+  await tick(); await tick();                                         // TikTok offers room R1 again
+  assert.strictEqual(link.state.status, 'connecting', 'not reported as LIVE');
+  clock.t += 21000; link._tick();                                     // no LIVE data within 20 s
+  assert.strictEqual(link.state.status, 'offline');
+  assert.strictEqual(T.list.at(-1).ms, 60000, 'checks again in 2x the offline interval');
+  fire(); await tick(); await tick();
+  f.made[2].emit('disconnected');                                     // closes again
+  assert.strictEqual(link.state.status, 'offline');
+  assert.strictEqual(T.list.at(-1).ms, 120000, '4x');
+  fire(); await tick(); await tick();
+  assert.strictEqual(link.state.status, 'connecting');
+  f.made[3].emit('roomUser', { viewerCount: 12 });                    // real LIVE data: it is back
+  assert.strictEqual(link.state.status, 'live');
+  assert.strictEqual(link.state.roomId, 'R1');
+  assert.strictEqual(states.filter((s, i) => s === 'live' && states[i - 1] !== 'live').length, 2, 'only the real LIVE moments were "live"');
+  link.stop();
+});
+
+test('a room that drops right after connecting backs off (up to 40 s); a minute up resets the backoff', async () => {
+  const { f, clock, link, fire } = clockLink(['live', 'live', 'live', 'live', 'live', 'live']);
+  link.start('host');
+  const waits = [];
+  for (let i = 0; i < 4; i++) {
+    await tick(); await tick();
+    f.made[i].emit('disconnected');
+    waits.push(fire());
+  }
+  assert.deepStrictEqual(waits, [10000, 20000, 40000, 40000]);
+  await tick(); await tick();
+  clock.t += 61000; link._tick();                                    // up for a minute: healthy
+  f.made[4].emit('disconnected');
+  assert.strictEqual(fire(), 10000);
+  link.stop();
+});
+
+test('a hung connect is given up after 90 s, and the message no longer blames the internet', async () => {
+  const { clock, link } = clockLink(['hang']);
+  link.start('host');
+  await tick();
+  clock.t += 60000; link._tick();
+  assert.strictEqual(link.state.status, 'connecting', 'still waiting at 60 s');
+  clock.t += 31000; link._tick();
+  assert.strictEqual(link.state.status, 'error');
+  assert.strictEqual(link.state.errorKind, 'timeout');
+  assert.doesNotMatch(link.state.error, /internet/);
+  link.stop();
+});
+
+test('TikTok calls get one retry each (they used to retry twice and outlast the connect cutoff)', async () => {
+  const { f, link } = clockLink(['live']);
+  link.start('host');
+  await tick();
+  assert.deepStrictEqual(f.made[0].opts.webClientOptions, { retry: { limit: 1 } });
+  link.stop();
+});
+
+test('waking from sleep reconnects at once, but never inside a rate-limit wait', async () => {
+  const { f, link } = clockLink(['offline', 'live', 'ratelimit']);
+  link.start('host');
+  await tick();
+  assert.strictEqual(link.state.status, 'offline');
+  link.wake(true);
+  await tick(); await tick();
+  assert.strictEqual(f.made.length, 2);
+  assert.strictEqual(link.state.status, 'live');
+  link.wake(false);                                                   // unlock with a healthy socket: left alone
+  assert.strictEqual(f.made.length, 2);
+  link.wake(true);                                                    // after sleep the socket is suspect
+  await tick();
+  assert.strictEqual(f.made.length, 3);
+  assert.strictEqual(link.state.errorKind, 'rate-limit');
+  link.wake(true);
+  assert.strictEqual(f.made.length, 3, 'the rate-limit wait is honoured');
+  link.stop();
+});
+
+test('the silent-socket reconnect works in the first 5 minutes after start too', async () => {
+  const { f, clock, link } = clockLink(['live', 'live']);
+  clock.t = 5000;                                                     // the steady clock starts near 0 at launch
+  link.start('host');
+  await tick(); await tick();
+  clock.t += 121000; link._tick();
+  assert.strictEqual(f.made.length, 2, 'reconnected once');
+  link.stop();
+});

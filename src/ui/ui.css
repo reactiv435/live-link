@@ -31,7 +31,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .glass { background: var(--glass); border: 1px solid var(--glass-line); border-radius: 14px; backdrop-filter: blur(10px); }
 
 /* status hero */
-.hero { padding: 18px 18px 16px; }
+.hero { padding: 14px 18px 14px; }
 .pill { display: inline-flex; align-items: center; gap: 8px; font: 700 11px/1 var(--font); letter-spacing: .18em; padding: 7px 11px 7px 9px; border-radius: 999px; border: 1px solid var(--line2); color: var(--muted); }
 .pill i { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); }
 .pill.ok { color: #fff; border-color: rgba(224,38,63,.6); background: rgba(224,38,63,.12); }
@@ -42,7 +42,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .pill.error i { background: var(--crimson-deep); }
 .pill.setup i { background: #d9d9d9; }
 @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(224,38,63,.55); } 70% { box-shadow: 0 0 0 9px rgba(224,38,63,0); } 100% { box-shadow: 0 0 0 0 rgba(224,38,63,0); } }
-.msg { margin: 12px 0 0; font-size: 17px; line-height: 1.38; font-weight: 500; text-wrap: pretty; }
+.msg { margin: 10px 0 0; font-size: 16px; line-height: 1.38; font-weight: 500; text-wrap: pretty; }
 .who { margin: 8px 0 0; color: var(--muted); font-size: 12.5px; min-height: 18px; }
 
 .tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
@@ -110,7 +110,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
 /* animated atom status: red = not connected to the TikTok LIVE, green = connected */
 .hero { text-align: center; }
 .atom-wrap { display: flex; flex-direction: column; align-items: center; gap: 6px; margin: 2px 0 4px; }
-.atom { width: 150px; height: 150px; --atom: #e0263f; --atom-hi: #ff8a99; --atom-lo: #8d0f22; overflow: visible; }
+.atom { width: 112px; height: 112px; --atom: #e0263f; --atom-hi: #ff8a99; --atom-lo: #8d0f22; overflow: visible; }
 .atom.live { --atom: #22e07a; --atom-hi: #b8ffd6; --atom-lo: #0b7a3c; }
 .atom .orbits { opacity: .75; }
 .atom .core-hi { stop-color: var(--atom-hi); } .atom .core-mid { stop-color: var(--atom); } .atom .core-lo { stop-color: var(--atom-lo); }
@@ -146,3 +146,26 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .gift-list li { display: flex; justify-content: space-between; gap: 8px; padding: 4px 0; font-size: 13px; border-top: 1px solid rgba(255,255,255,.06); }
 .gift-list li:first-child { border-top: 0; }
 .gift-list li span:last-child { color: #ffd166; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* 1.0.5: truthful atom (gold = connected, nothing added yet), grey pause, song on air, next step, fold, a11y */
+.atom.hold { --atom: #ffc94d; --atom-hi: #fff0bf; --atom-lo: #8f6200; }
+.atom.paused { --atom: #8a8a8a; --atom-hi: #d6d6d6; --atom-lo: #3d3d3d; }
+.atom-label.hold { color: #ffd166; }
+.atom-label.paused { color: #bdbdbd; }
+.hero-song { margin: 8px auto 0; max-width: 100%; font: 600 13.5px/1.3 var(--font); color: #e8e8e8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hero-song b { color: var(--muted); font-weight: 600; letter-spacing: .12em; font-size: 10.5px; text-transform: uppercase; margin-right: 6px; }
+.conn.paused-btn { background: linear-gradient(180deg, #2ee88a, #13a457); border: 0; color: #fff; }
+.conn.next { background: linear-gradient(180deg, #ee3550, var(--crimson-deep)); border: 0; color: #fff; }
+.conn.quiet { background: transparent; border: 1px solid var(--line2); color: #d6d6d6; }
+.steps-summary { display: flex; align-items: center; gap: 10px; width: 100%; border: 0; background: none; padding: 10px 0; text-align: left; font-size: 13.5px; }
+.steps-summary .ok-dot { width: 18px; height: 18px; border-radius: 50%; background: #16c46a; color: #04130a; display: grid; place-items: center; font: 700 11px/1 var(--font); flex: none; }
+.steps-summary .more { margin-left: auto; color: var(--muted); font-size: 12px; text-decoration: underline; text-underline-offset: 3px; }
+.steps-card.collapsed .checklist { display: none; }
+.banner .note-live { color: var(--muted); font-size: 12px; white-space: nowrap; }
+/* keyboard focus is always visible; status text can be selected and copied for support */
+:focus-visible { outline: 2px solid #ff8b9a; outline-offset: 2px; }
+button:focus:not(:focus-visible) { outline: none; }
+.msg, .who, .hero-song, .checklist .txt, .last span, .gift-list li, .banner span { user-select: text; }
+#status.setup .hero { order: -2; }
+#status.setup .steps-card { order: -1; }
+.live-meta.hold { color: #ffe7a6; }

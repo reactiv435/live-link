@@ -11,6 +11,9 @@ const MAX_COUNT = 500;
 const STALE_MS = 9000;          // a little inside the server's 10 s window
 const MAX_GIFTS = 50;           // gift frames per push (contract limit)
 const MAX_GIFT_CHARS = 9000;    // keep a push's gifts well under the site's request-size cap (16 KB today)
+// Gifts held while the site can't be reached. One item per combo (frames merge), so this covers a very long outage
+// of a busy LIVE; past it the oldest go first and the controller logs how many.
+const MAX_QUEUED_GIFTS = 20000;
 
 // A usable room total. tiktok-live-proto v3 DEFAULTS `total` to "0" when the wire omits it, so 0 (or anything
 // smaller than the batch itself) means "no total in this message", never "the room has 0 likes".
@@ -46,15 +49,23 @@ class LikeBatcher {
     this.gen = 0;               // bumps on every new baseline request, so a push already in flight can't cancel it
     this.sessionTaps = 0;       // taps seen since we joined this room (for the UI)
     this.gifts = [];            // gift frames waiting to be sent (contract shape); kept through stale marks: they were seen
+    this.droppedGifts = 0;      // gifts pushed out of a full queue (the controller logs them)
   }
 
   // The site only needs each combo's latest running count, so frames of a combo still waiting to be sent merge into
-  // one item. A busy room then queues one item per combo, not one per tap of the gift button.
+  // one item. A busy room then queues one item per combo, not one per tap of the gift button. Only the newest items
+  // are searched (a running combo is always near the end); a miss just queues one more item, which the site merges.
   addGift(g) {
-    const q = this.gifts.find((x) => x.key === g.key);
-    if (q) { if (g.count > q.count) { q.count = g.count; q.at = g.at; } return; }
+    for (let i = this.gifts.length - 1, n = 0; i >= 0 && n < 300; i--, n++) {
+      const q = this.gifts[i];
+      if (q.key === g.key) { if (g.count > q.count) { q.count = g.count; q.at = g.at; } return; }
+    }
     this.gifts.push(g);
-    if (this.gifts.length > 2000) this.gifts.splice(0, this.gifts.length - 2000);
+    if (this.gifts.length > MAX_QUEUED_GIFTS) {
+      const n = this.gifts.length - MAX_QUEUED_GIFTS;
+      this.gifts.splice(0, n);
+      this.droppedGifts += n;
+    }
   }
   takeGifts(max = MAX_GIFTS, maxChars = MAX_GIFT_CHARS) { return takeGiftChunk(this.gifts, max, maxChars); }
   restoreGifts(list) { if (list && list.length) this.gifts.unshift(...list); }
@@ -129,4 +140,4 @@ class LikeBatcher {
   }
 }
 
-module.exports = { LikeBatcher, usableTotal, takeGiftChunk, MAX_EVENTS, MAX_COUNT, STALE_MS, MAX_GIFTS, MAX_GIFT_CHARS };
+module.exports = { LikeBatcher, usableTotal, takeGiftChunk, MAX_EVENTS, MAX_COUNT, STALE_MS, MAX_GIFTS, MAX_GIFT_CHARS, MAX_QUEUED_GIFTS };

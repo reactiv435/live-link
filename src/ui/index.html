@@ -33,14 +33,14 @@
     </button>
   </header>
 
-  <div class="banner hidden" id="update-banner"><span id="update-text">A new version is ready.</span><button class="link" data-open="update">Download</button></div>
-  <div class="banner test hidden" id="test-banner">Test mode is on: taps are checked but nothing is added to the bar.</div>
+  <div class="banner hidden" id="update-banner" role="status"><span id="update-text">A new version is ready.</span><button class="link" id="update-btn" data-open="update">Download</button></div>
+  <div class="banner test hidden" id="test-banner" role="status">Test mode is on: taps are checked but nothing is added to the bar. Turn it off in Settings before your show.</div>
 
   <!-- PAIR -->
   <main id="pair" class="screen hidden">
     <h1>Connect this computer</h1>
     <ol class="steps">
-      <li>On your host dashboard, open the <b>LIVE Link</b> tab and click <b>Get a pair code</b> (under Connect a PC).</li>
+      <li>On your host dashboard, open the <b>LIVE Link</b> tab and click <b>Get a pair code</b> (under Connect a computer).</li>
       <li>Type the 8-character code it shows.</li>
       <li>Click <b>Approve</b> on the dashboard when it asks.</li>
     </ol>
@@ -79,17 +79,19 @@
         <div class="atom-label" id="atom-label">NOT CONNECTED</div>
         <div class="live-meta hidden" id="live-meta"></div>
       </div>
-      <p class="msg" id="msg">Starting...</p>
+      <p class="hero-song hidden" id="hero-song"></p>
+      <p class="msg" id="msg" aria-live="polite">Starting...</p>
       <p class="who" id="who"></p>
-      <button class="conn" id="conn-btn" type="button">Disconnect</button>
+      <button class="conn" id="conn-btn" type="button">Pause</button>
+    </section>
+    <section class="tiles" aria-label="This LIVE">
+      <div class="tile glass"><small>Taps</small><b id="t-session">0</b><span class="tile-sub">this LIVE</span></div>
+      <div class="tile glass"><small>On the bar</small><b id="t-sent">0</b><span class="tile-sub">taps added</span></div>
+      <div class="tile glass gifts-tile"><small>Gifts</small><b id="t-gifts">0</b><span id="t-gifts-sub" class="tile-sub">coins</span></div>
     </section>
     <section class="steps-card glass" aria-label="Setup and status">
+      <button class="steps-summary hidden" id="steps-summary" type="button" aria-expanded="false"><span class="ok-dot" aria-hidden="true">&#10003;</span><span id="steps-summary-text">All set</span><span class="more">Show checklist</span></button>
       <ol id="steps" class="checklist"></ol>
-    </section>
-    <section class="tiles">
-      <div class="tile glass"><small>Taps this LIVE</small><b id="t-session">0</b></div>
-      <div class="tile glass"><small>Sent to the bar</small><b id="t-sent">0</b></div>
-      <div class="tile glass gifts-tile"><small>Gifts this LIVE</small><b id="t-gifts">0</b><span id="t-gifts-sub" class="tile-sub">coins</span></div>
     </section>
     <section class="gift-list glass hidden" id="gift-list"><small>Recent gifts</small><ol id="gift-items"></ol></section>
     <section class="now glass"><small>Hype bar song</small><span id="t-song">No song playing yet</span></section>
@@ -110,13 +112,13 @@
     <div class="drawer-head"><h2>Settings</h2><button class="icon-btn" id="close-settings" aria-label="Close">&times;</button></div>
     <label class="row"><span id="s-autostart-label">Start with Windows<small>Runs quietly in the tray after you sign in to Windows.</small></span><input type="checkbox" id="s-autostart"></label>
     <label class="row"><span>Pop-up notifications<small>When it connects to your LIVE, loses it, and when your LIVE ends.</small></span><input type="checkbox" id="s-notify"></label>
-    <label class="row"><span>Test mode<small>Checks everything with the site but adds nothing to the bar.</small></span><input type="checkbox" id="s-dry"></label>
+    <label class="row"><span>Test mode<small>Checks everything with the site but adds nothing to the bar. Use it for a test show; turn it off before a real one.</small></span><input type="checkbox" id="s-dry"></label>
     <div class="row static"><span>This computer<small id="s-device">-</small></span></div>
     <div class="row static"><span>Version<small id="s-version">-</small></span></div>
     <p class="note hidden" id="s-testserver"></p>
     <div class="drawer-actions">
       <button class="ghost" data-open="logs">Open log folder</button>
-      <button class="ghost danger" id="unpair">Disconnect this computer</button>
+      <button class="ghost danger" id="unpair">Remove this computer from my account</button>
     </div>
     <p class="legal">LIVE Link is free software under the GNU AGPL-3.0. It uses the open-source <i>tiktok-live-connector</i> library. <button class="link" data-open="source">Source code</button> <button class="link" data-open="license">License</button></p>
   </aside>

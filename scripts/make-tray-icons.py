@@ -1,4 +1,5 @@
-"""make-tray-icons.py -> tray icons: green nucleus = connected to the TikTok LIVE, red = not.
+"""make-tray-icons.py -> tray icons: green = filling the hype bar, gold = connected to the TikTok LIVE but nothing is
+added yet (show not on / no song / test mode), grey = paused by the host, red = not watching.
 
 Windows tray: build/tray-live.png / tray-off.png (32 px).
 Mac menu bar: build/trayMac-live.png (18 px) + trayMac-live@2x.png (36 px), same for -off; Electron picks the @2x
@@ -24,7 +25,7 @@ def render(color):
     img = mk.dot(img, mk.C, mk.C, 240, color)      # bigger nucleus so the colour reads at 16 px
     return img
 
-for kind, color in (('live', (34, 224, 122)), ('off', (224, 38, 63))):
+for kind, color in (('live', (34, 224, 122)), ('hold', (255, 201, 77)), ('paused', (150, 150, 150)), ('off', (224, 38, 63))):
     big = render(color)
     for name, size in ((f'tray-{kind}.png', 32), (f'trayMac-{kind}.png', 18), (f'trayMac-{kind}@2x.png', 36)):
         big.resize((size, size), Image.LANCZOS).save(os.path.join(mk.OUT, name))

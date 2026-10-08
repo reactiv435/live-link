@@ -13,10 +13,14 @@
 // Why these numbers (ported from tos crew live/server.js):
 //   * a LIVE room that dropped: retry after 10 s;
 //   * the room is not LIVE yet: check every offlinePollMs (30 s while the host's show is on, slower otherwise);
-//   * other failures: back off 10 -> 20 -> 40 -> 80 -> 120 s, reset once connected or once TikTok says "not live";
+//   * other failures: back off 10 -> 20 -> 40 -> 80 -> 120 s, reset after a minute connected or once TikTok says
+//     "not live" (a room that connects and drops at once keeps backing off, up to 40 s);
 //   * a rate-limit answer is honoured: never retry before its retry-after (at least 60 s, at most 30 min);
-//   * a connect that hangs is abandoned after 45 s; an open socket with no data for 120 s is reconnected once,
-//     then left alone for 5 min so a quiet room can't spin into a reconnect loop.
+//   * a connect that hangs is abandoned after 90 s (the sign server gets 20 s, TikTok's own calls one retry each);
+//     an open socket with no data for 120 s is reconnected once, then left alone for 5 min so a quiet room can't
+//     spin into a reconnect loop;
+//   * TikTok keeps handing out a LIVE's room for a while after it ended: reconnecting to that same room within 15 min
+//     only counts as LIVE once real LIVE data arrives; otherwise it is "not live", checked less and less often.
 const EventEmitter = require('events');
 const crypto = require('crypto');
 const { usableTotal } = require('./batcher');
@@ -39,14 +43,23 @@ function clip(str, n) {
 const RETRY_BACKOFF_MS = [10000, 20000, 40000, 80000, 120000];
 const RATE_LIMIT_MIN_MS = 60000;
 const RATE_LIMIT_MAX_MS = 30 * 60000;
-const CONNECTING_TIMEOUT_MS = 45000;
+const CONNECTING_TIMEOUT_MS = 90000;
 const SILENT_SOCKET_MS = 120000;
 const FORCED_RECONNECT_GAP_MS = 300000;
 const WATCHDOG_EVERY_MS = 5000;
+const STABLE_MS = 60000;               // connected this long = healthy: the error backoff starts over
+const UNSTABLE_DROP_MAX_MS = 40000;    // a room that keeps dropping right after connecting: back off, but not for long
+const ENDED_ROOM_MS = 15 * 60000;      // how long TikTok may still offer a LIVE's room after it ended
+const PROBATION_MS = 20000;            // an ended room has this long to show real LIVE data
+const OFFLINE_POLL_MAX_MS = 300000;
 
 function loadConnector() {
   // Lazy so tests can inject a fake without loading the real library.
-  return require('tiktok-live-connector');
+  const L = require('tiktok-live-connector');
+  // The sign-server call has no timeout of its own: a stuck one used to hold the whole connect until our cutoff.
+  // Set before the first connection creates (and caches) its client.
+  try { if (L.SignConfig && L.SignConfig.baseOptions && !L.SignConfig.cachedInstance) L.SignConfig.baseOptions.timeout = 20000; } catch {}
+  return L;
 }
 
 class TikTokLink extends EventEmitter {
@@ -69,7 +82,11 @@ class TikTokLink extends EventEmitter {
     this.reconnectTimer = null;
     this.connectStartedAt = 0;
     this.lastFrameAt = 0;
-    this.lastForcedReconnectAt = 0;
+    this.lastForcedReconnectAt = -Infinity;   // the steady clock starts near 0: 0 would block the first 5 minutes
+    this.upSince = 0;                         // when the current connection came up (steady clock)
+    this.endedRoom = null;                    // { id, at } the LIVE TikTok last said ended
+    this.endedHits = 0;                       // times in a row TikTok handed that ended room out again
+    this.probation = null;                    // { roomId, until } connected to that room, waiting for LIVE data
     this.watchdog = null;
     this.state = { status: 'idle', roomId: null, viewers: 0, error: null, errorKind: null, retryAt: null };
     this.giftStreaks = new Map();   // combo base key -> { seq, last, ended, at }
@@ -97,6 +114,8 @@ class TikTokLink extends EventEmitter {
     this.generation++;
     this.username = null;
     this.connectStartedAt = 0;
+    this.upSince = 0;
+    this.probation = null;
     this.clearTimeout(this.reconnectTimer); this.reconnectTimer = null;
     if (this.watchdog) { this.clearInterval(this.watchdog); this.watchdog = null; }
     this._dropConnection();
@@ -110,6 +129,18 @@ class TikTokLink extends EventEmitter {
     const st = this.state.status;
     if (st === 'live' || st === 'connecting' || st === 'reconnecting') return;
     if (this.state.errorKind === 'rate-limit' && this.state.retryAt > this.now()) return;
+    this._connect();
+  }
+
+  // The computer woke from sleep (or was unlocked). A socket that slept through it is usually dead, and the next
+  // scheduled check can be minutes away, so look now. After an unlock (no sleep) a LIVE socket that still gets data is
+  // left alone. A rate-limit wait is still honoured.
+  wake(fromSleep = true) {
+    if (!this.username) return;
+    if (this.state.errorKind === 'rate-limit' && this.state.retryAt > this.now()) return;
+    const st = this.state.status;
+    if (st === 'live' && !fromSleep && this.mono() - this.lastFrameAt < 30000) return;
+    this.log('info', `${fromSleep ? 'woke from sleep' : 'screen unlocked'}: checking TikTok now (was ${st})`);
     this._connect();
   }
 
@@ -247,6 +278,8 @@ class TikTokLink extends EventEmitter {
     const L = this.lib;
     const generation = ++this.generation;
     this.streamEnded = false;
+    this.probation = null;
+    this.upSince = 0;
     this.clearTimeout(this.reconnectTimer); this.reconnectTimer = null;
     this._dropConnection();
     this.lastFrameAt = this.mono();
@@ -258,43 +291,63 @@ class TikTokLink extends EventEmitter {
       processInitialData: false,
       enableExtendedGiftInfo: false,
       fetchRoomInfoOnConnect: true,
+      // got retries each TikTok call twice by default (10 s each): one retry keeps a connect inside our cutoff.
+      webClientOptions: { retry: { limit: 1 } },
       ...(this.signApiKey ? { signApiKey: this.signApiKey } : {}),
     });
     this.conn = conn;
     const on = (event, cb) => { if (event) conn.on(event, (...a) => { if (generation === this.generation) cb(...a); }); };
     const C = L.ControlEvent || {}, W = L.WebcastEvent || {};
+    // Real LIVE data (viewers, taps, gifts) clears a room on probation.
+    const confirm = () => { if (this.probation) this._confirmRoom(); };
 
     on(C.WEBSOCKET_DATA, () => { this.lastFrameAt = this.mono(); });
     on(C.CONNECTED, (s) => {
       this.lastFrameAt = this.mono();
-      this.retryStep = 0; this.connectStartedAt = 0;
-      this._setState({ status: 'live', roomId: (s && s.roomId) ? String(s.roomId) : null, error: null, errorKind: null, retryAt: null });
-      this.log('info', `Connected to @${this.username} room ${this.state.roomId}`);
-    });
-    on(C.DISCONNECTED, () => {
-      if (this.streamEnded) {
-        this.streamEnded = false;
-        this.retryStep = 0;
-        const retryAt = this._schedule(this.offlinePollMs);
-        this._setState({ status: 'offline', roomId: null, viewers: 0, error: null, errorKind: 'offline', retryAt });
-        this.log('info', `@${this.username}'s LIVE ended; checking again in ${Math.round(this.offlinePollMs / 1000)} s`);
+      this.connectStartedAt = 0;
+      const roomId = (s && s.roomId) ? String(s.roomId) : null;
+      const E = this.endedRoom;
+      if (roomId && E && E.id === roomId && this.mono() - E.at < ENDED_ROOM_MS) {
+        // The LIVE that just ended, handed out again: stay "connecting" until real LIVE data shows it is back.
+        this.probation = { roomId, until: this.mono() + PROBATION_MS };
+        this.log('info', `TikTok offered @${this.username}'s ended LIVE again (room ${roomId}); waiting for LIVE data`);
         return;
       }
-      this.retryStep = 1;                          // a real drop of a LIVE room: 10 s, then the normal backoff
-      const retryAt = this._schedule(RETRY_BACKOFF_MS[0]);
+      this._goLive(roomId);
+    });
+    on(C.DISCONNECTED, () => {
+      const wasProbation = !!this.probation;
+      if (this.streamEnded || wasProbation) {
+        this.streamEnded = false;
+        this._notLive(wasProbation ? 'the ended LIVE closed again' : null);
+        return;
+      }
+      const stable = this.upSince && this.mono() - this.upSince >= STABLE_MS;
+      this.upSince = 0;
+      let ms;
+      if (stable) { this.retryStep = 1; ms = RETRY_BACKOFF_MS[0]; }   // a real drop of a LIVE room: 10 s, then the normal backoff
+      else ms = Math.min(UNSTABLE_DROP_MAX_MS, this._nextBackoff());  // it keeps dropping right after connecting
+      const retryAt = this._schedule(ms);
       this._setState({ status: 'reconnecting', retryAt });
-      this.log('info', `Disconnected from @${this.username}; retrying in 10 s`);
+      this.log('info', `Disconnected from @${this.username}; retrying in ${Math.round(ms / 1000)} s`);
     });
     on(C.ERROR, (e) => this.log('warn', `${(e && e.info) || 'connector'}: ${(e && e.exception && e.exception.message) || (e && e.message) || String(e)}`));
     // TikTok says the LIVE ended (or was suspended); the connector disconnects right after. Report 'offline' at
     // once instead of a reconnect attempt, so the app neither cries "lost" nor dates the end 10-20 s late.
-    on(W.STREAM_END, () => { this.streamEnded = true; this.log('info', 'TikTok says the LIVE ended'); });
+    on(W.STREAM_END, () => {
+      this.streamEnded = true;
+      const id = this.state.roomId || (this.probation && this.probation.roomId);
+      if (id) this.endedRoom = { id: String(id), at: this.mono() };
+      this.log('info', 'TikTok says the LIVE ended');
+    });
     on(W.ROOM_USER, (d) => {
+      confirm();
       const v = Number((d && (d.viewerCount || d.total || d.totalUser)) || 0);
       if (v !== this.state.viewers) this._setState({ viewers: v });
     });
-    on(W.GIFT, (d) => { const g = this._gift(d); if (g) this.emit('gift', g); });
+    on(W.GIFT, (d) => { confirm(); const g = this._gift(d); if (g) this.emit('gift', g); });
     on(W.LIKE, (d) => {
+      confirm();
       // tiktok-live-proto v3 (what 2.4.4 decodes): count = taps in this batch, total = room total as a STRING.
       // Older/other shapes use likeCount / totalLikeCount; read both.
       // v3 DEFAULTS total to "0" when the wire omits it: a total of 0 (or below this batch) means "no total".
@@ -313,9 +366,42 @@ class TikTokLink extends EventEmitter {
     }
   }
 
+  _goLive(roomId) {
+    this.probation = null;
+    this.upSince = this.mono();
+    if (roomId && (!this.endedRoom || this.endedRoom.id !== roomId)) { this.endedRoom = null; this.endedHits = 0; }
+    this._setState({ status: 'live', roomId, error: null, errorKind: null, retryAt: null });
+    this.log('info', `Connected to @${this.username} room ${this.state.roomId}`);
+  }
+
+  // The room on probation showed real LIVE data: it is LIVE again after all.
+  _confirmRoom() {
+    const id = this.probation.roomId;
+    this.endedRoom = null; this.endedHits = 0;
+    this.log('info', `room ${id} is LIVE again`);
+    this._goLive(id);
+  }
+
+  // The LIVE is over: report 'offline' and check again later. `again` = TikTok handed out the ended room again, so
+  // each repeat waits twice as long (capped at 5 min) instead of looping every check.
+  _notLive(again) {
+    this.generation++;                            // mute the old connection (its disconnect would call back here)
+    this._dropConnection();
+    this.connectStartedAt = 0; this.upSince = 0; this.probation = null;
+    this.retryStep = 0;
+    let ms = this.offlinePollMs;
+    if (again) { this.endedHits++; ms = Math.min(OFFLINE_POLL_MAX_MS, this.offlinePollMs * 2 ** this.endedHits); }
+    const retryAt = this._schedule(ms);
+    this._setState({ status: 'offline', roomId: null, viewers: 0, error: null, errorKind: 'offline', retryAt });
+    this.log('info', again ? `@${this.username} is not LIVE (${again}); checking again in ${Math.round(ms / 1000)} s`
+      : `@${this.username}'s LIVE ended; checking again in ${Math.round(ms / 1000)} s`);
+  }
+
   _tick() {
     const now = this.mono();
     if (!this.username) return;
+    if (this.probation && now > this.probation.until) { this._notLive('no LIVE data from the ended room'); return; }
+    if (this.state.status === 'live' && this.upSince && this.retryStep && now - this.upSince >= STABLE_MS) this.retryStep = 0;
     if (this.state.status === 'live' && this.lastFrameAt && now - this.lastFrameAt > SILENT_SOCKET_MS && now - this.lastForcedReconnectAt > FORCED_RECONNECT_GAP_MS) {
       this.lastForcedReconnectAt = now;
       this.log('warn', `No data from TikTok for ${Math.round((now - this.lastFrameAt) / 1000)} s - reconnecting once`);
@@ -326,7 +412,7 @@ class TikTokLink extends EventEmitter {
       const secs = Math.round((now - this.connectStartedAt) / 1000);
       this.generation++;                           // mute the hung attempt
       this._dropConnection();
-      this._failed({ timeout: true, message: `TikTok did not answer for ${secs} s (check the internet)` });
+      this._failed({ timeout: true, message: `TikTok did not answer for ${secs} s` });
     }
   }
 }
