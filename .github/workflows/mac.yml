@@ -61,17 +61,26 @@ jobs:
           APP="$(ls -d dist/mac-universal/*.app | head -1)"
           EXE="$(find "$APP/Contents/MacOS" -type f -perm +111 | head -1)"
           VER="$(node -p 'require("./package.json").version')"
+          # Publish the app's log as a build note: notes are public, the raw job log needs repo admin rights.
+          note() { node -e 'const fs=require("fs");let t="(no log file)";try{t=fs.readFileSync(process.argv[2],"utf8").split("\n").slice(-40).join("\n")}catch{};console.log("::"+process.argv[3]+" title=LIVE Link log ("+process.argv[1]+")::"+t.replace(/%/g,"%25").replace(/\r/g,"%0D").replace(/\n/g,"%0A"))' "$1" "$2" "$3"; }
+          FAIL=0
           for MODE in native x86_64; do
             PROFILE="$RUNNER_TEMP/livelink-$MODE"
             if [ "$MODE" = x86_64 ]; then arch -x86_64 "$EXE" --hidden --user-data-dir="$PROFILE" & else "$EXE" --hidden --user-data-dir="$PROFILE" & fi
             PID=$!
             sleep 25
-            if kill -0 "$PID" 2>/dev/null; then kill "$PID"; else echo "LIVE Link ($MODE) exited early"; exit 1; fi
-            LOG="$(ls "$PROFILE"/logs/live-link.log "$HOME/Library/Application Support/ReactivVibe LIVE Link/logs/live-link.log" 2>/dev/null | head -1)"
-            echo "--- $MODE log: $LOG"; cat "$LOG"
-            grep -q "LIVE Link $VER starting" "$LOG"
-            if grep -Eq "uncaught|unhandled| ERROR " "$LOG"; then echo "startup errors ($MODE)"; exit 1; fi
+            ALIVE=0; if kill -0 "$PID" 2>/dev/null; then ALIVE=1; kill "$PID"; wait "$PID" 2>/dev/null || true; fi
+            LOG=""
+            for f in "$PROFILE/logs/live-link.log" "$HOME/Library/Application Support/ReactivVibe LIVE Link/logs/live-link.log"; do
+              if [ -f "$f" ]; then LOG="$f"; break; fi
+            done
+            OK=1
+            [ "$ALIVE" = 1 ] || { echo "::error title=Launch ($MODE)::LIVE Link exited before 25 s"; OK=0; }
+            if [ -n "$LOG" ] && grep -q "LIVE Link $VER starting" "$LOG"; then :; else echo "::error title=Launch ($MODE)::no 'LIVE Link $VER starting' line in the log"; OK=0; fi
+            if [ -n "$LOG" ] && grep -Eq "uncaught|unhandled| ERROR " "$LOG"; then echo "::error title=Launch ($MODE)::startup errors in the log"; OK=0; fi
+            if [ "$OK" = 1 ]; then note "$MODE" "$LOG" notice; else note "$MODE" "$LOG" error; FAIL=1; fi
           done
+          exit $FAIL
 
       - name: dmg, zip and latest-mac.json
         run: node scripts/release-mac.js
