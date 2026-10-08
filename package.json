@@ -1,7 +1,7 @@
 {
   "name": "reactivvibe-live-link",
   "productName": "ReactivVibe LIVE Link",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Sends your TikTok LIVE taps to the ReactivVibe hype bar.",
   "main": "src/main.js",
   "license": "AGPL-3.0-only",
@@ -33,7 +33,7 @@
       "build/icon.*",
       "package.json",
       "LICENSE.txt",
-      "build/tray-*.png"
+      "build/tray*.png"
     ],
     "extraResources": [
       {
@@ -63,6 +63,32 @@
       "createStartMenuShortcut": true,
       "shortcutName": "ReactivVibe LIVE Link",
       "runAfterFinish": true
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "universal"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "universal"
+          ]
+        }
+      ],
+      "category": "public.app-category.utilities",
+      "icon": "build/icon-1024.png",
+      "identity": null,
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "artifactName": "LIVE-Link-${version}-mac.${ext}"
+    },
+    "dmg": {
+      "artifactName": "LIVE-Link-${version}-mac.${ext}",
+      "title": "ReactivVibe LIVE Link"
     }
   }
 }

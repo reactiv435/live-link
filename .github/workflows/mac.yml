@@ -1,0 +1,70 @@
+# Builds the Mac version of LIVE Link on GitHub's Mac machines and attaches it to a GitHub Release.
+# Trigger: push a tag like v1.0.4 (or run it by hand from the Actions tab).
+#
+# Unsigned (no Apple Developer ID yet): the app is signed ad-hoc ("-"), which Apple Silicon requires before it will run
+# anything, and hosts click "Open Anyway" once in System Settings > Privacy & Security.
+name: Mac build
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  mac:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Tests
+        run: node --test "test/*.test.js"
+
+      - name: Package (universal = Intel + Apple Silicon, unsigned)
+        run: npx electron-builder --mac --universal --dir --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: Ad-hoc sign and verify
+        run: |
+          APP="$(ls -d dist/mac-universal/*.app | head -1)"
+          codesign --force --deep --sign - "$APP"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          EXE="$(find "$APP/Contents/MacOS" -type f -perm +111 | head -1)"
+          echo "Architectures: $(lipo -archs "$EXE")"
+          lipo -archs "$EXE" | grep -q x86_64
+          lipo -archs "$EXE" | grep -q arm64
+
+      - name: Launch check (the packaged app starts and keeps running)
+        run: |
+          APP="$(ls -d dist/mac-universal/*.app | head -1)"
+          EXE="$(find "$APP/Contents/MacOS" -type f -perm +111 | head -1)"
+          "$EXE" --hidden --user-data-dir="$RUNNER_TEMP/livelink-profile" &
+          PID=$!
+          sleep 20
+          if kill -0 "$PID" 2>/dev/null; then echo "LIVE Link is still running after 20 s"; kill "$PID"; else echo "LIVE Link exited early"; exit 1; fi
+
+      - name: dmg, zip and latest-mac.json
+        run: node scripts/release-mac.js
+
+      - name: Check the zipped app is still signed
+        run: |
+          mkdir -p "$RUNNER_TEMP/unzip" && ditto -x -k dist-mac/LIVE-Link-*-mac.zip "$RUNNER_TEMP/unzip"
+          codesign --verify --deep --strict "$(ls -d "$RUNNER_TEMP"/unzip/*.app | head -1)"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist-mac/LIVE-Link-*-mac.dmg
+            dist-mac/LIVE-Link-*-mac.zip
+            dist-mac/latest-mac.json
+            dist-mac/SHA256SUMS.txt

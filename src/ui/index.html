@@ -89,13 +89,15 @@
     <section class="tiles">
       <div class="tile glass"><small>Taps this LIVE</small><b id="t-session">0</b></div>
       <div class="tile glass"><small>Sent to the bar</small><b id="t-sent">0</b></div>
+      <div class="tile glass gifts-tile"><small>Gifts this LIVE</small><b id="t-gifts">0</b><span id="t-gifts-sub" class="tile-sub">coins</span></div>
     </section>
+    <section class="gift-list glass hidden" id="gift-list"><small>Recent gifts</small><ol id="gift-items"></ol></section>
     <section class="now glass"><small>Hype bar song</small><span id="t-song">No song playing yet</span></section>
     <section class="last glass hidden" id="last-live"><small>Last LIVE</small><span id="last-live-text"></span></section>
     <details class="about glass">
       <summary>What does LIVE Link read?</summary>
-      <p>Only the <b>number of taps (hearts)</b> on your TikTok LIVE. It watches your LIVE the way a viewer does, so it never asks for your TikTok password and can't post, read your messages, or see your account.</p>
-      <p>Those taps fill the hype bar for the song you're playing on reactivvibeai.com. Gifts and chat are not used yet.</p>
+      <p>The <b>taps (hearts)</b> and the <b>gifts</b> on your TikTok LIVE: for each gift, its name, its coin value, and the @handle and name of who sent it. It watches your LIVE the way a viewer does, so it never asks for your TikTok password and can't post, read your messages, or see your account.</p>
+      <p>Taps and gifts fill the hype bar for the song you're playing on reactivvibeai.com (a gift is worth 10 taps per coin), and the overlay can thank the gifter by @handle. Chat is not used.</p>
     </details>
     <div class="actions">
       <button class="ghost" id="retry">Check TikTok now</button>
@@ -106,7 +108,7 @@
   <!-- SETTINGS -->
   <aside id="settings" class="drawer hidden" aria-label="Settings">
     <div class="drawer-head"><h2>Settings</h2><button class="icon-btn" id="close-settings" aria-label="Close">&times;</button></div>
-    <label class="row"><span>Start with Windows<small>Runs quietly in the tray after you sign in to Windows.</small></span><input type="checkbox" id="s-autostart"></label>
+    <label class="row"><span id="s-autostart-label">Start with Windows<small>Runs quietly in the tray after you sign in to Windows.</small></span><input type="checkbox" id="s-autostart"></label>
     <label class="row"><span>Pop-up notifications<small>When it connects to your LIVE, loses it, and when your LIVE ends.</small></span><input type="checkbox" id="s-notify"></label>
     <label class="row"><span>Test mode<small>Checks everything with the site but adds nothing to the bar.</small></span><input type="checkbox" id="s-dry"></label>
     <div class="row static"><span>This computer<small id="s-device">-</small></span></div>

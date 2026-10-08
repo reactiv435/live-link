@@ -42,3 +42,27 @@ The `live-link` bucket is PRIVATE (the project blocks public buckets), files liv
     `<version>/LIVE-Link-Setup-<version>.exe`. The app shows "a new version is ready" when `version` is newer and
     opens `download_url` (only links on bxiejoktoknybpraxebm.supabase.co or reactivvibeai.com are opened).
     The dashboard card uses the same kind of signed link for the Download button and the source zip.
+
+## 1.0.4: gifts and the Mac app (2026-10-07)
+12. **`session_total >= 0`** (site migration 0030): a brand-new room's first push may report 0. The app still sends at
+    least 1 (one tap of a fresh room is never credited), so it works against both rules.
+13. **Gifts in `live-link-push`.** Optional `gifts` array, at most 50 per push. Each item:
+    `{ key, count, coins, gift_id, name, image_url?, user_handle, user_name, at }`
+    - `key` `/^[A-Za-z0-9:_.-]{8,120}$/`: one combo (`c:<hash>:<seq>`) or one single gift (`m:<msgId or hash>`).
+    - `count` int 1..100000: the combo's RUNNING total (absolute, never a delta); `coins` int 1..1000000 per unit.
+    - `gift_id` digits <= 24; `name` <= 60; `image_url` https <= 500 (TikTok CDN icon, optional);
+      `user_handle` <= 60 (no @); `user_name` <= 80; `at` ISO (server time).
+    - `session_total` is OPTIONAL when `gifts` is non-empty; without it the site skips all room-total logic.
+    - The site keeps the highest `count` per (host, room, key) and credits only `count - previous` units, so retries,
+      repeated frames and app restarts can never count a gift twice. Credit = units x coins x 10 taps, into
+      `project_hype.gift_taps` (on the bar AND the charts; not subject to the per-minute TikTok tap net). Units with no
+      song on air (or the host not live on the site) are consumed, not credited. Dry runs credit nothing.
+    - Per-host switch `host_profiles.gifts_enabled` (rollout: ReactivVibeAI first).
+    - Response adds `gifts_enabled`, `gifts_credited`, `gift_taps`. Each credited gift is broadcast on the private topic
+      `gifts:<host_id>` (event `gift`) for the Now Live overlay's corner alert.
+    - App side: combos (gift.type 1, or combo:true) credit live as they build; a lower count after an end, or after a
+      3 s quiet gap, is a new combo; gifts to another host (multi-guest/battles) and unpriced gifts are skipped.
+14. **Platform-aware updates.** The app calls `live-link-config?platform=<win32|darwin>&arch=<x64|arm64>`. For darwin
+    the site builds `latest` from `latest-mac.json` (bucket root):
+    `{ version, file: "<v>/LIVE-Link-<v>-mac.dmg", sha256, size, zip_file, zip_sha256, zip_size, released_at }`.
+    `latest.json` stays Windows-only for installed Windows apps. Mac builds come from `.github/workflows/mac.yml`.

@@ -27,7 +27,7 @@ function fakeLib(scenario) {
     lib: {
       TikTokLiveConnection, UserOfflineError, SignatureRateLimitError,
       ControlEvent: { CONNECTED: 'connected', DISCONNECTED: 'disconnected', ERROR: 'error', WEBSOCKET_DATA: 'websocketData' },
-      WebcastEvent: { LIKE: 'like', ROOM_USER: 'roomUser', STREAM_END: 'streamEnd' },
+      WebcastEvent: { LIKE: 'like', ROOM_USER: 'roomUser', STREAM_END: 'streamEnd', GIFT: 'gift' },
     },
   };
 }
@@ -132,4 +132,51 @@ test('TikTok "stream ended" goes straight to offline: no reconnect attempt, no d
   assert.strictEqual(link.state.status, 'offline');
   assert.ok(!states.includes('reconnecting'));
   assert.strictEqual(tm.list[tm.list.length - 1].ms, link.offlinePollMs, 'next check at the offline interval');
+});
+
+function giftFrame({ count = 1, end = 0, coins = 1, type = 1, combo = true, group = 'G1', giftId = '5655', name = 'Rose', user = 'maria', to = 'host', msgId } = {}) {
+  return { giftId, repeatCount: count, repeatEnd: end, groupId: group, common: { msgId: msgId || String(Math.random()).slice(2) },
+    gift: { id: giftId, name, type, combo, diamondCount: coins, image: { urlList: ['https://p16-webcast.tiktokcdn.com/rose.png'] } },
+    user: { userId: 'u-' + user, displayId: user, nickname: user.toUpperCase() }, toUser: to ? { displayId: to } : undefined };
+}
+
+test('gifts: a combo credits each new step once; a repeated end and stale frames add nothing; a new combo gets a new key', async () => {
+  const f = fakeLib(['live']);
+  const link = new TikTokLink({ lib: f.lib, ...timers() });
+  const got = [];
+  link.on('gift', (g) => got.push(g));
+  link.start('host');
+  await tick(); await tick();
+  const c = f.made[0];
+  c.emit('gift', giftFrame({ count: 1 }));
+  c.emit('gift', giftFrame({ count: 2 }));
+  c.emit('gift', giftFrame({ count: 2 }));            // repeated frame
+  c.emit('gift', giftFrame({ count: 5, end: 1 }));     // end (frames 3-4 were lost)
+  c.emit('gift', giftFrame({ count: 5, end: 1 }));     // the same end again
+  c.emit('gift', giftFrame({ count: 1 }));             // a NEW combo reusing the group
+  assert.deepStrictEqual(got.map((g) => [g.count, g.units]), [[1, 1], [2, 1], [5, 3], [1, 1]]);
+  assert.strictEqual(got[0].key, got[2].key, 'same combo, same key');
+  assert.notStrictEqual(got[3].key, got[0].key, 'new combo, new key');
+  assert.match(got[0].key, /^[A-Za-z0-9:_.-]{8,120}$/);
+  assert.strictEqual(got[0].coins, 1);
+  assert.strictEqual(got[0].userHandle, 'maria');
+  assert.strictEqual(got[0].imageUrl, 'https://p16-webcast.tiktokcdn.com/rose.png');
+});
+
+test('gifts: single gifts count once per message; unpriced gifts and gifts to another host are skipped', async () => {
+  const f = fakeLib(['live']);
+  const link = new TikTokLink({ lib: f.lib, ...timers() });
+  const got = [];
+  link.on('gift', (g) => got.push(g));
+  link.start('host');
+  await tick(); await tick();
+  const c = f.made[0];
+  c.emit('gift', giftFrame({ type: 0, combo: false, coins: 1000, name: 'Galaxy', giftId: '11046', msgId: '777' }));
+  c.emit('gift', giftFrame({ type: 0, combo: false, coins: 1000, name: 'Galaxy', giftId: '11046', msgId: '777' }));   // delivered twice
+  c.emit('gift', giftFrame({ coins: 0, name: 'Free gift' }));
+  c.emit('gift', giftFrame({ to: 'someone_else', coins: 5 }));
+  assert.strictEqual(got.length, 1);
+  assert.match(got[0].key, /^m:[A-Za-z0-9:_.-]{6,118}$/, 'a short message id is hashed so keys are 8+ chars');
+  assert.strictEqual(got[0].units, 1);
+  assert.strictEqual(got[0].coins, 1000);
 });

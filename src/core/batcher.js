@@ -9,6 +9,7 @@
 const MAX_EVENTS = 200;
 const MAX_COUNT = 500;
 const STALE_MS = 9000;          // a little inside the server's 10 s window
+const MAX_GIFTS = 50;           // gift frames per push (contract limit)
 
 // A usable room total. tiktok-live-proto v3 DEFAULTS `total` to "0" when the wire omits it, so 0 (or anything
 // smaller than the batch itself) means "no total in this message", never "the room has 0 likes".
@@ -31,7 +32,12 @@ class LikeBatcher {
     this.rebase = true;
     this.gen = 0;               // bumps on every new baseline request, so a push already in flight can't cancel it
     this.sessionTaps = 0;       // taps seen since we joined this room (for the UI)
+    this.gifts = [];            // gift frames waiting to be sent (contract shape); kept through stale marks: they were seen
   }
+
+  addGift(g) { this.gifts.push(g); if (this.gifts.length > 2000) this.gifts.splice(0, this.gifts.length - 2000); }
+  takeGifts(max = MAX_GIFTS) { return this.gifts.splice(0, max); }
+  restoreGifts(list) { if (list && list.length) this.gifts.unshift(...list); }
 
   add({ count, total, at }) {
     const c = Math.max(0, Math.floor(Number(count) || 0));
@@ -75,7 +81,7 @@ class LikeBatcher {
   }
 
   hasNews() {
-    return this.buckets.size > 0 || (this.sessionTotal !== null && (this.rebase || this.nextTotal() !== this.lastSentTotal));
+    return this.buckets.size > 0 || this.gifts.length > 0 || (this.sessionTotal !== null && (this.rebase || this.nextTotal() !== this.lastSentTotal));
   }
 
   // Build the events array for one push. clockOffsetMs = server time - local time.
@@ -93,7 +99,7 @@ class LikeBatcher {
     this.buckets.clear();
     // Keep the newest events if a huge burst would exceed the per-push limit (crediting uses session_total anyway).
     const dropped = events.length > MAX_EVENTS ? events.length - MAX_EVENTS : 0;
-    return { events: dropped ? events.slice(dropped) : events, stale, dropped, sessionTotal: this.nextTotal(), rebaseline: this.rebase, gen: this.gen };
+    return { events: dropped ? events.slice(dropped) : events, stale, dropped, sessionTotal: this.nextTotal(), rebaseline: this.rebase, gen: this.gen, gifts: this.takeGifts() };
   }
 
   // gen = the batcher generation the push was taken at: a baseline requested after it stays pending.
@@ -103,4 +109,4 @@ class LikeBatcher {
   }
 }
 
-module.exports = { LikeBatcher, usableTotal, MAX_EVENTS, MAX_COUNT, STALE_MS };
+module.exports = { LikeBatcher, usableTotal, MAX_EVENTS, MAX_COUNT, STALE_MS, MAX_GIFTS };

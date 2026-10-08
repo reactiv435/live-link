@@ -12,7 +12,9 @@ const SITE = require('./site-config.json');
 
 const APP_ID = 'ai.reactivvibe.livelink';
 const VERSION = app.getVersion();
-const START_HIDDEN = process.argv.includes('--hidden');
+const IS_MAC = process.platform === 'darwin';
+// Windows passes --hidden from the login item; a Mac login item can't carry args, so ask macOS.
+const START_HIDDEN = process.argv.includes('--hidden') || (IS_MAC && (() => { try { return app.getLoginItemSettings().wasOpenedAtLogin; } catch { return false; } })());
 const API_BASE = process.env.LIVE_LINK_API || SITE.apiBase;      // LIVE_LINK_API = the local mock for testing
 
 // A second copy must stop HERE: if it ran on, its startup token refresh would rotate the device token and
@@ -76,15 +78,17 @@ let quitting = false;
 let lastState = null;
 
 function iconPath(name) { return path.join(__dirname, '..', 'build', name); }
+// The menu bar wants ~18 pt icons (with an @2x twin next to it); the Windows tray uses the 32 px ones.
+const trayIcon = (kind) => iconPath(IS_MAC ? `trayMac-${kind}.png` : `tray-${kind}.png`);
 
 function createWindow() {
   win = new BrowserWindow({
     width: 460, height: 780, resizable: true, minWidth: 420, minHeight: 600, maximizable: false, fullscreenable: false,
     backgroundColor: '#0a0a0a', title: 'ReactivVibe LIVE Link', autoHideMenuBar: true, show: !START_HIDDEN,
-    icon: iconPath('icon.ico'),
+    icon: iconPath(IS_MAC ? 'icon.png' : 'icon.ico'),
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: false },
   });
-  win.removeMenu();
+  if (!IS_MAC) win.removeMenu();   // a Mac app keeps its app menu (Quit, and Copy/Paste for the pair code)
   win.loadFile(path.join(__dirname, 'ui', 'index.html'));
   // Links never open inside the app.
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
@@ -115,7 +119,7 @@ function updateTray(s) {
   const label = trayLabel(s);
   tray.setToolTip(`ReactivVibe LIVE Link\n${label}`);
   const want = s && s.atom === 'live' ? 'live' : 'off';
-  if (want !== trayKind) { trayKind = want; tray.setImage(nativeImage.createFromPath(iconPath(want === 'live' ? 'tray-live.png' : 'tray-off.png'))); }
+  if (want !== trayKind) { trayKind = want; tray.setImage(nativeImage.createFromPath(trayIcon(want))); }
   tray.setContextMenu(Menu.buildFromTemplate([
     { label, enabled: false },
     { type: 'separator' },
@@ -143,6 +147,13 @@ function allowedUrl(which) {
 }
 
 app.whenReady().then(async () => {
+  if (IS_MAC) {
+    Menu.setApplicationMenu(Menu.buildFromTemplate([
+      { role: 'appMenu' },
+      { role: 'editMenu' },
+      { role: 'windowMenu' },
+    ]));
+  }
   store = new Store({
     dir: app.getPath('userData'),
     cipher: {
@@ -188,6 +199,7 @@ app.whenReady().then(async () => {
     notify: store.get('notify') !== false,
     deviceName: store.get('deviceName'),
     version: VERSION,
+    platform: process.platform,
     testServer: API_BASE !== SITE.apiBase ? API_BASE : null,
   }));
   ipcMain.handle('pair', async (_e, code) => {
@@ -197,7 +209,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('unpair', () => { ctl.unpair(); return true; });
   ipcMain.handle('retry', () => { ctl.retryNow(); return true; });
   ipcMain.handle('setSetting', (_e, key, value) => {
-    if (key === 'startWithWindows') app.setLoginItemSettings({ openAtLogin: !!value, args: ['--hidden'] });
+    if (key === 'startWithWindows') app.setLoginItemSettings(IS_MAC ? { openAtLogin: !!value } : { openAtLogin: !!value, args: ['--hidden'] });
     else if (key === 'dryRun') ctl.setDryRun(!!value);
     else if (key === 'paused') ctl.setPaused(!!value);
     else if (key === 'notify') store.set('notify', !!value);
@@ -214,7 +226,7 @@ app.whenReady().then(async () => {
   });
 
   createWindow();
-  tray = new Tray(nativeImage.createFromPath(iconPath('tray-off.png')));
+  tray = new Tray(nativeImage.createFromPath(trayIcon('off')));
   trayKind = 'off';
   tray.on('click', showWindow);
   updateTray(null);
@@ -236,5 +248,6 @@ app.whenReady().then(async () => {
 });
 
 app.on('second-instance', showWindow);
+app.on('activate', showWindow);   // Mac: clicking the Dock icon brings the window back
 app.on('window-all-closed', (e) => { /* stay in the tray */ });
 app.on('before-quit', () => { quitting = true; if (ctl) ctl.stop(); });

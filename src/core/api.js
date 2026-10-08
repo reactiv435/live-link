@@ -64,7 +64,11 @@ class LiveLinkApi {
     return this._call('POST', 'live-link-pair', { code: clean, device_name: String(deviceName || 'PC').slice(0, 60), app_version: appVersion }, { auth: false });
   }
   refresh(appVersion) { return this._call('POST', 'live-link-refresh', { app_version: appVersion }); }
-  config() { return this._call('GET', 'live-link-config'); }
+  // platform/arch pick the right update (Windows vs Mac); an older site ignores them.
+  config(platform, arch) {
+    const q = platform ? `?platform=${encodeURIComponent(platform)}&arch=${encodeURIComponent(arch || '')}` : '';
+    return this._call('GET', 'live-link-config' + q);
+  }
   push(body) { return this._call('POST', 'live-link-push', body); }
   status(body) { return this._call('POST', 'live-link-status', body); }
 }

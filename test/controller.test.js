@@ -528,6 +528,7 @@ test('turning Test mode on sends the real taps already seen as real', async () =
   t.link.goLive('R1');
   t.link.like(10, '110');
   assert.ok(await until(() => t.mock.state.pushes.length === 1));   // baseline 100
+  assert.ok(await until(() => !t.ctl.batcher.rebase), 'the app has the baseline answer');
   t.link.like(40, '150');
   t.ctl.setDryRun(true);
   assert.ok(await until(() => t.mock.state.credited === 50), `credited ${t.mock.state.credited}`);
@@ -550,5 +551,107 @@ test('Test mode turned off during a TikTok outage: the outage\'s test taps never
   assert.ok(await until(() => t.mock.state.credited === 10), `credited ${t.mock.state.credited}`);
   await wait(300);
   assert.strictEqual(t.mock.state.credited, 10);
+  await t.done();
+});
+
+const gift = (key, count, { coins = 1, name = 'Rose', handle = 'maria', units = 1 } = {}) =>
+  ({ key, count, units, coins, giftId: '5655', name, imageUrl: null, userHandle: handle, userName: handle.toUpperCase(), at: Date.now() });
+
+test('gifts: a combo is credited live at 10 taps per coin, never twice, and shows in the window', async () => {
+  const t = await setup({ autoApprove: true });
+  await t.ctl.pair('TEST2345');
+  t.link.goLive('R1');
+  t.link.like(10, '110');
+  assert.ok(await until(() => t.mock.state.pushes.length === 1));   // baseline
+  t.link.emit('gift', gift('c:combo0000001:0', 1));
+  t.link.emit('gift', gift('c:combo0000001:0', 2));
+  t.link.emit('gift', gift('c:combo0000001:0', 3));
+  assert.ok(await until(() => t.mock.state.giftTaps === 30), `gift taps ${t.mock.state.giftTaps}`);
+  t.link.emit('gift', gift('c:combo0000001:0', 3, { units: 0 }));    // a repeat can never add
+  await wait(1300);
+  assert.strictEqual(t.mock.state.giftTaps, 30);
+  assert.ok(await until(() => t.ctl.s.gifts.taps === 30), `app gift taps ${t.ctl.s.gifts.taps}`);
+  assert.strictEqual(t.ctl.s.gifts.coins, 3);
+  assert.strictEqual(t.ctl.s.gifts.recent[0].units, 3, 'merged into one line');
+  assert.strictEqual(t.ctl.s.gifts.top.who, 'maria');
+  assert.strictEqual(t.ctl.s.giftsEnabled, true);
+  await t.done();
+});
+
+test('gifts: a gift before any like total goes out gifts-only, without setting a baseline', async () => {
+  const t = await setup({ autoApprove: true });
+  await t.ctl.pair('TEST2345');
+  t.link.goLive('R1');
+  t.link.emit('gift', gift('m:70000009001', 1, { coins: 1000, name: 'Galaxy' }));
+  assert.ok(await until(() => t.mock.state.giftTaps === 10000), `gift taps ${t.mock.state.giftTaps}`);
+  const p = t.mock.state.pushes.find((x) => x.gifts);
+  assert.strictEqual(p.session_total, undefined, 'no made-up total');
+  assert.ok(!t.mock.state.rooms.has('R1'), 'no baseline was set');
+  t.link.like(5, '205');
+  t.link.like(5, '210');
+  assert.ok(await until(() => t.mock.state.credited === 10), `credited ${t.mock.state.credited}`);
+  await wait(300);
+  assert.strictEqual(t.mock.state.credited, 10, 'likes from before LIVE Link saw a total never count');
+  await t.done();
+});
+
+test('gifts in Test mode are checked but never credited', async () => {
+  const t = await setup({ autoApprove: true });
+  await t.ctl.pair('TEST2345');
+  t.ctl.setDryRun(true);
+  t.link.goLive('R1');
+  t.link.emit('gift', gift('m:70000009002', 1, { coins: 30, name: 'Doughnut' }));
+  assert.ok(await until(() => t.mock.state.pushes.some((x) => x.gifts && x.dry_run)));
+  assert.strictEqual(t.mock.state.giftTaps, 0);
+  await t.done();
+});
+
+test('gifts seen right before Disconnect still reach the site', async () => {
+  const t = await setup({ autoApprove: true });
+  await t.ctl.pair('TEST2345');
+  t.link.goLive('R1');
+  t.link.like(10, '110');
+  assert.ok(await until(() => t.mock.state.pushes.length === 1));
+  t.link.emit('gift', gift('m:70000009003', 1, { coins: 5, name: 'Finger Heart' }));
+  t.ctl.setPaused(true);
+  assert.ok(await until(() => t.mock.state.giftTaps === 50), `gift taps ${t.mock.state.giftTaps}`);
+  await t.done();
+});
+
+test('a refusal of something else keeps the gifts; refused gifts are dropped and taps keep flowing', async () => {
+  const t = await setup({ autoApprove: true });
+  await t.ctl.pair('TEST2345');
+  t.link.goLive('R1');
+  t.link.like(10, '110');
+  assert.ok(await until(() => t.mock.state.pushes.length === 1));
+  t.mock.state.failNext.push({ path: 'live-link-push', status: 400, error: 'validation', extra: { details: { field: 'events.at' } } });
+  t.link.like(10, '120');
+  t.link.emit('gift', gift('m:70000009004', 1, { coins: 1 }));
+  assert.ok(await until(() => t.mock.state.giftTaps === 10 && t.mock.state.credited === 20), `gifts ${t.mock.state.giftTaps} taps ${t.mock.state.credited}`);
+  t.mock.state.failNext.push({ path: 'live-link-push', status: 400, error: 'validation', extra: { details: { field: 'gifts.name' } } });
+  t.link.like(10, '130');
+  t.link.emit('gift', gift('m:70000009005', 1, { coins: 1 }));
+  assert.ok(await until(() => t.mock.state.credited === 30), `credited ${t.mock.state.credited}`);
+  await wait(1500);
+  assert.strictEqual(t.mock.state.giftTaps, 10, 'the refused gift was not resent forever');
+  assert.ok(t.logs.some((l) => /gift frames dropped/.test(l)));
+  await t.done();
+});
+
+test('the end-of-LIVE summary includes gifts and the top gifter', async () => {
+  const t = await setup({ autoApprove: true });
+  await t.ctl.pair('TEST2345');
+  t.link.goLive('R1');
+  t.link.like(10, '110');
+  assert.ok(await until(() => t.mock.state.pushes.length === 1));
+  t.link.emit('gift', gift('m:70000009006', 1, { coins: 30, name: 'Doughnut', handle: 'sam' }));
+  t.link.emit('gift', gift('m:70000009007', 1, { coins: 1, name: 'Rose', handle: 'maria' }));
+  assert.ok(await until(() => t.mock.state.giftTaps === 310));
+  assert.ok(await until(() => t.ctl.s.gifts.taps === 310));
+  t.link._set({ status: 'offline', roomId: null });
+  const x = t.ctl.s.lastSession;
+  assert.strictEqual(x.giftCoins, 31);
+  assert.strictEqual(x.giftTaps, 310);
+  assert.deepStrictEqual(x.topGifter, { who: 'sam', coins: 30 });
   await t.done();
 });

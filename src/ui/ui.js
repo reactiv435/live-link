@@ -32,6 +32,7 @@
     $('t-session').textContent = fmt(s.taps && s.taps.session);
     $('t-sent').textContent = fmt(s.taps && s.taps.accepted);
     $('t-song').textContent = s.target ? (s.target.title || 'Current song') : 'No song playing yet';
+    renderGifts(s);
     renderSteps(s.steps || []);
   }
 
@@ -80,13 +81,29 @@
     if (on) el.textContent = `LIVE for ${fmtDur(Date.now() - s.liveSince)} \u00b7 ${fmt(s.tapsPerMin)} taps/min`;
   }
   setInterval(renderLiveMeta, 1000);
+  function renderGifts(s) {
+    const G = s.gifts || { coins: 0, taps: 0, recent: [] };
+    $('t-gifts').textContent = fmt(G.coins);
+    $('t-gifts-sub').textContent = !s.giftsEnabled ? 'coins \u00b7 not counted yet on your channel'
+      : G.taps ? `coins \u00b7 +${fmt(G.taps)} hype` : 'coins';
+    const items = $('gift-items');
+    items.textContent = '';
+    for (const g of G.recent || []) {
+      const li = document.createElement('li');
+      const a = document.createElement('span'); a.textContent = `${g.who ? '@' + g.who : g.name} \u00b7 ${g.gift}${g.units > 1 ? ' x' + g.units : ''}`;
+      const b = document.createElement('span'); b.textContent = `${fmt(g.coins)} coin${g.coins === 1 ? '' : 's'}`;
+      li.append(a, b); items.append(li);
+    }
+    $('gift-list').classList.toggle('hidden', !(G.recent && G.recent.length));
+  }
   function renderLast(s) {
     const x = s.lastSession;
     const show = !!x && s.atom !== 'live';
     $('last-live').classList.toggle('hidden', !show);
     if (!show) return;
     const when = new Date(x.startedAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
-    $('last-live-text').textContent = `${when} \u00b7 ${fmtDur(x.endedAt - x.startedAt)} \u00b7 ${fmt(x.taps)} taps \u00b7 ${fmt(x.accepted)} sent to the bar \u00b7 peak ${fmt(x.peakViewers)} watching` + (x.dryRun ? ' (test mode)' : '')
+    const gifts = x.giftCoins ? ` \u00b7 ${fmt(x.giftCoins)} coins in gifts${x.giftTaps ? ` (+${fmt(x.giftTaps)} hype)` : ''}${x.topGifter ? `, top @${x.topGifter.who}` : ''}` : '';
+    $('last-live-text').textContent = `${when} \u00b7 ${fmtDur(x.endedAt - x.startedAt)} \u00b7 ${fmt(x.taps)} taps \u00b7 ${fmt(x.accepted)} sent to the bar${gifts} \u00b7 peak ${fmt(x.peakViewers)} watching` + (x.dryRun ? ' (test mode)' : '')
       + (x.reason === 'disconnected' ? ' \u00b7 ended by Disconnect' : x.reason === 'stopped' ? ' \u00b7 LIVE Link stopped watching' : '');
   }
   $('conn-btn').addEventListener('click', () => { if (current) bridge.setSetting('paused', !current.paused); });
@@ -172,6 +189,12 @@
   async function openSettings() {
     const st = await bridge.getSettings();
     $('s-autostart').checked = !!st.startWithWindows;
+    if (st.platform === 'darwin') {
+      const l = $('s-autostart-label');
+      l.textContent = 'Open at login';
+      const sm = document.createElement('small'); sm.textContent = 'Starts quietly in the menu bar when you log in to your Mac.';
+      l.append(sm);
+    }
     $('s-dry').checked = !!st.dryRun;
     $('s-notify').checked = st.notify !== false;
     $('s-device').textContent = st.deviceName || '-';
@@ -200,7 +223,10 @@
     const listeners = [];
     const base = { phase: 'ready', dryRun: false, tiktokUsername: 'the_boneyard_ai', hostName: 'Bone Daddy', update: { available: false },
       tiktok: { status: 'live', viewers: 214 }, taps: { session: 4821, accepted: 4790 }, target: { title: 'Midnight Engine (AI remix)' },
-      atom: 'live', paused: false, liveSince: Date.now() - 42 * 60000, tapsPerMin: 1234,
+      atom: 'live', paused: false, liveSince: Date.now() - 42 * 60000, tapsPerMin: 1234, giftsEnabled: true,
+      gifts: { units: 64, coins: 1186, taps: 11860, top: { who: 'maria', coins: 1000 }, recent: [
+        { who: 'maria', gift: 'Galaxy', units: 1, coins: 1000 }, { who: 'sam_beats', gift: 'Rose', units: 12, coins: 12 },
+        { who: 'kayla', gift: 'Doughnut', units: 5, coins: 150 }] },
       message: { level: 'ok', text: 'Connected to @the_boneyard_ai. Taps are going to the hype bar.' },
       steps: [
         { key: 'pc', label: 'This PC', state: 'done', text: 'Connected to Bone Daddy.' },

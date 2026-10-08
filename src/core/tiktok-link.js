@@ -6,6 +6,8 @@
 //   'state' { status, roomId, viewers, error, errorKind, retryAt }
 //            status: idle | connecting | live | offline | reconnecting | error
 //   'like'  { count, total, at }   count = taps in this batch, total = the room's running like total (or NaN)
+//   'gift'  { key, count, units, coins, giftId, name, imageUrl, userHandle, userName, at }
+//            key = one combo (or one single gift); count = that combo's running total; units = new since the last frame
 //   'roomChanged' roomId
 //
 // Why these numbers (ported from tos crew live/server.js):
@@ -16,7 +18,11 @@
 //   * a connect that hangs is abandoned after 45 s; an open socket with no data for 120 s is reconnected once,
 //     then left alone for 5 min so a quiet room can't spin into a reconnect loop.
 const EventEmitter = require('events');
+const crypto = require('crypto');
 const { usableTotal } = require('./batcher');
+
+const validId = (v) => v !== undefined && v !== null && String(v) !== '' && String(v) !== '0';
+const sha = (x) => crypto.createHash('sha1').update(JSON.stringify(x)).digest('hex').slice(0, 24);
 
 const RETRY_BACKOFF_MS = [10000, 20000, 40000, 80000, 120000];
 const RATE_LIMIT_MIN_MS = 60000;
@@ -54,6 +60,8 @@ class TikTokLink extends EventEmitter {
     this.lastForcedReconnectAt = 0;
     this.watchdog = null;
     this.state = { status: 'idle', roomId: null, viewers: 0, error: null, errorKind: null, retryAt: null };
+    this.giftStreaks = new Map();   // combo base key -> { seq, last, ended, at }
+    this.giftMsgs = new Map();      // msgId of single gifts already seen -> at
   }
 
   get running() { return !!this.username; }
@@ -99,6 +107,67 @@ class TikTokLink extends EventEmitter {
     try { old.removeAllListeners(); } catch {}
     try { old.on && old.on('error', () => {}); } catch {}
     try { const p = old.disconnect(); if (p && typeof p.catch === 'function') p.catch(() => {}); } catch {}
+  }
+
+  // One TikTok gift frame -> what to credit. Learned from the T.O.S show program's live gift handling:
+  //  * combo gifts (type 1, or combo:true even with type 0) arrive as running frames x1, x2, x3... and one end frame;
+  //    each frame credits only what's new, and the site keeps the highest count per combo, so retries, repeats and
+  //    app restarts can never count a combo twice;
+  //  * a lower count after an end (or after a quiet gap) is a NEW combo that reused the group id;
+  //  * gifts sent to another host (multi-guest, battles) and gifts with no coin price are skipped.
+  _gift(d) {
+    if (!d) return null;
+    const gift = d.gift || d.giftDetails || {};
+    const name = String(gift.name || gift.giftName || d.giftName || 'Gift').slice(0, 60);
+    const coins = Math.floor(Number(gift.diamondCount || d.diamondCount || 0));
+    if (!(coins > 0)) { this.log('info', `skipped gift "${name}" with no coin price`); return null; }
+    const toUser = d.toUser || {};
+    const toName = String(toUser.displayId || toUser.uniqueId || '').replace(/^@/, '').toLowerCase();
+    if (toName && this.username && toName !== this.username) { this.log('info', `skipped a gift to @${toName} (not this LIVE's host)`); return null; }
+    const u = d.user || {};
+    const userHandle = String(u.displayId || u.uniqueId || '').replace(/^@/, '').slice(0, 60);
+    const userName = String(u.nickname || userHandle || 'Someone').slice(0, 80);
+    const userId = String(u.userId || u.id || userHandle);
+    const rawGiftId = validId(d.giftId) ? String(d.giftId) : String(gift.id || '');
+    const giftId = /^\d{1,24}$/.test(rawGiftId) ? rawGiftId : '0';
+    const count = Math.max(1, Math.floor(Number(d.repeatCount) || 1));
+    const img = gift.image || gift.icon || {};
+    const imageUrl = Array.isArray(img.urlList) ? (img.urlList.find((x) => /^https:\/\//.test(x) && x.length <= 500) || null) : null;
+    const now = this.mono();
+    this._pruneGifts(now);
+    let key, units;
+    if (Number(gift.type) === 1 || gift.combo === true) {
+      const base = sha([this.state.roomId || '', userId, rawGiftId, validId(d.groupId) ? String(d.groupId) : '']);
+      const s = this.giftStreaks.get(base) || { seq: 0, last: 0, ended: false, at: now };
+      if (s.ended) {
+        if (count === s.last) return null;                          // the same end frame again
+        if (count < s.last) { s.seq += 1; s.last = 0; }             // a new combo that reused the group
+        s.ended = false;
+      } else if (count <= s.last) {
+        if (count < s.last && now - s.at > 3000) { s.seq += 1; s.last = 0; }   // the old combo's end never came
+        else return null;                                           // a stale or repeated frame
+      }
+      units = count - s.last;
+      s.last = count; s.ended = Number(d.repeatEnd) === 1; s.at = now;
+      this.giftStreaks.set(base, s);
+      key = `c:${base}:${s.seq}`;
+    } else {
+      const msgId = String((d.common && d.common.msgId) || d.logId || d.orderId || '');
+      if (validId(msgId) && /^[A-Za-z0-9_.-]{1,100}$/.test(msgId)) {
+        if (this.giftMsgs.has(msgId)) return null;                  // the same message delivered twice
+        this.giftMsgs.set(msgId, now);
+        key = msgId.length >= 6 ? `m:${msgId}` : `m:${sha(['msg', this.state.roomId || '', msgId])}`;   // keys are 8+ chars
+      } else {
+        key = `m:${sha([this.state.roomId || '', userId, rawGiftId, this.now(), Math.random()])}`;
+      }
+      units = count;
+    }
+    return { key, count, units, coins, giftId, name, imageUrl, userHandle, userName, at: this.now() };
+  }
+
+  _pruneGifts(now) {
+    if (this.giftStreaks.size > 3000) for (const [k, v] of this.giftStreaks) if (now - v.at > 600000) this.giftStreaks.delete(k);
+    if (this.giftMsgs.size > 3000) for (const [k, at] of this.giftMsgs) if (now - at > 600000) this.giftMsgs.delete(k);
   }
 
   _setState(patch) {
@@ -201,6 +270,7 @@ class TikTokLink extends EventEmitter {
       const v = Number((d && (d.viewerCount || d.total || d.totalUser)) || 0);
       if (v !== this.state.viewers) this._setState({ viewers: v });
     });
+    on(W.GIFT, (d) => { const g = this._gift(d); if (g) this.emit('gift', g); });
     on(W.LIKE, (d) => {
       // tiktok-live-proto v3 (what 2.4.4 decodes): count = taps in this batch, total = room total as a STRING.
       // Older/other shapes use likeCount / totalLikeCount; read both.

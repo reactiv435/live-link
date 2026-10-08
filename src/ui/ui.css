@@ -133,3 +133,16 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .last { padding: 12px 16px; }
 .last small { display: block; color: var(--muted); font-size: 11px; letter-spacing: .14em; text-transform: uppercase; }
 .last span { display: block; margin-top: 5px; font-size: 13.5px; line-height: 1.45; }
+
+/* gifts */
+.tiles { grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+.tiles .tile { padding: 12px 12px; min-width: 0; }
+.tiles .tile b { font-size: 24px; overflow-wrap: anywhere; }
+.tile-sub { display: block; margin-top: 2px; font-size: 11px; color: var(--muted); }
+.gifts-tile b { color: #ffd166; }
+.gift-list { padding: 10px 14px; }
+.gift-list small { color: var(--muted); font-size: 11px; letter-spacing: .14em; text-transform: uppercase; }
+.gift-list ol { list-style: none; margin: 6px 0 0; padding: 0; }
+.gift-list li { display: flex; justify-content: space-between; gap: 8px; padding: 4px 0; font-size: 13px; border-top: 1px solid rgba(255,255,255,.06); }
+.gift-list li:first-child { border-top: 0; }
+.gift-list li span:last-child { color: #ffd166; font-variant-numeric: tabular-nums; white-space: nowrap; }

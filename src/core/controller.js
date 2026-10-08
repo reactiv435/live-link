@@ -31,6 +31,8 @@ function semverLess(a, b) {
 }
 
 const freshTaps = () => ({ session: 0, accepted: 0, deferred: 0, lastAccepted: 0, lastPushAt: null });
+// Gifts this LIVE: units sent, coins, hype the site credited, the last few (newest first), the top gifter.
+const freshGifts = () => ({ units: 0, coins: 0, taps: 0, recent: [], top: null });
 
 class Controller extends EventEmitter {
   constructor(opts) {
@@ -50,6 +52,9 @@ class Controller extends EventEmitter {
     this.clockOffset = 0;
     this.timers = { config: null, push: null, status: null, tpm: null, refresh: null };
     this.refreshRetryMs = opts.refreshRetryMs || REFRESH_RETRY_MS;
+    this.platform = opts.platform || process.platform;
+    this.arch = opts.arch || process.arch;
+    this.giftBy = new Map();         // handle -> { name, coins } this LIVE, for the top gifter
     this.refreshRetryStep = 0;
     this.inFlight = null;          // the push being sent (kept for an idempotent retry)
     this.epoch = 0;                // bumped by stop(): any await that returns into an older epoch is ignored
@@ -73,6 +78,8 @@ class Controller extends EventEmitter {
       tapsPerMin: 0,                      // taps seen in the last 60 s
       lastSession: this.store.get('lastSession') || null,   // end-of-LIVE summary (kept across restarts)
       pushRejected: null,                 // { field, at } when the site turned a push down (400 validation)
+      gifts: freshGifts(),
+      giftsEnabled: false,                // the site counts gifts for this channel (from live-link-config / pushes)
       tiktok: { ...this.link.state },
       taps: freshTaps(),
       siteError: null,
@@ -102,7 +109,15 @@ class Controller extends EventEmitter {
       this.batcher = new LikeBatcher(roomId);
       this.s.taps.session = 0; this.s.taps.deferred = 0;
       this.s.pushRejected = null;
+      this.s.gifts = freshGifts(); this.giftBy = new Map();
       this._render();
+    });
+    this.link.on('gift', (g) => {
+      if (!this.batcher.roomId && this.link.state.roomId) this.batcher.reset(this.link.state.roomId);
+      this.batcher.addGift(this._giftItem(g));
+      this._noteGift(g);
+      this._pushSoon();
+      this._render(true);
     });
     this.link.on('like', (l) => {
       if (!this.batcher.roomId && this.link.state.roomId) this.batcher.reset(this.link.state.roomId);
@@ -187,6 +202,33 @@ class Controller extends EventEmitter {
     this._statusSoon();
   }
 
+  // A gift frame from the link -> the contract shape the site validates (see docs/CONTRACT_NOTES.md, gifts).
+  _giftItem(g) {
+    const item = { key: g.key, count: g.count, coins: g.coins, gift_id: g.giftId, name: g.name,
+      user_handle: g.userHandle, user_name: g.userName, at: new Date(g.at + (this.clockOffset || 0)).toISOString() };
+    if (g.imageUrl) item.image_url = g.imageUrl;
+    return item;
+  }
+
+  // What the window shows about gifts this LIVE (the site's credited hype arrives with each push answer).
+  _noteGift(g) {
+    const G = this.s.gifts, coins = g.units * g.coins;
+    G.units += g.units; G.coins += coins;
+    const who = g.userHandle || g.userName;
+    const last = G.recent[0];
+    if (last && last.who === who && last.gift === g.name && g.at - last.at < 5000) { last.units += g.units; last.coins += coins; last.at = g.at; }
+    else G.recent.unshift({ who, name: g.userName, gift: g.name, units: g.units, coins, at: g.at });
+    if (G.recent.length > 5) G.recent.length = 5;
+    const by = this.giftBy.get(who) || { who, name: g.userName, coins: 0 };
+    by.coins += coins; this.giftBy.set(who, by);
+    if (!G.top || by.coins > G.top.coins) G.top = { who: by.who, name: by.name, coins: by.coins };
+    if (this.session) {
+      const se = this.session;
+      se.giftUnits += g.units; se.giftCoins += coins;
+      se.giftBy[who] = (se.giftBy[who] || 0) + coins;
+    }
+  }
+
   // The link just stopped watching TikTok (Disconnect, switched off, unverified, update needed, unpaired, quit).
   // Send what was already collected (one best-effort push), then mark the totals stale: whatever happens on TikTok
   // until watching resumes is never credited.
@@ -201,7 +243,8 @@ class Controller extends EventEmitter {
     if (st.status === 'live') {
       if (!this.session) {
         this.session = { roomId: st.roomId || null, startedAt: this.now(), taps: 0, peakViewers: 0,
-          acceptedAtStart: this.s.taps.accepted, username: this.s.tiktokUsername, dryRun: !!this.s.dryRun };
+          acceptedAtStart: this.s.taps.accepted, username: this.s.tiktokUsername, dryRun: !!this.s.dryRun,
+          giftUnits: 0, giftCoins: 0, giftTaps: 0, giftBy: {} };
       }
       this.session.droppedAt = null;
       if (st.roomId && !this.session.roomId) this.session.roomId = st.roomId;
@@ -222,9 +265,12 @@ class Controller extends EventEmitter {
     this.session = null;
     this.s.liveSince = null;
     const endedAt = se.droppedAt || this.now();
-    if (endedAt - se.startedAt < 30000 && se.taps === 0) return;   // a blip, not a LIVE
+    if (endedAt - se.startedAt < 30000 && se.taps === 0 && !se.giftUnits) return;   // a blip, not a LIVE
+    let top = null;
+    for (const [who, coins] of Object.entries(se.giftBy || {})) if (!top || coins > top.coins) top = { who, coins };
     const summary = { username: se.username, roomId: se.roomId, startedAt: se.startedAt, endedAt, taps: se.taps,
       accepted: Math.max(0, this.s.taps.accepted - se.acceptedAtStart), peakViewers: se.peakViewers,
+      gifts: se.giftUnits || 0, giftCoins: se.giftCoins || 0, giftTaps: se.giftTaps || 0, topGifter: top,
       dryRun: !se.realPush && (se.dryRun || !!this.s.dryRun), reason };   // "test mode" only if nothing real was sent
     this.s.lastSession = summary;
     this.store.set('lastSession', summary);
@@ -233,14 +279,23 @@ class Controller extends EventEmitter {
   }
 
   // Taps of a finished LIVE can still be credited after it ended (a deferred backlog): keep its summary honest.
-  _creditLastSession(room, acc) {
-    if (!(acc > 0)) return;
+  _creditLastSession(room, acc, giftTaps = 0) {
+    if (!(acc > 0) && !(giftTaps > 0)) return;
     if (this.session && String(this.session.roomId) === String(room)) return;   // counted by the running session
     if (this.session) this.session.acceptedAtStart += acc;                      // not the running LIVE's taps
     const x = this.s.lastSession;
     if (!x || !x.roomId || String(x.roomId) !== String(room)) return;
     x.accepted += acc;
+    x.giftTaps = (x.giftTaps || 0) + giftTaps;
     this.store.set('lastSession', x);
+  }
+
+  // Hype the site credited for gifts in one push answer.
+  _creditGifts(room, giftTaps) {
+    if (!(giftTaps > 0)) return;
+    if (String(room) === String(this.batcher.roomId)) this.s.gifts.taps += giftTaps;
+    if (this.session && String(this.session.roomId) === String(room)) this.session.giftTaps += giftTaps;
+    else this._creditLastSession(room, 0, giftTaps);
   }
 
   retryNow() {
@@ -302,7 +357,7 @@ class Controller extends EventEmitter {
     if (ep !== this.epoch || this.stopped || !this.store.getToken()) return;
     const t0 = this.now();
     try {
-      const cfg = await this.api.config();
+      const cfg = await this.api.config(this.platform, this.arch);
       if (ep !== this.epoch) return;
       if (typeof cfg.tiktok_verified !== 'boolean') throw new ApiError(0, 'network', 'The site sent an incomplete config.');
       const t1 = this.now();
@@ -349,6 +404,7 @@ class Controller extends EventEmitter {
     this.s.verified = !!c.tiktok_verified;
     this.s.enabled = !!c.live_link_enabled;
     this.s.siteLive = !!c.site_live;
+    this.s.giftsEnabled = !!c.gifts_enabled;
     this.s.target = c.target || null;
     const du = String(c.dashboard_url || '');
     this.s.dashboardUrl = /^https:\/\/(www\.)?reactivvibeai\.com\//.test(du) ? du : null;
@@ -400,23 +456,27 @@ class Controller extends EventEmitter {
     const room = this.batcher.roomId;
     if (!room || !this.link.running) return;
     if (!this.batcher.hasNews() && !(this.s.taps.deferred > 0)) return;
-    if (this.batcher.nextTotal() === null) {
+    if (this.batcher.nextTotal() === null && !this.batcher.gifts.length) {
       // Taps are only credited from TikTok's room total. Never send a made-up 0: the site would take it as the
       // baseline and later credit likes that happened before we connected.
       if (!this._warnedNoTotal) { this._warnedNoTotal = true; this.log('warn', 'like events arrive without a room total; waiting for one'); }
       return;
     }
-    const { events, stale, dropped, sessionTotal, rebaseline, gen } = this.batcher.take(this.now(), this.clockOffset);
+    const { events, stale, dropped, sessionTotal, rebaseline, gen, gifts } = this.batcher.take(this.now(), this.clockOffset);
     if (stale || dropped) this.log('info', `push: ${stale} stale taps, ${dropped} events trimmed (credited via session_total)`);
     const body = {
       batch_id: crypto.randomUUID(),
       dry_run: !!this.s.dryRun,
       tiktok_room_id: String(room),
-      session_total: sessionTotal,
       events,
       status: this._statusBody(false),
     };
-    if (rebaseline) body.rebaseline = true;   // count from session_total, credit nothing for the gap
+    // No like total yet: a gifts-only push (the site skips all room-total logic when session_total is absent).
+    if (sessionTotal !== null) {
+      body.session_total = sessionTotal;
+      if (rebaseline) body.rebaseline = true;   // count from session_total, credit nothing for the gap
+    }
+    if (gifts.length) body.gifts = gifts;
     this.inFlight = body;
     this.inFlightMeta = { gen, stripped: false };
     await this._sendPush();
@@ -451,6 +511,8 @@ class Controller extends EventEmitter {
       const acc = Number(res.accepted) || 0;
       this.s.taps.lastAccepted = acc;
       if (!body.dry_run) { this.s.taps.accepted += acc; this._creditLastSession(body.tiktok_room_id, acc); }
+      if (typeof res.gifts_enabled === 'boolean') this.s.giftsEnabled = res.gifts_enabled;
+      if (!body.dry_run) this._creditGifts(body.tiktok_room_id, Number(res.gift_taps) || 0);
       this.s.taps.lastPushAt = new Date(this.now()).toISOString();
       if ('target' in res) this.s.target = res.target || null;
       if (this.cfg && res.next_push_ms) this.cfg.push_interval_ms = Math.max(1000, Number(res.next_push_ms));
@@ -487,8 +549,15 @@ class Controller extends EventEmitter {
     }
     if (this.stopped || this.s.phase !== 'ready') return;
     const sameRoom = String(body.tiktok_room_id) === String(this.batcher.roomId);
+    const giftsRefused = !!field && String(field).startsWith('gifts');
+    const giftCount = (body.gifts && body.gifts.length) || 0;
+    if (giftCount && (giftsRefused || meta.stripped || !sameRoom)) this.log('error', `${giftCount} gift frames dropped: the site refused them`);
     if (sameRoom && field !== 'session_total' && !meta.stripped) {
       this.inFlight = { ...body, batch_id: crypto.randomUUID(), events: [], status: this._statusBody(false) };
+      if (giftsRefused) delete this.inFlight.gifts;
+      if (!this.inFlight.gifts && this.inFlight.session_total === undefined) {   // nothing creditable left to resend
+        this.inFlight = null; this.inFlightMeta = null; this._pushSoon(); return;
+      }
       this.inFlightMeta = { gen: meta.gen, stripped: true };
       this.clearTimeout(this.timers.push);
       this.timers.push = this.setTimeout(() => { this.timers.push = null; this._sendPush(); }, 1000);
@@ -496,6 +565,7 @@ class Controller extends EventEmitter {
     }
     if (sameRoom) {
       this.batcher.rebaseNow();
+      if (giftCount && !giftsRefused && !meta.stripped) this.batcher.restoreGifts(body.gifts);   // gifts weren't the problem
       this.s.taps.deferred = 0;
       this.s.pushRejected = { field, at: this.now() };
       this._render();
@@ -512,20 +582,28 @@ class Controller extends EventEmitter {
   // A room whose baseline never reached the site has nothing creditable, and sending that baseline late could move
   // the site backwards, so it is skipped. Best effort: ~100 tries, stops on a refusal or when the app stops.
   async _drainRoom(old, dryRun = !!this.s.dryRun) {
-    if (this.s.phase !== 'ready' || old.nextTotal() === null || old.rebase) return;
+    if (this.s.phase !== 'ready') return;
+    const hasTotal = old.nextTotal() !== null && !old.rebase;
+    if (!hasTotal && !old.gifts.length) return;
     const ep = this.epoch;
-    const { events, sessionTotal } = old.take(this.now(), this.clockOffset);
-    let body = { batch_id: crypto.randomUUID(), dry_run: dryRun, tiktok_room_id: String(old.roomId), session_total: sessionTotal, events, status: this._statusBody(false) };
+    const { events, sessionTotal, gifts } = old.take(this.now(), this.clockOffset);
+    let body = { batch_id: crypto.randomUUID(), dry_run: dryRun, tiktok_room_id: String(old.roomId), events: hasTotal ? events : [], status: this._statusBody(false) };
+    if (hasTotal) body.session_total = sessionTotal;
+    if (gifts.length) body.gifts = gifts;
     for (let i = 0; i < 100; i++) {
       if (ep !== this.epoch || this.stopped || this.s.phase !== 'ready') return;
       try {
         const r = await this.api.push(body);
         if (ep !== this.epoch) return;
         const acc = Number(r.accepted) || 0;
-        if (!body.dry_run) { this.s.taps.accepted += acc; this._creditLastSession(old.roomId, acc); }
+        if (!body.dry_run) {
+          this.s.taps.accepted += acc; this._creditLastSession(old.roomId, acc);
+          this._creditGifts(old.roomId, Number(r.gift_taps) || 0);
+        }
         this._render();
-        if (body.dry_run || !(Number(r.deferred) > 0)) return;
+        if (body.dry_run || !hasTotal || !(Number(r.deferred) > 0)) return;
         body = { ...body, batch_id: crypto.randomUUID(), events: [], status: this._statusBody(false) };
+        delete body.gifts;                                            // gifts went out with the first body
         await this._sleep(this._pushInterval());
       } catch (e) {
         if (ep !== this.epoch) return;

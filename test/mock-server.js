@@ -16,6 +16,10 @@ function createMock(opts = {}) {
     batches: new Map(),       // batch_id -> response
     rooms: new Map(),         // room -> last_session_total
     credited: 0,              // taps credited to the target song
+    giftsEnabled: opts.giftsEnabled ?? true,
+    giftStreaks: new Map(),   // gift key -> highest count credited (or consumed)
+    giftTaps: 0,              // hype credited for gifts
+    giftAlerts: [],           // what the overlay would show
     pushes: [], statuses: [], calls: [],
     failNext: [],             // e.g. [{ path: 'live-link-push', status: 503 }]
   };
@@ -62,7 +66,7 @@ function createMock(opts = {}) {
         return send(res, 200, {
           host_id: st.host.id, host_display_name: st.host.name,
           tiktok_username: st.host.verified ? st.host.tiktok_username : null, tiktok_verified: st.host.verified,
-          live_link_enabled: st.host.enabled, site_live: st.host.site_live, target: st.target,
+          live_link_enabled: st.host.enabled, site_live: st.host.site_live, target: st.target, gifts_enabled: st.giftsEnabled,
           push_interval_ms: opts.pushIntervalMs || 2000, idle_push_interval_ms: opts.idlePushIntervalMs || 10000,
           status_interval_ms: 60000, status_stale_after_ms: 180000, max_likes_per_push: 500, max_events_per_push: 200,
           dashboard_url: opts.dashboardUrl || 'https://reactivvibeai.com/dashboard?tab=live-link', ...(opts.latest ? { latest: opts.latest } : {}),
@@ -77,8 +81,28 @@ function createMock(opts = {}) {
         if (!st.host.verified) return err(res, 403, 'tiktok_unverified');
         const events = Array.isArray(body.events) ? body.events : null;
         if (!events || events.length > 200 || typeof body.batch_id !== 'string') return err(res, 400, 'validation', 'bad body', { details: { field: 'events' } });
-        // Like the real live-link-push + ll_push: session_total must be a POSITIVE integer (0 is a 400).
-        if (!Number.isInteger(body.session_total) || body.session_total <= 0) { st.rejected = (st.rejected || 0) + 1; return err(res, 400, 'validation', 'session_total must be a positive integer', { details: { field: 'session_total' } }); }
+        // Like the real live-link-push + ll_push (since migration 0030 + the 1.0.4 gifts contract): session_total is a
+        // NON-NEGATIVE integer, and optional only when the push carries gifts.
+        const gifts = body.gifts === undefined ? [] : body.gifts;
+        if (!Array.isArray(gifts) || gifts.length > 50) return err(res, 400, 'validation', 'gifts must be an array of at most 50', { details: { field: 'gifts' } });
+        for (const g of gifts) {
+          const bad = !g || typeof g !== 'object' ? 'gifts'
+            : !/^[A-Za-z0-9:_.-]{8,120}$/.test(String(g.key)) ? 'gifts.key'
+            : !Number.isInteger(g.count) || g.count < 1 || g.count > 100000 ? 'gifts.count'
+            : !Number.isInteger(g.coins) || g.coins < 1 || g.coins > 1000000 ? 'gifts.coins'
+            : !/^\d{1,24}$/.test(String(g.gift_id)) ? 'gifts.gift_id'
+            : typeof g.name !== 'string' || g.name.length > 60 ? 'gifts.name'
+            : g.image_url !== undefined && !(typeof g.image_url === 'string' && /^https:\/\//.test(g.image_url) && g.image_url.length <= 500) ? 'gifts.image_url'
+            : typeof g.user_handle !== 'string' || g.user_handle.length > 60 ? 'gifts.user_handle'
+            : typeof g.user_name !== 'string' || g.user_name.length > 80 ? 'gifts.user_name'
+            : isNaN(Date.parse(g.at)) ? 'gifts.at' : null;
+          if (bad) { st.rejected = (st.rejected || 0) + 1; return err(res, 400, 'validation', 'bad gift', { details: { field: bad } }); }
+        }
+        const hasTotal = body.session_total !== undefined;
+        if ((!hasTotal && !gifts.length) || (hasTotal && (!Number.isInteger(body.session_total) || body.session_total < 0))) {
+          st.rejected = (st.rejected || 0) + 1;
+          return err(res, 400, 'validation', 'session_total must be a non-negative integer', { details: { field: 'session_total' } });
+        }
         for (const e of events) if (!Number.isInteger(e.count) || e.count < 1 || e.count > 500) return err(res, 400, 'validation', 'bad count', { details: e });
         if (st.batches.has(body.batch_id)) return send(res, 200, { ...st.batches.get(body.batch_id), duplicate: true });
         const serverNow = Date.now() + (opts.serverSkewMs || 0);
@@ -86,7 +110,9 @@ function createMock(opts = {}) {
         for (const e of events) if (Math.abs(Date.parse(e.at) - serverNow) > 10000) stale += e.count;
         const key = String(body.tiktok_room_id);
         let accepted = 0, deferred = 0, baseline = false;
-        if (!st.rooms.has(key) || body.rebaseline) {
+        if (!hasTotal) {
+          // gifts only: no room-total logic at all
+        } else if (!st.rooms.has(key) || body.rebaseline) {
           // first push for a room, or an explicit re-baseline: remember the total, credit nothing
           baseline = true;
           if (!body.dry_run) st.rooms.set(key, body.session_total);
@@ -98,8 +124,25 @@ function createMock(opts = {}) {
           if (!body.dry_run) st.rooms.set(key, last + accepted);
         }
         if (!body.dry_run && st.target) st.credited += accepted;
+        // Gifts: the site keeps the highest count per combo key; only what's new is credited (10 taps per coin).
+        let giftsCredited = 0, giftTaps = 0;
+        if (!body.dry_run && st.giftsEnabled) {
+          for (const g of [...gifts].sort((a, b) => Date.parse(a.at) - Date.parse(b.at))) {
+            const gk = key + '|' + g.key;
+            const prev = st.giftStreaks.get(gk) || 0;
+            const units = g.count - prev;
+            if (units <= 0) continue;
+            st.giftStreaks.set(gk, g.count);
+            if (!st.target || !st.host.site_live) continue;   // consumed, not credited
+            const taps = units * g.coins * 10;
+            giftsCredited += units; giftTaps += taps;
+            st.giftAlerts.push({ user_handle: g.user_handle, gift_name: g.name, units, taps });
+          }
+          st.giftTaps += giftTaps;
+        }
         const resp = { batch_id: body.batch_id, accepted, deferred, stale, ignored: 0, baseline_set: baseline, dry_run: !!body.dry_run,
-          duplicate: false, target: st.target, next_push_ms: opts.pushIntervalMs || 2000, server_time: new Date().toISOString() };
+          duplicate: false, target: st.target, next_push_ms: opts.pushIntervalMs || 2000, server_time: new Date().toISOString(),
+          gifts_enabled: st.giftsEnabled, gifts_credited: giftsCredited, gift_taps: giftTaps };
         st.batches.set(body.batch_id, resp);
         st.pushes.push(body);
         return send(res, 200, resp);
