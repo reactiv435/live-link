@@ -13,8 +13,9 @@ const SITE = require('./site-config.json');
 const APP_ID = 'ai.reactivvibe.livelink';
 const VERSION = app.getVersion();
 const IS_MAC = process.platform === 'darwin';
-// Windows passes --hidden from the login item; a Mac login item can't carry args, so ask macOS.
-const START_HIDDEN = process.argv.includes('--hidden') || (IS_MAC && (() => { try { return app.getLoginItemSettings().wasOpenedAtLogin; } catch { return false; } })());
+// Windows passes --hidden from the login item; a Mac login item can't carry args, so macOS is asked once the app is
+// ready (getLoginItemSettings isn't reliable before that).
+let START_HIDDEN = process.argv.includes('--hidden');
 const API_BASE = process.env.LIVE_LINK_API || SITE.apiBase;      // LIVE_LINK_API = the local mock for testing
 
 // A second copy must stop HERE: if it ran on, its startup token refresh would rotate the device token and
@@ -98,7 +99,8 @@ function createWindow() {
     e.preventDefault();
     win.hide();
     if (!store.get('trayHintShown') && Notification.isSupported()) {
-      new Notification({ title: 'LIVE Link is still running', body: 'It keeps sending your TikTok taps from the tray. Right-click the tray icon to quit.', icon: iconPath('icon.png'), silent: true }).show();
+      const where = IS_MAC ? 'from the menu bar. Quit it from the menu-bar icon or with Cmd+Q.' : 'from the tray. Right-click the tray icon to quit.';
+      new Notification({ title: 'LIVE Link is still running', body: `It keeps sending your TikTok taps ${where}`, icon: iconPath('icon.png'), silent: true }).show();
       store.set('trayHintShown', true);
     }
   });
@@ -148,6 +150,7 @@ function allowedUrl(which) {
 
 app.whenReady().then(async () => {
   if (IS_MAC) {
+    try { if (app.getLoginItemSettings().wasOpenedAtLogin) START_HIDDEN = true; } catch {}
     Menu.setApplicationMenu(Menu.buildFromTemplate([
       { role: 'appMenu' },
       { role: 'editMenu' },
@@ -248,6 +251,9 @@ app.whenReady().then(async () => {
 });
 
 app.on('second-instance', showWindow);
-app.on('activate', showWindow);   // Mac: clicking the Dock icon brings the window back
+// Mac: clicking the Dock icon brings the window back. The launch itself also fires 'activate'; a quiet start at
+// login must not pop the window, so the first one is skipped then.
+let skipActivate = true;
+app.on('activate', () => { if (skipActivate && START_HIDDEN) { skipActivate = false; return; } skipActivate = false; showWindow(); });
 app.on('window-all-closed', (e) => { /* stay in the tray */ });
 app.on('before-quit', () => { quitting = true; if (ctl) ctl.stop(); });

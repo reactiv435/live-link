@@ -34,7 +34,11 @@ execFileSync('ditto', ['-c', '-k', '--sequesterRsrc', '--keepParent', appPath, z
 const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'livelink-dmg-'));
 execFileSync('ditto', [appPath, path.join(stage, app)], { stdio: 'inherit' });
 fs.symlinkSync('/Applications', path.join(stage, 'Applications'));
-execFileSync('hdiutil', ['create', '-volname', 'ReactivVibe LIVE Link', '-srcfolder', stage, '-ov', '-format', 'UDZO', dmg], { stdio: 'inherit' });
+// hdiutil is occasionally "Resource busy" on CI Macs: try up to three times.
+for (let attempt = 1; ; attempt++) {
+  try { execFileSync('hdiutil', ['create', '-volname', 'ReactivVibe LIVE Link', '-srcfolder', stage, '-ov', '-format', 'UDZO', dmg], { stdio: 'inherit' }); break; }
+  catch (e) { if (attempt >= 3) throw e; console.log(`hdiutil failed (attempt ${attempt}), retrying`); execFileSync('sleep', ['5']); }
+}
 fs.rmSync(stage, { recursive: true, force: true });
 
 const hash = (f) => crypto.createHash('sha256').update(fs.readFileSync(f)).digest('hex');
@@ -42,6 +46,7 @@ const latest = {
   version: v,
   file: `${v}/${dmgName}`, sha256: hash(dmg), size: fs.statSync(dmg).size,
   zip_file: `${v}/${zipName}`, zip_sha256: hash(zip), zip_size: fs.statSync(zip).size,
+  source_file: `${v}/LIVE-Link-source-${v}.zip`,   // the same AGPL source zip the Windows release uploads
   released_at: new Date().toISOString(),
 };
 fs.writeFileSync(path.join(out, 'latest-mac.json'), JSON.stringify(latest, null, 2));

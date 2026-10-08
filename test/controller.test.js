@@ -655,3 +655,16 @@ test('the end-of-LIVE summary includes gifts and the top gifter', async () => {
   assert.deepStrictEqual(x.topGifter, { who: 'sam', coins: 30 });
   await t.done();
 });
+
+test('a push the site finds too big (413) keeps its gifts and sends them in smaller batches: none lost', async () => {
+  const t = await setup({ autoApprove: true, maxBody: 3500 });
+  await t.ctl.pair('TEST2345');
+  t.link.goLive('R1');
+  t.link.like(10, '110');
+  assert.ok(await until(() => t.mock.state.pushes.length === 1));
+  for (let i = 0; i < 30; i++) t.link.emit('gift', gift(`m:80000000${String(i).padStart(2, '0')}`, 1, { name: 'Rose ' + 'x'.repeat(40), handle: 'fan_' + 'y'.repeat(40) + i }));
+  assert.ok(await until(() => t.mock.state.giftTaps === 300, 15000), `gift taps ${t.mock.state.giftTaps}, 413s ${t.mock.state.tooBig}`);
+  assert.ok(t.mock.state.tooBig >= 1, 'the site did refuse a too-big push');
+  assert.ok(!t.logs.some((l) => /gift frames dropped/.test(l)), 'no gift was dropped');
+  await t.done();
+});

@@ -28,9 +28,11 @@ function createMock(opts = {}) {
   const err = (res, code, error, message, extra = {}) => send(res, code, { error, message: message || error, ...extra });
 
   const server = http.createServer((req, res) => {
-    let raw = '';
-    req.on('data', (c) => { raw += c; if (raw.length > 16384) req.destroy(); });
+    let raw = '', tooBig = false;
+    const maxBody = opts.maxBody || 16384;   // the real site's readBody cap answers 413 'validation' (no field)
+    req.on('data', (c) => { if (tooBig) return; raw += c; if (raw.length > maxBody) { tooBig = true; raw = ''; } });
     req.on('end', () => {
+      if (tooBig) { st.tooBig = (st.tooBig || 0) + 1; return err(res, 413, 'validation', 'Body too large'); }
       const path = req.url.split('?')[0].replace(/^\/functions\/v1\//, '');
       let body = {};
       try { body = raw ? JSON.parse(raw) : {}; } catch { return err(res, 400, 'validation', 'bad json'); }

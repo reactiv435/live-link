@@ -55,6 +55,7 @@ class Controller extends EventEmitter {
     this.platform = opts.platform || process.platform;
     this.arch = opts.arch || process.arch;
     this.giftBy = new Map();         // handle -> { name, coins } this LIVE, for the top gifter
+    this.giftsPerPush = 50;          // halves when the site says a push was too big (413)
     this.refreshRetryStep = 0;
     this.inFlight = null;          // the push being sent (kept for an idempotent retry)
     this.epoch = 0;                // bumped by stop(): any await that returns into an older epoch is ignored
@@ -462,7 +463,7 @@ class Controller extends EventEmitter {
       if (!this._warnedNoTotal) { this._warnedNoTotal = true; this.log('warn', 'like events arrive without a room total; waiting for one'); }
       return;
     }
-    const { events, stale, dropped, sessionTotal, rebaseline, gen, gifts } = this.batcher.take(this.now(), this.clockOffset);
+    const { events, stale, dropped, sessionTotal, rebaseline, gen, gifts } = this.batcher.take(this.now(), this.clockOffset, this.giftsPerPush);
     if (stale || dropped) this.log('info', `push: ${stale} stale taps, ${dropped} events trimmed (credited via session_total)`);
     const body = {
       batch_id: crypto.randomUUID(),
@@ -551,10 +552,17 @@ class Controller extends EventEmitter {
     const sameRoom = String(body.tiktok_room_id) === String(this.batcher.roomId);
     const giftsRefused = !!field && String(field).startsWith('gifts');
     const giftCount = (body.gifts && body.gifts.length) || 0;
-    if (giftCount && (giftsRefused || meta.stripped || !sameRoom)) this.log('error', `${giftCount} gift frames dropped: the site refused them`);
+    // 413 = the push was too big: the gifts are fine, the batch wasn't. Requeue them and send smaller batches.
+    const tooBig = e.status === 413 && giftCount > 0;
+    if (tooBig) {
+      if (sameRoom) this.batcher.restoreGifts(body.gifts);
+      this.giftsPerPush = Math.max(5, Math.floor(giftCount / 2));
+      this.log('warn', `push too big for the site: ${giftCount} gifts requeued, next batches of ${this.giftsPerPush}`);
+    }
+    if (giftCount && !tooBig && (giftsRefused || meta.stripped || !sameRoom)) this.log('error', `${giftCount} gift frames dropped: the site refused them`);
     if (sameRoom && field !== 'session_total' && !meta.stripped) {
       this.inFlight = { ...body, batch_id: crypto.randomUUID(), events: [], status: this._statusBody(false) };
-      if (giftsRefused) delete this.inFlight.gifts;
+      if (giftsRefused || tooBig) delete this.inFlight.gifts;
       if (!this.inFlight.gifts && this.inFlight.session_total === undefined) {   // nothing creditable left to resend
         this.inFlight = null; this.inFlightMeta = null; this._pushSoon(); return;
       }
@@ -565,7 +573,7 @@ class Controller extends EventEmitter {
     }
     if (sameRoom) {
       this.batcher.rebaseNow();
-      if (giftCount && !giftsRefused && !meta.stripped) this.batcher.restoreGifts(body.gifts);   // gifts weren't the problem
+      if (giftCount && !giftsRefused && !meta.stripped && !tooBig) this.batcher.restoreGifts(body.gifts);   // gifts weren't the problem
       this.s.taps.deferred = 0;
       this.s.pushRejected = { field, at: this.now() };
       this._render();
@@ -786,9 +794,9 @@ class Controller extends EventEmitter {
     const paired = ['ready', 'starting', 'update_required'].includes(s.phase);
     const rows = [];
     rows.push(s.phase === 'pending_approval'
-      ? { key: 'pc', label: 'This PC', state: 'todo', text: 'Waiting for you to click Approve on your dashboard.', action: 'dashboard' }
-      : paired ? { key: 'pc', label: 'This PC', state: 'done', text: `Connected to ${s.hostName || 'your channel'}.` }
-      : { key: 'pc', label: 'This PC', state: 'problem', text: 'Not connected to your account.', action: 'dashboard' });
+      ? { key: 'pc', label: 'This computer', state: 'todo', text: 'Waiting for you to click Approve on your dashboard.', action: 'dashboard' }
+      : paired ? { key: 'pc', label: 'This computer', state: 'done', text: `Connected to ${s.hostName || 'your channel'}.` }
+      : { key: 'pc', label: 'This computer', state: 'problem', text: 'Not connected to your account.', action: 'dashboard' });
     rows.push(!paired ? { key: 'tt', label: 'TikTok account', state: 'off', text: 'After this PC is approved.' }
       : s.verified && s.tiktokUsername ? { key: 'tt', label: 'TikTok account', state: 'done', text: `Verified as @${s.tiktokUsername}.` }
       : s.verified ? { key: 'tt', label: 'TikTok account', state: 'todo', text: 'Add your TikTok username on your dashboard.', action: 'dashboard' }

@@ -1,5 +1,6 @@
 # Builds the Mac version of LIVE Link on GitHub's Mac machines and attaches it to a GitHub Release.
-# Trigger: push a tag like v1.0.4 (or run it by hand from the Actions tab).
+# Trigger: push a tag like v1.0.4 (a tag with a suffix, e.g. v1.0.4-ci1, makes a pre-release for testing),
+# or run it by hand from the Actions tab (files are then kept as a build artifact, no release).
 #
 # Unsigned (no Apple Developer ID yet): the app is signed ad-hoc ("-"), which Apple Silicon requires before it will run
 # anything, and hosts click "Open Anyway" once in System Settings > Privacy & Security.
@@ -24,10 +25,20 @@ jobs:
           node-version: 22
           cache: npm
 
+      - name: Tag matches the app version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"; TAG="${TAG%%-*}"
+          VER="$(node -p 'require("./package.json").version')"
+          echo "tag $TAG, package.json $VER"; test "$TAG" = "$VER"
+
       - run: npm ci
 
       - name: Tests
         run: node --test "test/*.test.js"
+
+      - name: Source zip (AGPL; bundled into the app's Resources/source)
+        run: node scripts/make-source.js
 
       - name: Package (universal = Intel + Apple Silicon, unsigned)
         run: npx electron-builder --mac --universal --dir --publish never
@@ -43,26 +54,48 @@ jobs:
           echo "Architectures: $(lipo -archs "$EXE")"
           lipo -archs "$EXE" | grep -q x86_64
           lipo -archs "$EXE" | grep -q arm64
+          test -f "$APP/Contents/Resources/source/SOURCE.md" || ls "$APP/Contents/Resources/source"
 
-      - name: Launch check (the packaged app starts and keeps running)
+      - name: Launch check (starts, logs its start line, no startup errors) on Apple Silicon and Intel
         run: |
           APP="$(ls -d dist/mac-universal/*.app | head -1)"
           EXE="$(find "$APP/Contents/MacOS" -type f -perm +111 | head -1)"
-          "$EXE" --hidden --user-data-dir="$RUNNER_TEMP/livelink-profile" &
-          PID=$!
-          sleep 20
-          if kill -0 "$PID" 2>/dev/null; then echo "LIVE Link is still running after 20 s"; kill "$PID"; else echo "LIVE Link exited early"; exit 1; fi
+          VER="$(node -p 'require("./package.json").version')"
+          for MODE in native x86_64; do
+            PROFILE="$RUNNER_TEMP/livelink-$MODE"
+            if [ "$MODE" = x86_64 ]; then arch -x86_64 "$EXE" --hidden --user-data-dir="$PROFILE" & else "$EXE" --hidden --user-data-dir="$PROFILE" & fi
+            PID=$!
+            sleep 25
+            if kill -0 "$PID" 2>/dev/null; then kill "$PID"; else echo "LIVE Link ($MODE) exited early"; exit 1; fi
+            LOG="$(ls "$PROFILE"/logs/live-link.log "$HOME/Library/Application Support/ReactivVibe LIVE Link/logs/live-link.log" 2>/dev/null | head -1)"
+            echo "--- $MODE log: $LOG"; cat "$LOG"
+            grep -q "LIVE Link $VER starting" "$LOG"
+            if grep -Eq "uncaught|unhandled| ERROR " "$LOG"; then echo "startup errors ($MODE)"; exit 1; fi
+          done
 
       - name: dmg, zip and latest-mac.json
         run: node scripts/release-mac.js
 
-      - name: Check the zipped app is still signed
+      - name: Sizes (the live-link bucket must allow them)
+        run: ls -l dist-mac/
+
+      - name: Check the zipped and the dmg'd app are still signed
         run: |
           mkdir -p "$RUNNER_TEMP/unzip" && ditto -x -k dist-mac/LIVE-Link-*-mac.zip "$RUNNER_TEMP/unzip"
           codesign --verify --deep --strict "$(ls -d "$RUNNER_TEMP"/unzip/*.app | head -1)"
+          hdiutil attach -nobrowse -readonly -mountpoint "$RUNNER_TEMP/dmg" dist-mac/LIVE-Link-*-mac.dmg
+          codesign --verify --deep --strict "$(ls -d "$RUNNER_TEMP"/dmg/*.app | head -1)"
+          hdiutil detach "$RUNNER_TEMP/dmg"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: live-link-mac
+          path: dist-mac/
 
       - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
         with:
+          prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
             dist-mac/LIVE-Link-*-mac.dmg
             dist-mac/LIVE-Link-*-mac.zip

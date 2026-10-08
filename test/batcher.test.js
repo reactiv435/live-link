@@ -109,3 +109,13 @@ test('a fresh room (total == count) never reports 0', () => {
   b.add({ count: 7, total: '7', at: 1000 });
   assert.strictEqual(b.nextTotal(), 1);
 });
+
+test('gift batches stay under the size cap but always take at least one frame', () => {
+  const b = new LikeBatcher('r');
+  for (let i = 0; i < 40; i++) b.addGift({ key: 'm:' + 'k'.repeat(30) + i, count: 1, coins: 1, gift_id: '1', name: 'n'.repeat(60), user_handle: 'h'.repeat(60), user_name: 'u'.repeat(80), at: new Date().toISOString() });
+  const first = b.takeGifts(50, 2000);
+  assert.ok(first.length >= 1 && JSON.stringify(first).length <= 2000, `took ${first.length}`);
+  const one = b.takeGifts(50, 10);
+  assert.strictEqual(one.length, 1, 'a frame bigger than the cap still goes out alone');
+  assert.strictEqual(b.gifts.length, 40 - first.length - 1);
+});
