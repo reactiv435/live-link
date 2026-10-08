@@ -19,6 +19,7 @@ permissions:
 jobs:
   mac:
     runs-on: macos-14
+    timeout-minutes: 40   # a hung step must not hold a runner for the default 6 hours
     steps:
       - uses: actions/checkout@v4
 
@@ -120,9 +121,17 @@ jobs:
             done
             echo "$MODE: start line after about $((t * 2)) s (started=$STARTED)"
             sleep 8
-            ALIVE=0; if kill -0 "$PID" 2>/dev/null; then ALIVE=1; kill "$PID"; wait "$PID" 2>/dev/null || true; fi
+            # A quit (SIGTERM = app.quit) must finish by itself within 20 s; never wait on it forever.
+            ALIVE=0; QUIT=1
+            if kill -0 "$PID" 2>/dev/null; then
+              ALIVE=1; kill "$PID"
+              for q in $(seq 1 20); do kill -0 "$PID" 2>/dev/null || break; sleep 1; done
+              if kill -0 "$PID" 2>/dev/null; then QUIT=0; kill -9 "$PID" 2>/dev/null || true; fi
+              wait "$PID" 2>/dev/null || true
+            fi
             OK=1
             [ "$ALIVE" = 1 ] || { echo "::error title=Launch ($MODE)::LIVE Link exited early"; OK=0; }
+            [ "$QUIT" = 1 ] || { echo "::error title=Quit ($MODE)::LIVE Link did not exit within 20 s of a quit (SIGTERM)"; OK=0; }
             if [ -n "$LOG" ] && grep -q "LIVE Link $VER starting" "$LOG"; then :; else echo "::error title=Launch ($MODE)::no 'LIVE Link $VER starting' line in the log"; OK=0; fi
             if [ -n "$LOG" ] && grep -Eq "uncaught|unhandled| ERROR " "$LOG"; then echo "::error title=Launch ($MODE)::startup errors in the log"; OK=0; fi
             if [ "$OK" = 1 ]; then note "$MODE" "$LOG" notice; else note "$MODE" "$LOG" error; FAIL=1; fi
