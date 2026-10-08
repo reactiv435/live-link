@@ -68,14 +68,22 @@ jobs:
             PROFILE="$RUNNER_TEMP/livelink-$MODE"
             if [ "$MODE" = x86_64 ]; then arch -x86_64 "$EXE" --hidden --user-data-dir="$PROFILE" & else "$EXE" --hidden --user-data-dir="$PROFILE" & fi
             PID=$!
-            sleep 25
-            ALIVE=0; if kill -0 "$PID" 2>/dev/null; then ALIVE=1; kill "$PID"; wait "$PID" 2>/dev/null || true; fi
-            LOG=""
-            for f in "$PROFILE/logs/live-link.log" "$HOME/Library/Application Support/ReactivVibe LIVE Link/logs/live-link.log"; do
-              if [ -f "$f" ]; then LOG="$f"; break; fi
+            # Wait for the start line (Rosetta translates the whole app on its first x86_64 launch, which is slow),
+            # then make sure it is still running a few seconds later.
+            LOG=""; STARTED=0
+            for t in $(seq 1 60); do
+              for f in "$PROFILE/logs/live-link.log" "$HOME/Library/Application Support/ReactivVibe LIVE Link/logs/live-link.log"; do
+                if [ -z "$LOG" ] && [ -f "$f" ]; then LOG="$f"; fi
+              done
+              if [ -n "$LOG" ] && grep -q "LIVE Link $VER starting" "$LOG"; then STARTED=1; break; fi
+              kill -0 "$PID" 2>/dev/null || break
+              sleep 2
             done
+            echo "$MODE: start line after about $((t * 2)) s (started=$STARTED)"
+            sleep 8
+            ALIVE=0; if kill -0 "$PID" 2>/dev/null; then ALIVE=1; kill "$PID"; wait "$PID" 2>/dev/null || true; fi
             OK=1
-            [ "$ALIVE" = 1 ] || { echo "::error title=Launch ($MODE)::LIVE Link exited before 25 s"; OK=0; }
+            [ "$ALIVE" = 1 ] || { echo "::error title=Launch ($MODE)::LIVE Link exited early"; OK=0; }
             if [ -n "$LOG" ] && grep -q "LIVE Link $VER starting" "$LOG"; then :; else echo "::error title=Launch ($MODE)::no 'LIVE Link $VER starting' line in the log"; OK=0; fi
             if [ -n "$LOG" ] && grep -Eq "uncaught|unhandled| ERROR " "$LOG"; then echo "::error title=Launch ($MODE)::startup errors in the log"; OK=0; fi
             if [ "$OK" = 1 ]; then note "$MODE" "$LOG" notice; else note "$MODE" "$LOG" error; FAIL=1; fi
