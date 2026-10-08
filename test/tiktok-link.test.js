@@ -180,3 +180,21 @@ test('gifts: single gifts count once per message; unpriced gifts and gifts to an
   assert.strictEqual(got[0].units, 1);
   assert.strictEqual(got[0].coins, 1000);
 });
+
+test('gifts: names are cut without splitting an emoji, and a missing handle falls back so the site never refuses it', async () => {
+  const f = fakeLib(['live']);
+  const link = new TikTokLink({ lib: f.lib, ...timers() });
+  const got = [];
+  link.on('gift', (g) => got.push(g));
+  link.start('host');
+  await tick(); await tick();
+  const frame = giftFrame({ type: 0, combo: false, msgId: '123456789' });
+  frame.user = { userId: 'u9', nickname: 'A'.repeat(79) + '\u{1F525}\u{1F525}' };   // no handle; emoji straddles the 80 cut
+  frame.gift.name = 'B'.repeat(59) + '\u{1F339}';
+  f.made[0].emit('gift', frame);
+  const g = got[0];
+  assert.ok(g.userHandle.length > 0 && g.userHandle.length <= 60, 'handle never empty');
+  assert.ok(g.userName.length <= 80);
+  assert.ok(g.name.length <= 60);
+  for (const v of [g.userHandle, g.userName, g.name]) assert.ok(!/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(v), `no lone surrogate in ${JSON.stringify(v)}`);
+});
