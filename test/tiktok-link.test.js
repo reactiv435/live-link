@@ -323,3 +323,175 @@ test('the silent-socket reconnect works in the first 5 minutes after start too',
   assert.strictEqual(f.made.length, 2, 'reconnected once');
   link.stop();
 });
+
+// ---------------------------------------------------------------- 1.0.6: room-ID lookups (blocked / not found / cache / pasted room)
+const { classifyLookup, parseRoomInput, BLOCKED_BACKOFF_MS, NOT_FOUND_RETRY_MS } = require('../src/core/tiktok-link');
+
+// What tiktok-live-connector 2.4.4 throws when all three room-ID sources fail: the composite error, with each
+// source's error in config.requestErrs.
+function lookupError(...subs) {
+  const e = new Error('Failed to retrieve Room ID from all sources.');
+  e.config = { routeId: 'fetchRoomIdRoute', requestErrs: subs.map((m) => new Error(m)) };
+  return e;
+}
+const BLOCKED = () => lookupError('[fetchRoomInfoHtmlRoute] Failed to extract the SIGI_STATE HTML tag, you might be blocked by TikTok.',
+  '[fetchRoomInfoApiLiveRoute] Response code 403 (Forbidden)', '[fetchRoomIdFromEulerRoute] Failed to retrieve Room ID from Euler Stream ... lack of permission');
+const NOT_FOUND = () => lookupError('[fetchRoomInfoHtmlRoute] Failed to extract the LiveRoom object from SIGI_STATE.',
+  '[fetchRoomInfoApiLiveRoute] API Error 19881007 (user_not_found)', '[fetchRoomIdFromEulerRoute] Failed to extract Room ID from Euler.');
+const NO_ROOM = () => lookupError('[fetchRoomIdRoute] Failed to extract Room ID from HTML.', '[fetchRoomIdRoute] Failed to extract Room ID from API.');
+
+// A fake connector driven by a list of steps; each connection records the room ID it was given.
+function lookupLib(steps) {
+  class UserOfflineError extends Error {}
+  const made = [];
+  class TikTokLiveConnection extends EventEmitter {
+    constructor(user, opts) { super(); this.user = user; this.opts = opts; made.push(this); }
+    async connect(roomId) {
+      this.connectArg = roomId;
+      const step = steps.shift() || 'hang';
+      if (step instanceof Error) throw step;
+      if (typeof step === 'function') throw step();
+      if (step === 'offline') throw new UserOfflineError("The requested user isn't online :(");
+      if (step.startsWith('live')) {
+        const [, room = 'R1', owner = this.user] = step.split(':');
+        this.roomInfo = { data: { status: 2, owner: { display_id: owner } } };
+        setImmediate(() => this.emit('connected', { roomId: room, roomInfo: this.roomInfo }));
+        return {};
+      }
+      return new Promise(() => {});
+    }
+    disconnect() { this.disconnected = true; }
+  }
+  return { made, lib: { TikTokLiveConnection, UserOfflineError, SignatureRateLimitError: class extends Error {},
+    ControlEvent: { CONNECTED: 'connected', DISCONNECTED: 'disconnected', ERROR: 'error', WEBSOCKET_DATA: 'websocketData' },
+    WebcastEvent: { LIKE: 'like', ROOM_USER: 'roomUser', STREAM_END: 'streamEnd', GIFT: 'gift' } } };
+}
+function memStore(init = {}) { const m = { ...init }; return { m, get: (k) => m[k], set: (k, v) => { if (v === null || v === undefined) delete m[k]; else m[k] = v; } }; }
+function lookupLink(steps, { persist = memStore(), start = 1_000_000 } = {}) {
+  const f = lookupLib(steps);
+  const T = timers();
+  const clock = { t: start };
+  const link = new TikTokLink({ lib: f.lib, ...T, persist, random: () => 0.5, mono: () => clock.t, now: () => clock.t });
+  return { f, T, clock, link, persist, fire: () => { const h = T.list.at(-1); T.list = []; h.fn(); return h.ms; } };
+}
+
+test('a failed room-ID lookup is classified: account not found, simply not LIVE, or blocked by TikTok', () => {
+  assert.strictEqual(classifyLookup(NOT_FOUND()), 'not_found');
+  assert.strictEqual(classifyLookup(NO_ROOM()), 'offline');
+  assert.strictEqual(classifyLookup(BLOCKED()), 'blocked');
+  assert.strictEqual(classifyLookup(lookupError()), 'blocked');
+  assert.strictEqual(classifyLookup(new Error('getaddrinfo ENOTFOUND www.tiktok.com')), null, 'other failures keep their own handling');
+});
+
+test('a pasted LIVE link or room ID is read safely', () => {
+  assert.deepStrictEqual(parseRoomInput('7561234567890123456'), { roomId: '7561234567890123456' });
+  assert.deepStrictEqual(parseRoomInput('https://www.tiktok.com/@Mel.Heart/live?room_id=7561234567890123456&_r=1'), { roomId: '7561234567890123456', handle: 'mel.heart' });
+  assert.deepStrictEqual(parseRoomInput('https://vm.tiktok.com/ZMabc123/'), { shortLink: 'https://vm.tiktok.com/ZMabc123/' });
+  assert.strictEqual(parseRoomInput('https://www.tiktok.com/@someone/live').error, 'no_room_id');
+  assert.strictEqual(parseRoomInput('https://evil.example.com/?room_id=7561234567890123456').error, 'not_tiktok');
+  assert.strictEqual(parseRoomInput('').error, 'empty');
+});
+
+test('blocked lookups back off 30 s -> 1 -> 2 -> 5 min, and the error says why', async () => {
+  const { link, fire } = lookupLink([BLOCKED, BLOCKED, BLOCKED, BLOCKED, BLOCKED, BLOCKED]);
+  link.start('host');
+  const waits = [];
+  for (let i = 0; i < 5; i++) { await tick(); waits.push(fire()); }
+  await tick();
+  assert.deepStrictEqual(waits, [...BLOCKED_BACKOFF_MS, BLOCKED_BACKOFF_MS.at(-1)]);
+  assert.strictEqual(link.state.errorKind, 'blocked');
+  assert.match(link.state.error, /room_id_blocked/);
+  link.retryNow();                                                     // "Check now" can't hammer TikTok during the wait
+  assert.strictEqual(link.state.status, 'error');
+  link.stop();
+});
+
+test('a restart right after a refused lookup waits out the rest of 2 minutes instead of asking again', async () => {
+  const persist = memStore();
+  const a = lookupLink([BLOCKED], { persist });
+  a.link.start('host');
+  await tick();
+  assert.strictEqual(a.f.made.length, 1);
+  a.link.stop();
+  const b = lookupLink(['live'], { persist, start: a.clock.t + 40000 });  // the app restarts 40 s later
+  b.link.start('host');
+  await tick();
+  assert.strictEqual(b.f.made.length, 0, 'no lookup on start');
+  assert.strictEqual(b.link.state.errorKind, 'blocked');
+  assert.strictEqual(b.T.list.at(-1).ms, 80000, 'waits the remaining 80 s');
+  b.fire(); await tick(); await tick();
+  assert.strictEqual(b.link.state.status, 'live');
+  assert.strictEqual(persist.get('tiktokLookupFail'), undefined, 'a good connection forgets the refusal');
+  b.link.stop();
+});
+
+test('TikTok saying the account does not exist checks again only every 5 minutes; an account with no LIVE is just "not live"', async () => {
+  const a = lookupLink([NOT_FOUND]);
+  a.link.start('ghost_user');
+  await tick();
+  assert.strictEqual(a.link.state.errorKind, 'not_found');
+  assert.match(a.link.state.error, /can't find @ghost_user/);
+  assert.strictEqual(a.T.list.at(-1).ms, NOT_FOUND_RETRY_MS);
+  a.link.stop();
+  const b = lookupLink([NO_ROOM]);
+  b.link.setOfflinePoll(180000);
+  b.link.start('host');
+  await tick();
+  assert.strictEqual(b.link.state.status, 'offline');
+  assert.strictEqual(b.T.list.at(-1).ms, 180000);
+  b.link.stop();
+});
+
+test('a reconnect reuses the LIVE room (no lookup); a remembered room that ended is dropped and looked up again', async () => {
+  const { f, link, fire, persist } = lookupLink(['live:7000000007', 'live:7000000007', 'offline', 'live:7000000008']);
+  link.start('host');
+  await tick(); await tick();
+  assert.strictEqual(f.made[0].connectArg, undefined, 'the first connection looks the room up');
+  assert.strictEqual(persist.get('tiktokRoomCache').roomId, '7000000007');
+  f.made[0].emit('disconnected');                                      // a drop mid-LIVE
+  fire(); await tick(); await tick();
+  assert.strictEqual(f.made[1].connectArg, '7000000007', 'the reconnect skips the lookup');
+  assert.strictEqual(link.state.status, 'live');
+  f.made[1].emit('disconnected');
+  fire(); await tick();                                                // R7 has ended meanwhile
+  assert.strictEqual(f.made[2].connectArg, '7000000007');
+  assert.strictEqual(persist.get('tiktokRoomCache'), undefined, 'the ended room is forgotten');
+  assert.strictEqual(fire(), 1000, 'and looked up again right away');
+  await tick(); await tick();
+  assert.strictEqual(f.made[3].connectArg, undefined);
+  assert.strictEqual(link.state.roomId, '7000000008');
+  link.stop();
+});
+
+test('TikTok ending the LIVE forgets its room', async () => {
+  const { f, link, persist } = lookupLink(['live:7000000009']);
+  link.start('host');
+  await tick(); await tick();
+  assert.strictEqual(persist.get('tiktokRoomCache').roomId, '7000000009');
+  f.made[0].emit('streamEnd', {});
+  f.made[0].emit('disconnected');
+  assert.strictEqual(persist.get('tiktokRoomCache'), undefined);
+  link.stop();
+});
+
+test('a pasted room skips the lookup, but only the host\'s OWN LIVE is accepted, and it clears when that LIVE ends', async () => {
+  const { f, link, fire, persist } = lookupLink([BLOCKED, 'live:7561234567890123456:someone_else', 'live:7561234567890123456:host', 'offline']);
+  link.start('host');
+  await tick();
+  assert.strictEqual(link.state.errorKind, 'blocked');
+  link.setManualRoom('7561234567890123456');                           // tries right away, even during the blocked wait
+  await tick(); await tick();
+  assert.strictEqual(f.made[1].connectArg, '7561234567890123456');
+  assert.strictEqual(link.state.errorKind, 'wrong_room', 'another account\'s LIVE is refused');
+  assert.strictEqual(link.state.wrongOwner, 'someone_else');
+  assert.strictEqual(link.manualRoom(), null, 'and forgotten');
+  link.setManualRoom('7561234567890123456');
+  await tick(); await tick();
+  assert.strictEqual(link.state.status, 'live');
+  assert.strictEqual(link.manualRoom(), '7561234567890123456');
+  f.made[2].emit('disconnected');
+  fire(); await tick();                                                // the pasted LIVE is over
+  assert.strictEqual(link.state.status, 'offline');
+  assert.strictEqual(link.manualRoom(), null);
+  link.stop();
+});

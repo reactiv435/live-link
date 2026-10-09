@@ -5,6 +5,7 @@ const EventEmitter = require('events');
 const crypto = require('crypto');
 const { LikeBatcher, takeGiftChunk } = require('./batcher');
 const { ApiError } = require('./api');
+const { parseRoomInput } = require('./tiktok-link');
 
 const DEFAULTS = {
   push_interval_ms: 2000,
@@ -59,6 +60,7 @@ class Controller extends EventEmitter {
     this.refreshRetryMs = opts.refreshRetryMs || REFRESH_RETRY_MS;
     this.retrySteps = opts.retryStepsMs || RETRY_STEPS_MS;
     this.platform = opts.platform || process.platform;
+    this.fetch = opts.fetch || null;            // for following a pasted short link (tests inject one)
     this.arch = opts.arch || process.arch;
     this.giftBy = new Map();         // handle -> { name, coins } this LIVE, for the top gifter
     this.giftsPerPush = 50;          // halves when the site says a push was too big (413), grows back after clean pushes
@@ -359,6 +361,27 @@ class Controller extends EventEmitter {
     else this._creditLastSession(room, 0, giftTaps);
   }
 
+  // The host pasted their TikTok LIVE link or room ID (when TikTok blocks the automatic lookup). Short share links are
+  // followed to find the room. A link to another account's LIVE is refused here, and the link checks the room's owner
+  // again once connected. Empty text clears it. Returns { ok } or { ok: false, error, handle? }.
+  async setManualRoom(text) {
+    if (!String(text || '').trim()) { if (this.link.setManualRoom) this.link.setManualRoom(null); this._render(); return { ok: true, cleared: true }; }
+    if (!this.s.tiktokUsername || !this.link.running) return { ok: false, error: 'not_watching' };
+    let r = parseRoomInput(text);
+    if (r.shortLink) {
+      try {
+        const res = await (this.fetch || globalThis.fetch)(r.shortLink, { redirect: 'follow', signal: AbortSignal.timeout(10000) });
+        r = parseRoomInput(res.url || '');
+      } catch (e) { return { ok: false, error: 'link_unreachable' }; }
+    }
+    if (r.handle && r.handle !== this.s.tiktokUsername) return { ok: false, error: 'other_account', handle: r.handle };
+    if (!r.roomId) return { ok: false, error: r.error || 'no_room_id' };
+    this.log('info', `using a pasted LIVE room for @${this.s.tiktokUsername}`);
+    this.link.setManualRoom(r.roomId);
+    this._render();
+    return { ok: true, roomId: r.roomId };
+  }
+
   // "Check TikTok now": resumes a paused app, retries a locked sign-in, otherwise looks right away.
   retryNow() {
     if (this.s.phase === 'locked') { this.unlockToken(); return; }
@@ -507,7 +530,8 @@ class Controller extends EventEmitter {
     const canRun = this.s.phase === 'ready' && !this.s.paused && this.s.tiktokUsername && this.s.verified && (this.s.enabled || this.s.dryRun);
     if (canRun) {
       // Check TikTok more often while the host's show is on the site.
-      this.link.setOfflinePoll(this.s.siteLive ? 30000 : 90000);
+      // Before the host's show is on, check slowly: each check is a room lookup, which TikTok rate-limits per network.
+      this.link.setOfflinePoll(this.s.siteLive ? 30000 : 180000);
       this.link.start(this.s.tiktokUsername);
       this._statusSoon();
     } else {
@@ -804,6 +828,7 @@ class Controller extends EventEmitter {
       app_version: this.appVersion,
       // While paused the dashboard (and the Go Live check) show why this computer isn't watching.
       last_error: this.s.paused ? PAUSED_REASON : (String(tk.error || this.s.siteError || '').slice(0, 500) || null),
+      reason: this._statusReason(),
     };
     if (withTotal) {
       body.tiktok_room_id = tk.roomId ? String(tk.roomId) : (this.batcher.roomId || null);
@@ -811,7 +836,18 @@ class Controller extends EventEmitter {
     }
     return body;
   }
-  _statusKey() { const b = this._statusBody(false); return `${b.connected}|${b.tiktok_live}|${this.s.tiktok.roomId}|${b.last_error || ''}`; }
+  _statusKey() { const b = this._statusBody(false); return `${b.connected}|${b.tiktok_live}|${this.s.tiktok.roomId}|${b.last_error || ''}|${b.reason || ''}`; }
+
+  // Why this computer isn't in the host's TikTok LIVE right now, as a code the site's dashboard can show (null = it is).
+  _statusReason() {
+    const tk = this.s.tiktok;
+    if (this.s.paused) return 'paused';
+    if (!this.link.running) return 'not_watching';
+    if (tk.status === 'live') return null;
+    if (tk.status === 'offline') return 'not_live';
+    if (tk.status === 'connecting' || tk.status === 'reconnecting') return 'connecting';
+    return { blocked: 'room_id_blocked', not_found: 'tiktok_user_not_found', 'rate-limit': 'rate_limited', wrong_room: 'manual_room_rejected' }[tk.errorKind] || 'tiktok_unreachable';
+  }
 
   // Status rides inside each push; a separate call goes out only when the state changes or after 60 s without one.
   _statusSoon() {
@@ -928,6 +964,13 @@ class Controller extends EventEmitter {
   // Why TikTok can't be reached, in words a host can act on (the raw error stays in the log). "Check the internet"
   // only when the site can't be reached either: a TikTok problem with working internet is TikTok's.
   _tiktokTrouble(tk) {
+    const u = this.s.tiktokUsername;
+    if (tk.errorKind === 'blocked') return { short: 'TikTok is blocking LIVE lookups from this network for now.',
+      long: 'TikTok is temporarily blocking lookups from this network. Wait a few minutes, try a phone hotspot, or paste your LIVE link in Settings.' };
+    if (tk.errorKind === 'not_found') return { short: `TikTok can't find @${u}.`,
+      long: `TikTok can't find @${u}. If your TikTok username changed, update it on your dashboard (LIVE Link tab). LIVE Link checks again every few minutes.` };
+    if (tk.errorKind === 'wrong_room') return { short: 'The pasted LIVE belongs to another account.',
+      long: `The LIVE link you pasted belongs to ${tk.wrongOwner ? '@' + tk.wrongOwner : 'another account'}, not @${u}, so it was not used. Paste the link to your own LIVE.` };
     if (!this._siteFine()) return { short: "Can't reach TikTok. Check this computer's internet.", long: "Can't reach TikTok. Check this computer's internet; LIVE Link keeps trying by itself." };
     if (tk.errorKind === 'timeout') return { short: "TikTok isn't answering (your internet works).", long: "TikTok isn't answering right now (your internet works). LIVE Link keeps trying by itself." };
     return { short: "TikTok didn't let LIVE Link in this time (your internet works).", long: "TikTok didn't let LIVE Link connect this time (your internet works). It keeps trying by itself." };
@@ -998,7 +1041,8 @@ class Controller extends EventEmitter {
     else if (tk.status === 'connecting' || tk.status === 'reconnecting') live = { key: 'live', label: 'TikTok LIVE', state: 'wait', text: tk.status === 'connecting' ? 'Connecting to TikTok...' : 'Reconnecting to TikTok...' };
     else if (tk.status === 'offline') live = { key: 'live', label: 'TikTok LIVE', state: 'wait', text: `@${s.tiktokUsername} isn't LIVE yet.`, retryAt: tk.retryAt, action: 'check' };
     else if (tk.status === 'error' && tk.errorKind === 'rate-limit') live = { key: 'live', label: 'TikTok LIVE', state: 'problem', text: 'TikTok asked us to slow down.', retryAt: tk.retryAt };
-    else if (tk.status === 'error') live = { key: 'live', label: 'TikTok LIVE', state: 'problem', text: this._tiktokTrouble(tk).short, retryAt: tk.retryAt, action: 'check' };
+    else if (tk.status === 'error') live = { key: 'live', label: 'TikTok LIVE', state: 'problem', text: this._tiktokTrouble(tk).short, retryAt: tk.retryAt,
+      action: ['blocked', 'wrong_room'].includes(tk.errorKind) ? 'manual' : tk.errorKind === 'not_found' ? 'dashboard' : 'check' };
     else live = { key: 'live', label: 'TikTok LIVE', state: 'wait', text: 'Getting ready...' };
     rows.push(live);
     rows.push(s.siteError ? { key: 'site', label: 'reactivvibeai.com', state: 'problem', text: "Can't reach the site. Retrying by itself; taps still count." }
@@ -1028,6 +1072,7 @@ class Controller extends EventEmitter {
     }
     this._lastRender = now;
     this._computeAtom();
+    this.s.manualRoom = this.link.manualRoom ? this.link.manualRoom() : null;
     this.s.message = this._message();
     this.s.steps = this._steps();
     const cutoff = now - 60000;

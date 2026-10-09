@@ -937,3 +937,69 @@ test('after a 413 the gift batch size grows back once pushes are clean again', a
   assert.strictEqual(t.ctl.giftsPerPush, 10);
   await t.done();
 });
+
+// ---------------------------------------------------------------- 1.0.6: room-ID lookups
+
+test('status says WHY the computer is not in the LIVE: blocked lookups, unknown account, not live, paused', async () => {
+  const t = await setup({ autoApprove: true });
+  await t.ctl.pair('TEST2345');
+  const reasonOf = () => t.ctl._statusBody(false).reason;
+  t.link._set({ status: 'error', errorKind: 'blocked', error: 'TikTok is blocking LIVE lookups from this network (room_id_blocked)' });
+  assert.strictEqual(reasonOf(), 'room_id_blocked');
+  assert.strictEqual(t.ctl._statusBody(false).tiktok_live, false);
+  assert.ok(await until(() => t.mock.state.statuses.some((x) => x.reason === 'room_id_blocked' && /room_id_blocked/.test(x.last_error))), 'sent to the site');
+  t.link._set({ status: 'error', errorKind: 'not_found', error: "TikTok can't find @test_host (tiktok_user_not_found)" });
+  assert.strictEqual(reasonOf(), 'tiktok_user_not_found');
+  t.link._set({ status: 'offline', errorKind: 'offline', error: null });
+  assert.strictEqual(reasonOf(), 'not_live');
+  t.link.goLive('R1');
+  assert.strictEqual(reasonOf(), null);
+  t.ctl.setPaused(true);
+  assert.strictEqual(reasonOf(), 'paused');
+  await t.done();
+});
+
+test('a blocked lookup tells the host what to do, and offers to paste the LIVE link', async () => {
+  const t = await setup({ autoApprove: true });
+  await t.ctl.pair('TEST2345');
+  t.link._set({ status: 'error', errorKind: 'blocked', retryAt: Date.now() + 60000 });
+  assert.match(t.ctl.s.message.text, /temporarily blocking lookups from this network.*phone hotspot.*paste your LIVE link/);
+  assert.strictEqual(t.ctl.s.steps.find((r) => r.key === 'live').action, 'manual');
+  t.link._set({ status: 'error', errorKind: 'not_found' });
+  assert.match(t.ctl.s.message.text, /can't find @test_host.*update it on your dashboard/);
+  assert.strictEqual(t.ctl.s.steps.find((r) => r.key === 'live').action, 'dashboard');
+  await t.done();
+});
+
+test('before the show is on, TikTok is checked every 3 minutes (every 30 s once it is on)', async () => {
+  const t = await setup({ autoApprove: true });
+  t.mock.state.host.site_live = false;
+  await t.ctl.pair('TEST2345');
+  assert.strictEqual(t.link.offlinePoll, 180000);
+  t.mock.state.host.site_live = true;
+  await t.ctl._loadConfig();
+  assert.strictEqual(t.link.offlinePoll, 30000);
+  await t.done();
+});
+
+test('a pasted LIVE link: own room used, another account refused, short links followed, links without a room explained', async () => {
+  const followed = [];
+  const fetch = async (url) => { followed.push(url); return { url: 'https://www.tiktok.com/@test_host/live?room_id=7561234567890123456&_r=1' }; };
+  const t = await setup({ autoApprove: true }, { fetch });
+  await t.ctl.pair('TEST2345');
+  let used = null;
+  t.link.setManualRoom = (r) => { used = r; };
+  t.link.manualRoom = () => used;
+  assert.deepStrictEqual(await t.ctl.setManualRoom('https://www.tiktok.com/@someone_famous/live?room_id=7000000000000000001'),
+    { ok: false, error: 'other_account', handle: 'someone_famous' });
+  assert.strictEqual(used, null, 'another account\'s LIVE is never used');
+  assert.strictEqual((await t.ctl.setManualRoom('https://www.tiktok.com/@test_host/live')).error, 'no_room_id');
+  const r = await t.ctl.setManualRoom('https://vm.tiktok.com/ZMabc123/');
+  assert.deepStrictEqual(followed, ['https://vm.tiktok.com/ZMabc123/']);
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(used, '7561234567890123456');
+  assert.strictEqual(t.ctl.s.manualRoom, '7561234567890123456', 'the window shows it is in use');
+  assert.strictEqual((await t.ctl.setManualRoom('')).cleared, true);
+  assert.strictEqual(used, null);
+  await t.done();
+});

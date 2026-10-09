@@ -113,6 +113,11 @@
     <label class="row"><span id="s-autostart-label">Start with Windows<small>Runs quietly in the tray after you sign in to Windows.</small></span><input type="checkbox" id="s-autostart"></label>
     <label class="row"><span>Pop-up notifications<small>When it connects to your LIVE, loses it, and when your LIVE ends.</small></span><input type="checkbox" id="s-notify"></label>
     <label class="row"><span>Test mode<small>Checks everything with the site but adds nothing to the bar. Use it for a test show; turn it off before a real one.</small></span><input type="checkbox" id="s-dry"></label>
+    <div class="manual" id="manual">
+      <span class="manual-title">Can't find your LIVE?<small>If TikTok blocks LIVE Link's lookup, paste your TikTok LIVE link (Share, then Copy link) or room ID while you're LIVE. It's used until that LIVE ends.</small></span>
+      <form id="manual-form" class="manual-form" autocomplete="off"><input id="manual-input" spellcheck="false" placeholder="TikTok LIVE link or room ID" aria-label="TikTok LIVE link or room ID"><button class="ghost" id="manual-btn" type="submit">Use</button></form>
+      <p class="manual-status hidden" id="manual-status" role="status"></p>
+    </div>
     <div class="row static"><span>This computer<small id="s-device">-</small></span></div>
     <div class="row static"><span>Version<small id="s-version">-</small></span></div>
     <p class="note hidden" id="s-testserver"></p>

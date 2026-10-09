@@ -187,7 +187,8 @@ app.whenReady().then(async () => {
   });
   if (!store.get('deviceName')) store.set('deviceName', os.hostname().slice(0, 40));
 
-  const link = new TikTokLink({ log });
+  // The link keeps refused lookups, this LIVE's room and a pasted room in the settings file (they must survive a restart).
+  const link = new TikTokLink({ log, persist: { get: (k) => store.get(k), set: (k, v) => store.set(k, v) } });
   const api = new LiveLinkApi({ baseUrl: API_BASE, apiKey: SITE.publishableKey, getToken: () => store.getToken(), userAgent: `ReactivVibe-LIVE-Link/${VERSION}` });
   ctl = new Controller({ api, link, store, log, appVersion: VERSION, deviceName: store.get('deviceName') });
 
@@ -235,6 +236,10 @@ app.whenReady().then(async () => {
   });
   ipcMain.handle('unpair', () => { ctl.unpair(); return true; });
   ipcMain.handle('retry', () => { ctl.retryNow(); return true; });
+  ipcMain.handle('setManualRoom', async (_e, text) => {
+    try { return await ctl.setManualRoom(String(text || '').slice(0, 500)); }
+    catch (e) { log('warn', `pasted LIVE link: ${e && e.message}`); return { ok: false, error: 'error' }; }
+  });
   ipcMain.handle('setSetting', (_e, key, value) => {
     if (key === 'startWithWindows') app.setLoginItemSettings(IS_MAC ? { openAtLogin: !!value } : { openAtLogin: !!value, args: ['--hidden'] });
     else if (key === 'dryRun') ctl.setDryRun(!!value);

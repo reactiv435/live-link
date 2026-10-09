@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld('liveLink', {
   pair: (code) => ipcRenderer.invoke('pair', String(code || '')),
   unpair: () => ipcRenderer.invoke('unpair'),
   retry: () => ipcRenderer.invoke('retry'),
+  setManualRoom: (text) => ipcRenderer.invoke('setManualRoom', String(text || '')),
   setSetting: (key, value) => ipcRenderer.invoke('setSetting', String(key), value),
   open: (which) => ipcRenderer.invoke('open', String(which)),
   onState: (cb) => { const f = (_e, s) => cb(s); ipcRenderer.on('state', f); return () => ipcRenderer.removeListener('state', f); },

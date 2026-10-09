@@ -44,6 +44,7 @@
     $('status').classList.toggle('setup', s.phase !== 'ready' || steps.some((st) => st.state === 'todo' || st.state === 'problem' || (st.key === 'send' && st.state === 'off')));
     renderGifts(s);
     renderSteps(s.steps || []);
+    renderManual(s);
   }
 
   // ---------------------------------------------------------------- update banner
@@ -103,12 +104,15 @@
   function renderHeroButton(s) {
     const btn = $('conn-btn');
     const steps = s.steps || [];
-    const todo = steps.find((st) => (st.state === 'todo' || st.state === 'problem') && (st.action === 'dashboard' || st.action === 'retry'));
+    const todo = steps.find((st) => (st.state === 'todo' || st.state === 'problem') && (st.action === 'dashboard' || st.action === 'retry' || st.action === 'manual'));
     const sendOff = s.phase === 'ready' && steps.some((st) => st.key === 'send' && st.state === 'off');
     let label, cls, act;
     if (s.phase === 'update_required') { label = 'Download update'; cls = 'next'; act = () => bridge.open('update'); }
     else if (s.phase === 'locked') { label = 'Retry'; cls = 'next'; act = () => bridge.retry(); }
-    else if (todo) { label = todo.action === 'retry' ? 'Retry' : 'Open dashboard'; cls = 'next'; act = () => (todo.action === 'retry' ? bridge.retry() : bridge.open('dashboard')); }
+    else if (todo) {
+      label = todo.action === 'retry' ? 'Retry' : todo.action === 'manual' ? 'Paste your LIVE link' : 'Open dashboard'; cls = 'next';
+      act = () => (todo.action === 'retry' ? bridge.retry() : todo.action === 'manual' ? openManual() : bridge.open('dashboard'));
+    }
     else if (s.phase !== 'ready') { label = 'Open dashboard'; cls = 'quiet'; act = () => bridge.open('dashboard'); }
     else if (s.paused) { label = 'Resume'; cls = 'paused-btn'; act = () => bridge.setSetting('paused', false); }
     else if (sendOff && !s.dryRun) { label = 'Try it in Test mode'; cls = 'quiet'; act = () => bridge.setSetting('dryRun', true); }
@@ -199,8 +203,8 @@
       li.append(ico, body);
       if (st.action) {
         const btn = document.createElement('button'); btn.className = 'act';
-        btn.textContent = st.action === 'check' ? 'Check now' : st.action === 'retry' ? 'Retry' : 'Open dashboard';
-        btn.addEventListener('click', () => (st.action === 'check' || st.action === 'retry' ? bridge.retry() : bridge.open('dashboard')));
+        btn.textContent = st.action === 'check' ? 'Check now' : st.action === 'retry' ? 'Retry' : st.action === 'manual' ? 'Paste LIVE link' : 'Open dashboard';
+        btn.addEventListener('click', () => (st.action === 'check' || st.action === 'retry' ? bridge.retry() : st.action === 'manual' ? openManual() : bridge.open('dashboard')));
         li.append(btn);
       } else li.append(document.createElement('span'));
       ol.append(li);
@@ -268,6 +272,38 @@
     $('settings').classList.remove('hidden');
   }
   $('gear').addEventListener('click', openSettings);
+  function openManual() { openSettings().then(() => { const i = $('manual-input'); i.scrollIntoView({ block: 'center' }); i.focus(); }); }
+  const MANUAL_ERRORS = {
+    not_watching: "LIVE Link isn't watching TikTok yet: finish the setup steps first.",
+    not_a_link: "That isn't a TikTok LIVE link or room ID.", not_tiktok: "That isn't a TikTok link.",
+    no_room_id: "That link doesn't include your LIVE's room number. While you're LIVE, use TikTok's Share button, then Copy link, and paste that.",
+    link_unreachable: "Couldn't open that link. Paste it again, or paste the room ID.",
+  };
+  function renderManual(s) {
+    const el = $('manual-status');
+    if (s && s.manualRoom) {
+      el.className = 'manual-status';
+      el.textContent = `Using your pasted LIVE (room ...${String(s.manualRoom).slice(-5)}) until it ends.`;
+      const b = document.createElement('button'); b.className = 'link'; b.type = 'button'; b.textContent = 'Stop using it';
+      b.addEventListener('click', async () => { await bridge.setManualRoom(''); el.classList.add('hidden'); });
+      el.append(b);
+    } else if (!el.classList.contains('bad')) el.classList.add('hidden');
+  }
+  $('manual-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const text = $('manual-input').value.trim();
+    if (!text || !bridge.setManualRoom) return;
+    const btn = $('manual-btn'); btn.disabled = true;
+    const r = await bridge.setManualRoom(text);
+    btn.disabled = false;
+    const el = $('manual-status');
+    if (r && r.ok) { $('manual-input').value = ''; el.className = 'manual-status'; el.textContent = 'Got it: LIVE Link is connecting to that LIVE now.'; }
+    else {
+      el.className = 'manual-status bad';
+      el.textContent = r && r.error === 'other_account' ? `That link is for @${r.handle}, but your verified TikTok is @${(current && current.tiktokUsername) || ''}.`
+        : MANUAL_ERRORS[r && r.error] || "That didn't work. Check the link and try again.";
+    }
+  });
   $('close-settings').addEventListener('click', () => $('settings').classList.add('hidden'));
   $('s-autostart').addEventListener('change', (e) => bridge.setSetting('startWithWindows', e.target.checked));
   $('s-dry').addEventListener('change', (e) => bridge.setSetting('dryRun', e.target.checked));
@@ -313,6 +349,8 @@
         steps: doneSteps.map((r) => (r.key === 'live' ? { key: 'live', label: 'TikTok LIVE', state: 'wait', text: "@the_boneyard_ai isn't LIVE yet.", retryAt: Date.now() + 24000, action: 'check' } : r)) },
       error: { ...base, ...notLive, tiktok: { status: 'error', errorKind: 'timeout' }, message: { level: 'warn', text: "TikTok isn't answering right now (your internet works). LIVE Link keeps trying by itself." },
         steps: doneSteps.map((r) => (r.key === 'live' ? { key: 'live', label: 'TikTok LIVE', state: 'problem', text: "TikTok isn't answering (your internet works).", retryAt: Date.now() + 40000, action: 'check' } : r)) },
+      blocked: { ...base, ...notLive, tiktok: { status: 'error', errorKind: 'blocked' }, message: { level: 'warn', text: 'TikTok is temporarily blocking lookups from this network. Wait a few minutes, try a phone hotspot, or paste your LIVE link in Settings.' },
+        steps: doneSteps.map((r) => (r.key === 'live' ? { key: 'live', label: 'TikTok LIVE', state: 'problem', text: 'TikTok is blocking LIVE lookups from this network for now.', retryAt: Date.now() + 60000, action: 'manual' } : r)) },
       verify: { ...base, ...notLive, tiktokUsername: null, tiktok: { status: 'idle' }, taps: { session: 0, accepted: 0 }, target: null, gifts: { units: 0, coins: 0, taps: 0, recent: [] },
         message: { level: 'setup', text: 'One step left: verify your TikTok on your dashboard (LIVE Link tab, TikTok verification).' },
         steps: [
@@ -338,6 +376,7 @@
       getSettings: async () => ({ notify: true, startWithWindows: true, dryRun: pick === 'test', deviceName: 'STREAM-PC', version: '1.0.5', testServer: null, platform: pick === 'locked' ? 'darwin' : 'win32' }),
       pair: async (c) => (c === 'TEST2345' ? { ok: true } : { ok: false, code: 'invalid_code' }),
       unpair: async () => true, retry: async () => true, setSetting: async () => true, open: async () => true,
+      setManualRoom: async (t) => (/\d{15,}/.test(t) ? { ok: true } : { ok: false, error: 'no_room_id' }),
       onState: (f) => { listeners.push(f); return () => {}; },
     };
   }

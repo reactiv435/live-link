@@ -78,3 +78,15 @@ The `live-link` bucket is PRIVATE (the project blocks public buckets), files liv
     (`rebaseline: true`). While the whole site fails, pushes are only retried with the same `batch_id`.
 17. **Gift queue.** Up to 20,000 queued gift items (one per combo) are held through an outage; beyond that the oldest
     are dropped and logged. Off-air gifts: the site answers them as a thank-you only (no hype); the app needs no change.
+
+## 1.0.6: room-ID lookups (2026-10-09)
+18. **Status `reason`.** Every status (standalone and inside pushes) now carries `reason`, a short code for why this
+    computer is not in the host's TikTok LIVE (null while it is): `paused`, `not_watching`, `not_live`, `connecting`,
+    `room_id_blocked` (TikTok refuses room lookups from this network), `tiktok_user_not_found` (TikTok says the
+    username doesn't exist), `rate_limited`, `manual_room_rejected` (a pasted LIVE belongs to another account),
+    `tiktok_unreachable`. `last_error` carries a sentence ending in the same code, e.g.
+    "TikTok is blocking LIVE lookups from this network (room_id_blocked)". ll_status ignores unknown fields today.
+19. **Lookups.** Refused room lookups back off 30 s, 1, 2, 5 min (+-20 % jitter) and are remembered across restarts
+    (no lookup within 2 min of a refused one); an unknown account is retried every 5 min; before the site show is on
+    TikTok is checked every 3 min (30 s once it is on). A LIVE's room ID is reused for reconnects. A host can paste
+    their LIVE link or room ID (Settings); the app only uses it if the room's owner is the verified username.

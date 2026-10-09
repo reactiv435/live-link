@@ -3,7 +3,8 @@
 // reconnect rules as the T.O.S CREW show program, which has read real LIVE taps with it since 2026-09-19).
 //
 // Emits:
-//   'state' { status, roomId, viewers, error, errorKind, retryAt }
+//   'state' { status, roomId, viewers, error, errorKind, retryAt, wrongOwner }
+//            errorKind: timeout | error | rate-limit | blocked | not_found | wrong_room | offline
 //            status: idle | connecting | live | offline | reconnecting | error
 //   'like'  { count, total, at }   count = taps in this batch, total = the room's running like total (or NaN)
 //   'gift'  { key, count, units, coins, giftId, name, imageUrl, userHandle, userName, at }
@@ -52,6 +53,44 @@ const UNSTABLE_DROP_MAX_MS = 40000;    // a room that keeps dropping right after
 const ENDED_ROOM_MS = 15 * 60000;      // how long TikTok may still offer a LIVE's room after it ended
 const PROBATION_MS = 20000;            // an ended room has this long to show real LIVE data
 const OFFLINE_POLL_MAX_MS = 300000;
+// Finding the LIVE's room ID ("lookup") is what TikTok blocks or rate-limits per network. When it refuses, back off
+// 30 s -> 1 -> 2 -> 5 min (with jitter, so many PCs don't retry in step), and remember the failure across restarts:
+// restarting the app must not retry at once (restarts and fast retries are what get a network blocked).
+const BLOCKED_BACKOFF_MS = [30000, 60000, 120000, 300000];
+const NOT_FOUND_RETRY_MS = 300000;     // TikTok says the account doesn't exist: check rarely
+const RESTART_HOLD_MS = 120000;        // no lookup within 2 min of the last refused one, even after a restart
+const ROOM_CACHE_MS = 12 * 3600000;    // a LIVE's room ID is reused (no lookup) for reconnects during that LIVE
+const LOOKUP_KEY = 'tiktokLookupFail', CACHE_KEY = 'tiktokRoomCache', MANUAL_KEY = 'tiktokManualRoom';
+
+// Why "Failed to retrieve Room ID from all sources" happened. The connector tries the LIVE page, TikTok's API and the
+// Euler sign server, and attaches each source's error:
+//   not_found = TikTok's API says the account doesn't exist (wrong or changed username, banned account);
+//   offline   = the account exists but has no LIVE room right now (it simply isn't LIVE);
+//   blocked   = captcha / blocked page / HTTP 403-429 / timeouts: TikTok is refusing lookups from this network.
+function classifyLookup(e) {
+  const subs = (e && e.config && Array.isArray(e.config.requestErrs)) ? e.config.requestErrs : [];
+  const msg = String((e && e.message) || e);
+  if (!subs.length && !/Room ID from all sources/i.test(msg)) return null;
+  const text = subs.map((x) => String((x && x.message) || x)).join(' | ') || msg;
+  if (/user_not_found|19881007/i.test(text)) return 'not_found';
+  if (/Failed to extract Room ID from (HTML|API)/i.test(text)) return 'offline';
+  return 'blocked';
+}
+
+// A pasted LIVE link or room ID -> { roomId } | { shortLink } | { error }. `handle` is the @name in a full link, if any.
+function parseRoomInput(text) {
+  const s = String(text || '').trim();
+  if (!s) return { error: 'empty' };
+  if (/^\d{15,22}$/.test(s)) return { roomId: s };
+  let url;
+  try { url = new URL(/^https?:\/\//i.test(s) ? s : 'https://' + s); } catch { return { error: 'not_a_link' }; }
+  if (!/(^|\.)tiktok\.com$/i.test(url.hostname)) return { error: 'not_tiktok' };
+  const handle = (url.pathname.match(/\/@([A-Za-z0-9._]{2,24})/) || [])[1] || null;
+  const room = url.searchParams.get('room_id') || url.searchParams.get('roomId') || (url.pathname.match(/\/live\/(\d{15,22})/) || [])[1];
+  if (room && /^\d{15,22}$/.test(room)) return { roomId: room, handle: handle && handle.toLowerCase() };
+  if (/^(vm|vt)\.tiktok\.com$/i.test(url.hostname) || /^\/t\//.test(url.pathname)) return { shortLink: url.toString() };
+  return { error: 'no_room_id', handle: handle && handle.toLowerCase() };
+}
 
 function loadConnector() {
   // Lazy so tests can inject a fake without loading the real library.
@@ -74,6 +113,12 @@ class TikTokLink extends EventEmitter {
     this.setInterval = opts.setInterval || setInterval;
     this.clearInterval = opts.clearInterval || clearInterval;
     this.signApiKey = opts.signApiKey || null;
+    // Small key/value store that survives restarts (the app's settings file): refused lookups, the room cache and
+    // a pasted room. Tests pass a plain object.
+    this.persist = opts.persist || { get: () => undefined, set: () => {} };
+    this.random = opts.random || Math.random;
+    this.lookupStep = 0;                     // position in BLOCKED_BACKOFF_MS
+    this.roomSource = null;                  // 'manual' | 'cache' | null: where the current attempt's room ID came from
     this.username = null;
     this.offlinePollMs = 30000;
     this.conn = null;
@@ -88,7 +133,7 @@ class TikTokLink extends EventEmitter {
     this.endedHits = 0;                       // times in a row TikTok handed that ended room out again
     this.probation = null;                    // { roomId, until } connected to that room, waiting for LIVE data
     this.watchdog = null;
-    this.state = { status: 'idle', roomId: null, viewers: 0, error: null, errorKind: null, retryAt: null };
+    this.state = { status: 'idle', roomId: null, viewers: 0, error: null, errorKind: null, retryAt: null, wrongOwner: null };
     this.giftStreaks = new Map();   // combo base key -> { seq, last, ended, at }
     this.giftMsgs = new Map();      // msgId of single gifts already seen -> at
   }
@@ -105,7 +150,54 @@ class TikTokLink extends EventEmitter {
     this.username = u;
     this.retryStep = 0;
     if (!this.watchdog) this.watchdog = this.setInterval(() => this._tick(), WATCHDOG_EVERY_MS);
+    // A lookup TikTok refused shortly before (this run or before a restart): wait out the hold instead of asking again.
+    const f = this.persist.get(LOOKUP_KEY);
+    if (f && f.username === u && Number(f.at) > 0) {
+      const age = this.now() - Number(f.at);
+      if (age < 30 * 60000) this.lookupStep = Math.min(Number(f.step) || 0, BLOCKED_BACKOFF_MS.length - 1);
+      const holdUntil = Math.max(Number(f.at) + RESTART_HOLD_MS, Number(f.retryAt) || 0);
+      if (['blocked', 'not_found', 'rate-limit'].includes(f.kind) && holdUntil > this.now()) {
+        const ms = holdUntil - this.now();
+        this.reconnectTimer = this.setTimeout(() => this._connect(), ms);
+        this._setState({ status: 'error', roomId: null, viewers: 0, error: this._kindText(f.kind), errorKind: f.kind, retryAt: holdUntil });
+        this.log('info', `last TikTok lookup was refused ${Math.round(age / 1000)} s ago (${f.kind}): waiting ${Math.round(ms / 1000)} s before asking again`);
+        return;
+      }
+    }
     this._connect();
+  }
+
+  // Short status text for the site's dashboard (last_error); the window words these itself.
+  _kindText(kind) {
+    if (kind === 'blocked') return 'TikTok is blocking LIVE lookups from this network (room_id_blocked)';
+    if (kind === 'not_found') return `TikTok can't find @${this.username} (tiktok_user_not_found)`;
+    if (kind === 'rate-limit') return 'TikTok asked LIVE Link to slow down (rate_limited)';
+    if (kind === 'wrong_room') return 'The pasted LIVE belongs to another account (manual_room_rejected)';
+    return null;
+  }
+
+  // ---------------------------------------------------------------- room cache + a pasted room
+  _cachedRoom() {
+    const c = this.persist.get(CACHE_KEY);
+    return c && c.username === this.username && /^\d{6,22}$/.test(String(c.roomId)) && this.now() - Number(c.at) < ROOM_CACHE_MS ? String(c.roomId) : null;
+  }
+  _clearCache(roomId) {
+    const c = this.persist.get(CACHE_KEY);
+    if (c && (!roomId || String(c.roomId) === String(roomId))) this.persist.set(CACHE_KEY, null);
+  }
+  manualRoom() {
+    const m = this.persist.get(MANUAL_KEY);
+    return m && m.username === this.username && /^\d{6,22}$/.test(String(m.roomId)) ? String(m.roomId) : null;
+  }
+  // The host pasted their LIVE (room ID): skip the lookup with it until that LIVE ends. null clears it.
+  setManualRoom(roomId) {
+    this.persist.set(MANUAL_KEY, roomId && this.username ? { username: this.username, roomId: String(roomId), at: this.now() } : null);
+    if (roomId && this.username) {
+      this.lookupStep = 0;
+      this.persist.set(LOOKUP_KEY, null);
+      const st = this.state.status;
+      if (st !== 'live') this._connect();                          // a waiting or failing link tries it right away
+    }
   }
 
   // Ends the link with NO auto-reconnect. Bumping the generation mutes every callback of the old connection,
@@ -119,7 +211,7 @@ class TikTokLink extends EventEmitter {
     this.clearTimeout(this.reconnectTimer); this.reconnectTimer = null;
     if (this.watchdog) { this.clearInterval(this.watchdog); this.watchdog = null; }
     this._dropConnection();
-    this._setState({ status: 'idle', roomId: null, viewers: 0, error: null, errorKind: null, retryAt: null });
+    this._setState({ status: 'idle', roomId: null, viewers: 0, error: null, errorKind: null, retryAt: null, wrongOwner: null });
   }
 
   // Try now (the UI's "Reconnect" button). Never tears down a healthy or in-progress connection, and never
@@ -128,8 +220,13 @@ class TikTokLink extends EventEmitter {
     if (!this.username) return;
     const st = this.state.status;
     if (st === 'live' || st === 'connecting' || st === 'reconnecting') return;
-    if (this.state.errorKind === 'rate-limit' && this.state.retryAt > this.now()) return;
+    if (this._holding()) return;
     this._connect();
+  }
+
+  // A rate-limit or a refused lookup is being waited out (each extra attempt makes TikTok's block last longer).
+  _holding() {
+    return ['rate-limit', 'blocked'].includes(this.state.errorKind) && this.state.retryAt > this.now();
   }
 
   // The computer woke from sleep (or was unlocked). A socket that slept through it is usually dead, and the next
@@ -137,7 +234,7 @@ class TikTokLink extends EventEmitter {
   // left alone. A rate-limit wait is still honoured.
   wake(fromSleep = true) {
     if (!this.username) return;
-    if (this.state.errorKind === 'rate-limit' && this.state.retryAt > this.now()) return;
+    if (this._holding()) return;
     const st = this.state.status;
     if (st === 'live' && !fromSleep && this.mono() - this.lastFrameAt < 30000) return;
     this.log('info', `${fromSleep ? 'woke from sleep' : 'screen unlocked'}: checking TikTok now (was ${st})`);
@@ -263,12 +360,33 @@ class TikTokLink extends EventEmitter {
     return { kind: 'error', ms: this._nextBackoff() };
   }
 
-  _failed(e) {
-    const msg = String((e && e.message) || e).slice(0, 500);   // sign-server errors can carry a whole HTML page
-    const f = this._classify(e);
+  _jitter(ms) { return Math.round(ms * (0.8 + 0.4 * this.random())); }   // +-20%
+
+  _failed(e, source = null) {
+    let msg = String((e && e.message) || e).slice(0, 500);   // sign-server errors can carry a whole HTML page
+    const lookup = classifyLookup(e);
+    if (lookup) {
+      const subs = (e.config && e.config.requestErrs || []).map((x) => String((x && x.message) || x).slice(0, 160)).join(' | ');
+      if (subs) msg = `${msg} [${subs}]`.slice(0, 500);
+    }
+    // A remembered room ID that no longer works (that LIVE ended, or TikTok won't open it): forget it and look the room
+    // up again right away. A pasted room whose LIVE ended is dropped too.
+    if (source === 'cache') { this._clearCache(); this.log('info', `the remembered room no longer works (${msg.slice(0, 120)}); looking it up again`); this._schedule(1000); return; }
+    let f;
+    if (lookup === 'offline') { this.retryStep = 0; this.lookupStep = 0; f = { kind: 'offline', ms: this.offlinePollMs }; }
+    else if (lookup === 'blocked') {
+      f = { kind: 'blocked', ms: this._jitter(BLOCKED_BACKOFF_MS[Math.min(this.lookupStep, BLOCKED_BACKOFF_MS.length - 1)]) };
+      this.lookupStep++;
+    } else if (lookup === 'not_found') f = { kind: 'not_found', ms: this._jitter(NOT_FOUND_RETRY_MS) };
+    else f = this._classify(e);
+    if (f.kind === 'offline' && source === 'manual') { this.persist.set(MANUAL_KEY, null); this.log('info', 'the pasted LIVE has ended; it is cleared'); }
     this.connectStartedAt = 0;
     const retryAt = this._schedule(f.ms);
-    this._setState({ status: f.kind === 'offline' ? 'offline' : 'error', roomId: null, viewers: 0, error: f.kind === 'offline' ? null : msg, errorKind: f.kind, retryAt });
+    const human = this._kindText(f.kind);
+    if (['blocked', 'not_found', 'rate-limit'].includes(f.kind)) {
+      this.persist.set(LOOKUP_KEY, { username: this.username, at: this.now(), kind: f.kind, step: this.lookupStep, retryAt });
+    } else if (f.kind === 'offline') this.persist.set(LOOKUP_KEY, null);
+    this._setState({ status: f.kind === 'offline' ? 'offline' : 'error', roomId: null, viewers: 0, error: f.kind === 'offline' ? null : (human || msg), errorKind: f.kind, retryAt });
     this.log(f.kind === 'offline' ? 'info' : 'warn', `TikTok connect: ${f.kind}${f.kind === 'offline' ? '' : ' - ' + msg}; next try in ${Math.round(f.ms / 1000)} s`);
   }
 
@@ -284,7 +402,12 @@ class TikTokLink extends EventEmitter {
     this._dropConnection();
     this.lastFrameAt = this.mono();
     this.connectStartedAt = this.mono();
-    this._setState({ status: this.state.status === 'live' ? 'reconnecting' : 'connecting', error: null, errorKind: null, retryAt: null });
+    // Skip the lookup TikTok rate-limits when the room is already known: a pasted room, or this LIVE's room from the
+    // last connection (a reconnect after a drop then needs no lookup at all).
+    const manual = this.manualRoom(), cached = manual ? null : this._cachedRoom();
+    const source = manual ? 'manual' : cached ? 'cache' : null;
+    this.roomSource = source;
+    this._setState({ status: this.state.status === 'live' ? 'reconnecting' : 'connecting', error: null, errorKind: null, retryAt: null, wrongOwner: null });
 
     const conn = new L.TikTokLiveConnection(this.username, {
       // Never replay the backlog TikTok hands over on connect: those likes happened before we were listening.
@@ -306,6 +429,12 @@ class TikTokLink extends EventEmitter {
       this.lastFrameAt = this.mono();
       this.connectStartedAt = 0;
       const roomId = (s && s.roomId) ? String(s.roomId) : null;
+      if (source === 'manual') {
+        // A pasted room must be this host's own LIVE: crediting another account's taps is never allowed.
+        const ri = conn.roomInfo || (s && s.roomInfo) || {};
+        const owner = String((ri.data && ri.data.owner && (ri.data.owner.display_id || ri.data.owner.unique_id)) || (ri.owner && ri.owner.display_id) || '').replace(/^@/, '').toLowerCase();
+        if (owner !== this.username) { this._rejectManual(owner); return; }
+      }
       const E = this.endedRoom;
       if (roomId && E && E.id === roomId && this.mono() - E.at < ENDED_ROOM_MS) {
         // The LIVE that just ended, handed out again: stay "connecting" until real LIVE data shows it is back.
@@ -337,7 +466,11 @@ class TikTokLink extends EventEmitter {
     on(W.STREAM_END, () => {
       this.streamEnded = true;
       const id = this.state.roomId || (this.probation && this.probation.roomId);
-      if (id) this.endedRoom = { id: String(id), at: this.mono() };
+      if (id) {
+        this.endedRoom = { id: String(id), at: this.mono() };
+        this._clearCache(id);                                         // a finished LIVE's room is never reused
+        if (this.manualRoom() === String(id)) this.persist.set(MANUAL_KEY, null);
+      }
       this.log('info', 'TikTok says the LIVE ended');
     });
     on(W.ROOM_USER, (d) => {
@@ -358,18 +491,36 @@ class TikTokLink extends EventEmitter {
     });
 
     try {
-      await conn.connect();
+      await conn.connect(manual || cached || undefined);
       if (generation !== this.generation) { try { conn.disconnect(); } catch {} }
     } catch (e) {
       if (generation !== this.generation) return;
-      this._failed(e);
+      this._failed(e, source);
     }
+  }
+
+  // The pasted room belongs to someone else (or its owner can't be read): drop it and go back to the normal lookup.
+  _rejectManual(owner) {
+    this.generation++;
+    this._dropConnection();
+    this.connectStartedAt = 0;
+    this.persist.set(MANUAL_KEY, null);
+    const retryAt = this._schedule(5000);
+    this._setState({ status: 'error', roomId: null, viewers: 0, error: this._kindText('wrong_room'), errorKind: 'wrong_room', wrongOwner: owner || null, retryAt });
+    this.log('warn', `the pasted room belongs to ${owner ? '@' + owner : 'an unknown account'}, not @${this.username}: ignored`);
   }
 
   _goLive(roomId) {
     this.probation = null;
     this.upSince = this.mono();
     if (roomId && (!this.endedRoom || this.endedRoom.id !== roomId)) { this.endedRoom = null; this.endedHits = 0; }
+    // Remember this LIVE's room (reconnects skip the lookup) and forget any refused lookup.
+    if (roomId) {
+      const c = this.persist.get(CACHE_KEY);
+      if (!c || c.roomId !== roomId || c.username !== this.username) this.persist.set(CACHE_KEY, { username: this.username, roomId, at: this.now() });
+    }
+    this.lookupStep = 0;
+    if (this.persist.get(LOOKUP_KEY)) this.persist.set(LOOKUP_KEY, null);
     this._setState({ status: 'live', roomId, error: null, errorKind: null, retryAt: null });
     this.log('info', `Connected to @${this.username} room ${this.state.roomId}`);
   }
@@ -417,4 +568,4 @@ class TikTokLink extends EventEmitter {
   }
 }
 
-module.exports = { TikTokLink, RETRY_BACKOFF_MS, RATE_LIMIT_MIN_MS, CONNECTING_TIMEOUT_MS, SILENT_SOCKET_MS };
+module.exports = { TikTokLink, classifyLookup, parseRoomInput, RETRY_BACKOFF_MS, RATE_LIMIT_MIN_MS, CONNECTING_TIMEOUT_MS, SILENT_SOCKET_MS, BLOCKED_BACKOFF_MS, NOT_FOUND_RETRY_MS, RESTART_HOLD_MS };
