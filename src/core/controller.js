@@ -969,8 +969,9 @@ class Controller extends EventEmitter {
       long: 'TikTok is temporarily blocking lookups from this network. Wait a few minutes, try a phone hotspot, or paste your LIVE link in Settings.' };
     if (tk.errorKind === 'not_found') return { short: `TikTok can't find @${u}.`,
       long: `TikTok can't find @${u}. If your TikTok username changed, update it on your dashboard (LIVE Link tab). LIVE Link checks again every few minutes.` };
-    if (tk.errorKind === 'wrong_room') return { short: 'The pasted LIVE belongs to another account.',
-      long: `The LIVE link you pasted belongs to ${tk.wrongOwner ? '@' + tk.wrongOwner : 'another account'}, not @${u}, so it was not used. Paste the link to your own LIVE.` };
+    if (tk.errorKind === 'wrong_room') return tk.wrongOwner
+      ? { short: 'The pasted LIVE belongs to another account.', long: `The LIVE link you pasted belongs to @${tk.wrongOwner}, not @${u}, so it was not used. Paste the link to your own LIVE.` }
+      : { short: "Couldn't confirm the pasted LIVE is yours.", long: `TikTok didn't say who owns the LIVE you pasted, so LIVE Link couldn't confirm it's @${u}'s and didn't use it. It keeps trying the normal way.` };
     if (!this._siteFine()) return { short: "Can't reach TikTok. Check this computer's internet.", long: "Can't reach TikTok. Check this computer's internet; LIVE Link keeps trying by itself." };
     if (tk.errorKind === 'timeout') return { short: "TikTok isn't answering (your internet works).", long: "TikTok isn't answering right now (your internet works). LIVE Link keeps trying by itself." };
     return { short: "TikTok didn't let LIVE Link in this time (your internet works).", long: "TikTok didn't let LIVE Link connect this time (your internet works). It keeps trying by itself." };

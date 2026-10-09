@@ -451,6 +451,8 @@ test('a reconnect reuses the LIVE room (no lookup); a remembered room that ended
   f.made[0].emit('disconnected');                                      // a drop mid-LIVE
   fire(); await tick(); await tick();
   assert.strictEqual(f.made[1].connectArg, '7000000007', 'the reconnect skips the lookup');
+  assert.notStrictEqual(link.state.status, 'live', 'a remembered room waits for real LIVE data');
+  f.made[1].emit('roomUser', { viewerCount: 40 });
   assert.strictEqual(link.state.status, 'live');
   f.made[1].emit('disconnected');
   fire(); await tick();                                                // R7 has ended meanwhile
@@ -493,5 +495,105 @@ test('a pasted room skips the lookup, but only the host\'s OWN LIVE is accepted,
   fire(); await tick();                                                // the pasted LIVE is over
   assert.strictEqual(link.state.status, 'offline');
   assert.strictEqual(link.manualRoom(), null);
+  link.stop();
+});
+
+test('a remembered room that is dead (no LIVE data within 20 s, e.g. a LIVE that ended while the app was closed) is dropped and looked up fresh', async () => {
+  const persist = memStore({ tiktokRoomCache: { username: 'host', roomId: '7000000005', at: 1_000_000 - 3600000 } });
+  const { f, clock, link, fire } = lookupLink(['live:7000000005', 'live:7000000006'], { persist });
+  link.start('host');
+  await tick(); await tick();
+  assert.strictEqual(f.made[0].connectArg, '7000000005');
+  assert.strictEqual(link.state.status, 'connecting', 'not reported LIVE yet');
+  clock.t += 21000; link._tick();
+  assert.strictEqual(persist.get('tiktokRoomCache'), undefined, 'forgotten');
+  assert.strictEqual(fire(), 1000, 'looked up again right away');
+  await tick(); await tick();
+  assert.strictEqual(f.made[1].connectArg, undefined, 'a fresh lookup');
+  assert.strictEqual(link.state.status, 'live');
+  assert.strictEqual(link.state.roomId, '7000000006');
+  link.stop();
+});
+
+// ---------------------------------------------------------------- 1.0.7: TikTok's LIVE page decides "is it LIVE" before connecting
+// A fake connector that also has the three lookup routes the app calls itself.
+function pageLib({ html, api, euler, steps = [] }) {
+  const f = lookupLib(steps);
+  const calls = { html: 0, api: 0, euler: 0 };
+  const run = (x, key) => async () => { calls[key]++; const v = typeof x === 'function' ? x() : x; if (v instanceof Error) throw v; return v; };
+  if (html !== undefined) f.lib.fetchRoomInfoFromHtmlRoute = run(html, 'html');
+  if (api !== undefined) f.lib.fetchRoomInfoFromApiLiveRoute = run(api, 'api');
+  if (euler !== undefined) f.lib.fetchRoomIdFromEulerRoute = run(euler, 'euler');
+  return { ...f, calls };
+}
+function pageLink(opts) {
+  const f = pageLib(opts);
+  const T = timers();
+  const clock = { t: 5_000_000 };
+  const link = new TikTokLink({ lib: f.lib, ...T, persist: memStore(), random: () => 0.5, mono: () => clock.t, now: () => clock.t });
+  link.setOfflinePoll(180000);
+  return { ...f, T, clock, link };
+}
+const page = (roomId, status) => ({ user: { roomId, status }, liveRoom: { status } });
+
+test('an ended LIVE (TikTok page status 4) is "not live" with no connection at all; the connector\'s own check missed it', async () => {
+  const { made, link, T, calls } = pageLink({ html: page('7692576528806300430', 4), steps: ['live:7692576528806300430'] });
+  link.start('host');
+  await tick(); await tick();
+  assert.strictEqual(link.state.status, 'offline');
+  assert.strictEqual(T.list.at(-1).ms, 180000);
+  assert.strictEqual(made[0].connectArg, undefined, 'never connected');
+  assert.ok(!('connectArg' in made[0]), 'connect() was not called');
+  assert.strictEqual(calls.html, 1, 'one request');
+  link.stop();
+});
+
+test('a LIVE account (status 2) connects straight to the room from the page', async () => {
+  const { made, link, calls } = pageLink({ html: page('7700000000000000001', 2), steps: ['live:7700000000000000001'] });
+  link.start('host');
+  await tick(); await tick(); await tick();
+  assert.strictEqual(made[0].connectArg, '7700000000000000001');
+  assert.strictEqual(link.state.status, 'live');
+  assert.strictEqual(calls.api, 0);
+  link.stop();
+});
+
+test('page blocked -> TikTok API; account not found -> not_found; both blocked -> sign server room, LIVE only if data comes', async () => {
+  const captcha = () => new Error('[fetchRoomInfoHtmlRoute] Failed to extract the SIGI_STATE HTML tag, you might be blocked by TikTok.');
+  const a = pageLink({ html: captcha, api: { data: { user: { roomId: '7700000000000000002', status: 2 }, liveRoom: { status: 2 } } }, steps: ['live:7700000000000000002'] });
+  a.link.start('host');
+  await tick(); await tick(); await tick(); await tick();
+  assert.strictEqual(a.made[0].connectArg, '7700000000000000002');
+  assert.strictEqual(a.link.state.status, 'live');
+  a.link.stop();
+
+  const b = pageLink({ html: captcha, api: () => new Error('[fetchRoomInfoApiLiveRoute] API Error 19881007 (user_not_found)'), euler: { ok: true, room_id: '1' } });
+  b.link.start('ghost');
+  await tick(); await tick(); await tick();
+  assert.strictEqual(b.link.state.errorKind, 'not_found');
+  assert.strictEqual(b.calls.euler, 0, 'no sign-server call for an account that does not exist');
+  b.link.stop();
+
+  const c = pageLink({ html: captcha, api: () => new Error('Response code 429 (Too Many Requests)'), euler: { ok: true, room_id: '7700000000000000003' }, steps: ['live:7700000000000000003'] });
+  c.link.start('host');
+  await tick(); await tick(); await tick(); await tick(); await tick();
+  assert.strictEqual(c.made[0].connectArg, '7700000000000000003');
+  assert.notStrictEqual(c.link.state.status, 'live', 'not LIVE until LIVE data arrives');
+  c.clock.t += 21000; c.link._tick();
+  assert.strictEqual(c.link.state.status, 'offline', 'no data: the sign server\'s room is not LIVE');
+  c.link.stop();
+
+  const d = pageLink({ html: captcha, api: () => new Error('Response code 403 (Forbidden)'), euler: { ok: false, code: 403, message: 'lack of permission' } });
+  d.link.start('host');
+  await tick(); await tick(); await tick();
+  assert.strictEqual(d.link.state.errorKind, 'blocked');
+  d.link.stop();
+});
+
+test('an account that never went LIVE (no room ID on its page) is just "not live"', async () => {
+  const { link } = pageLink({ html: { user: { roomId: '', status: 0 }, liveRoom: {} } });
+  link.start('host');
+  await tick(); await tick();
+  assert.strictEqual(link.state.status, 'offline');
   link.stop();
 });

@@ -385,7 +385,7 @@ class TikTokLink extends EventEmitter {
     const human = this._kindText(f.kind);
     if (['blocked', 'not_found', 'rate-limit'].includes(f.kind)) {
       this.persist.set(LOOKUP_KEY, { username: this.username, at: this.now(), kind: f.kind, step: this.lookupStep, retryAt });
-    } else if (f.kind === 'offline') this.persist.set(LOOKUP_KEY, null);
+    } else if (f.kind === 'offline' && this.persist.get(LOOKUP_KEY)) this.persist.set(LOOKUP_KEY, null);   // no settings write every poll
     this._setState({ status: f.kind === 'offline' ? 'offline' : 'error', roomId: null, viewers: 0, error: f.kind === 'offline' ? null : (human || msg), errorKind: f.kind, retryAt });
     this.log(f.kind === 'offline' ? 'info' : 'warn', `TikTok connect: ${f.kind}${f.kind === 'offline' ? '' : ' - ' + msg}; next try in ${Math.round(f.ms / 1000)} s`);
   }
@@ -405,7 +405,7 @@ class TikTokLink extends EventEmitter {
     // Skip the lookup TikTok rate-limits when the room is already known: a pasted room, or this LIVE's room from the
     // last connection (a reconnect after a drop then needs no lookup at all).
     const manual = this.manualRoom(), cached = manual ? null : this._cachedRoom();
-    const source = manual ? 'manual' : cached ? 'cache' : null;
+    let source = manual ? 'manual' : cached ? 'cache' : null;   // 'euler' = a room the sign server found (not checked live)
     this.roomSource = source;
     this._setState({ status: this.state.status === 'live' ? 'reconnecting' : 'connecting', error: null, errorKind: null, retryAt: null, wrongOwner: null });
 
@@ -435,6 +435,15 @@ class TikTokLink extends EventEmitter {
         const owner = String((ri.data && ri.data.owner && (ri.data.owner.display_id || ri.data.owner.unique_id)) || (ri.owner && ri.owner.display_id) || '').replace(/^@/, '').toLowerCase();
         if (owner !== this.username) { this._rejectManual(owner); return; }
       }
+      if (source === 'cache' || source === 'euler') {
+        // A room nobody confirmed is LIVE right now: a remembered one (its LIVE may have ended while LIVE Link wasn't
+        // watching) or one only the sign server knew. TikTok opens dead and even made-up room IDs without an error,
+        // so it counts as LIVE only once real LIVE data arrives. A dead remembered room is forgotten and looked up
+        // fresh; a dead sign-server room means "not LIVE".
+        this.probation = { roomId, until: this.mono() + PROBATION_MS, fromCache: source === 'cache' };
+        this.log('info', `opened ${source === 'cache' ? 'the remembered' : "the sign server's"} room ${roomId}; waiting for LIVE data`);
+        return;
+      }
       const E = this.endedRoom;
       if (roomId && E && E.id === roomId && this.mono() - E.at < ENDED_ROOM_MS) {
         // The LIVE that just ended, handed out again: stay "connecting" until real LIVE data shows it is back.
@@ -446,6 +455,7 @@ class TikTokLink extends EventEmitter {
     });
     on(C.DISCONNECTED, () => {
       const wasProbation = !!this.probation;
+      if (wasProbation && this.probation.fromCache && !this.streamEnded) { this._cacheFailed('it closed before any LIVE data'); return; }
       if (this.streamEnded || wasProbation) {
         this.streamEnded = false;
         this._notLive(wasProbation ? 'the ended LIVE closed again' : null);
@@ -491,12 +501,57 @@ class TikTokLink extends EventEmitter {
     });
 
     try {
-      await conn.connect(manual || cached || undefined);
+      let roomId = manual || cached || undefined;
+      if (!roomId && L.fetchRoomInfoFromHtmlRoute) {
+        const look = await this._lookup(conn, L);
+        if (generation !== this.generation) return;
+        if (look.live === false) throw new (L.UserOfflineError || Error)("The requested user isn't online :(");
+        roomId = look.roomId;
+        if (look.live === null) { source = 'euler'; this.roomSource = 'euler'; }
+      }
+      await conn.connect(roomId);
       if (generation !== this.generation) { try { conn.disconnect(); } catch {} }
     } catch (e) {
       if (generation !== this.generation) return;
       this._failed(e, source);
     }
+  }
+
+  // Finds the LIVE's room AND whether it is live, before any connection: TikTok's LIVE page (one request, what the
+  // connector itself asks first), then TikTok's API. The connector's own check can't be trusted: for an ended room
+  // TikTok's room-info call now answers an error with no status (4003110), so the connector "connects" to a LIVE that
+  // is over. Last resort when both are refused: the Euler sign server (it runs elsewhere, so a network TikTok blocks
+  // doesn't matter), which knows the room but not whether it's live -> { live: null }, confirmed by LIVE data.
+  // Returns { roomId, live: true | false | null }; throws a lookup error (see classifyLookup) when every source fails.
+  async _lookup(conn, L) {
+    const errs = [];
+    const read = (r) => {
+      const d = (r && r.data) || r || {};
+      const u = d.user || {}, room = d.liveRoom || {};
+      const status = Number(room.status !== undefined ? room.status : u.status);
+      return { roomId: u.roomId ? String(u.roomId) : null, status };
+    };
+    for (const route of [L.fetchRoomInfoFromHtmlRoute, L.fetchRoomInfoFromApiLiveRoute]) {
+      if (!route) continue;
+      try {
+        const s = read(await route({ webClient: conn.webClient, uniqueId: this.username }));
+        // 4 = the LIVE is over; no room ID = the account has no LIVE room (never went LIVE).
+        return { roomId: s.roomId, live: !!s.roomId && s.status !== 4 };
+      } catch (e) {
+        errs.push(e);
+        if (/user_not_found|19881007/i.test(String(e && e.message))) break;   // the account doesn't exist: stop here
+      }
+    }
+    if (L.fetchRoomIdFromEulerRoute && !errs.some((e) => /user_not_found|19881007/i.test(String(e && e.message)))) {
+      try {
+        const r = await L.fetchRoomIdFromEulerRoute({ webClient: conn.webClient, apiClient: conn.apiClient, uniqueId: this.username });
+        if (r && r.ok && r.room_id) return { roomId: String(r.room_id), live: null };
+        errs.push(new Error(`[euler] ${(r && r.message) || 'no room id'}`));
+      } catch (e) { errs.push(e); }
+    }
+    const e = new Error('Failed to retrieve Room ID from all sources.');
+    e.config = { routeId: 'liveLinkLookup', requestErrs: errs };
+    throw e;
   }
 
   // The pasted room belongs to someone else (or its owner can't be read): drop it and go back to the normal lookup.
@@ -533,6 +588,16 @@ class TikTokLink extends EventEmitter {
     this._goLive(id);
   }
 
+  // The remembered room turned out dead: forget it and look the room up fresh in a second (stays "connecting").
+  _cacheFailed(why) {
+    this.generation++;                            // mute the dead connection
+    this._dropConnection();
+    this.connectStartedAt = 0; this.upSince = 0; this.probation = null;
+    this._clearCache();
+    this.log('info', `the remembered room is not LIVE (${why}); looking the room up again`);
+    this._schedule(1000);
+  }
+
   // The LIVE is over: report 'offline' and check again later. `again` = TikTok handed out the ended room again, so
   // each repeat waits twice as long (capped at 5 min) instead of looping every check.
   _notLive(again) {
@@ -551,7 +616,11 @@ class TikTokLink extends EventEmitter {
   _tick() {
     const now = this.mono();
     if (!this.username) return;
-    if (this.probation && now > this.probation.until) { this._notLive('no LIVE data from the ended room'); return; }
+    if (this.probation && now > this.probation.until) {
+      if (this.probation.fromCache) this._cacheFailed('no LIVE data from it');
+      else this._notLive('no LIVE data from the ended room');
+      return;
+    }
     if (this.state.status === 'live' && this.upSince && this.retryStep && now - this.upSince >= STABLE_MS) this.retryStep = 0;
     if (this.state.status === 'live' && this.lastFrameAt && now - this.lastFrameAt > SILENT_SOCKET_MS && now - this.lastForcedReconnectAt > FORCED_RECONNECT_GAP_MS) {
       this.lastForcedReconnectAt = now;

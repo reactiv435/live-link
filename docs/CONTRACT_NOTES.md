@@ -90,3 +90,8 @@ The `live-link` bucket is PRIVATE (the project blocks public buckets), files liv
     (no lookup within 2 min of a refused one); an unknown account is retried every 5 min; before the site show is on
     TikTok is checked every 3 min (30 s once it is on). A LIVE's room ID is reused for reconnects. A host can paste
     their LIVE link or room ID (Settings); the app only uses it if the room's owner is the verified username.
+20. **1.0.7: TikTok's LIVE page decides "is it LIVE".** Before connecting, the app reads the account's LIVE page
+    (fallback TikTok's API): status 4 or no room = not LIVE, no connection at all. Reason: for an ended room TikTok's
+    room-info call now answers status_code 4003110 with no data, so the connector's own check passed and it
+    "connected" to finished LIVEs (hosts looked connected while not LIVE). Rooms nobody confirmed live (a remembered
+    room, or one only the Euler sign server returned) count as LIVE only after real LIVE data within 20 s.
