@@ -107,6 +107,8 @@ The `live-link` bucket is PRIVATE (the project blocks public buckets), files liv
 23. **`POST live-link-clip-upload`** `{ play_id, kind: 'highlight'|'full'|'vertical'|'poster', bytes, content_type,
     duration_ms?, width?, height? }` -> `{ upload_url, path, expires_at }`. The play must belong to the device's host.
     Limits: full <= 400 MB, highlight/vertical <= 150 MB, poster <= 5 MB; content_type video/mp4 (poster image/jpeg).
+    Since 2.0.2 `vertical` is always sent: the ~25 s phone cut for TikTok / Reels / Shorts (the site's "Share video" and
+    download use it); before 2.0.2 it was only a blurred copy of the highlight for landscape streams.
     `upload_url` = a signed upload URL (upsert) for the PRIVATE bucket `review-clips` at
     `<host_id>/<play_id>/<kind>.<mp4|jpg>`; the app PUTs the file with `content-type` and `x-upsert: true`.
 24. **`POST live-link-clip-complete`** `{ play_id, files: [{ kind, path, bytes, content_type, duration_ms, width,

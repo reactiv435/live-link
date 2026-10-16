@@ -69,10 +69,10 @@ test('records a LIVE and turns one review into a full review, a branded highligh
   server.close();
   assert.equal(result.sent, 1, `clip not sent: ${JSON.stringify(result)}\n${logs.join('\n')}`);
   assert.ok(got['/up/highlight'] > 50000 && got['/up/full'] > 50000 && got['/up/poster'] > 2000, `uploads: ${JSON.stringify(got)}`);
-  assert.equal(got['/up/vertical'], undefined, 'a portrait stream needs no extra vertical copy');
+  assert.ok(got['/up/vertical'] > 20000, 'the short phone cut is uploaded too');
   // the artist is told after the FIRST "ready" (highlight + poster); the full review follows in a second one
   assert.equal(completes.length, 2);
-  assert.deepEqual(completes[0].files.map((f) => f.kind), ['highlight', 'poster']);
+  assert.deepEqual(completes[0].files.map((f) => f.kind), ['highlight', 'poster', 'vertical']);
   assert.deepEqual(completes[1].files.map((f) => f.kind), ['full']);
 
   const job = path.join(dir, 'clips', 'play-1');

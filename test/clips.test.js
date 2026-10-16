@@ -109,3 +109,44 @@ test('stream picker also reads the LIVE page and api-live shapes (streamData.pul
   assert.equal(apiLive.url, 'https://pull.example/page.flv');
   assert.equal(pickStream({ liveRoomUserInfo: { liveRoom: { streamData: { pull_data: pull } } } }).height, 1280);
 });
+
+test('clip words: fitted to the frame, no "with ReactivVibeAI" under the brand, a host line for other hosts', () => {
+  const size = C.targetSize(720, 1280);
+  const own = C.brandTexts(size, { artist: 'Milton Price', title: 'Pay Me Now', host: 'ReactivVibeAI' });
+  assert.equal(own['artist.txt'], 'MILTON PRICE');
+  assert.equal(own['song.txt'], '“Pay Me Now”');
+  assert.equal(own['end-host.txt'], '');
+  const other = C.brandTexts(size, { artist: 'A', title: 'B', host: 'Bone Daddy' });
+  assert.equal(other['song.txt'], '“B” · with Bone Daddy');
+  assert.equal(other['end-host.txt'], 'with Bone Daddy');
+  const long = C.brandTexts(size, { artist: 'X'.repeat(80), title: 'Y'.repeat(120), host: null });
+  const L = C.brandLayout(size);
+  assert.ok(long['artist.txt'].endsWith('…') && long['artist.txt'].length * L.artist * 0.62 <= L.W - 2 * L.pad + L.artist);
+  const none = C.brandTexts(size, { artist: null, title: null, host: null });
+  for (const v of Object.values(none)) assert.ok(!/null|undefined/.test(v));
+  assert.equal(none['end-song.txt'], '');
+});
+
+test('title band: sits in an existing top black bar, else tall enough to cover a stream logo', () => {
+  const size = C.targetSize(720, 1280);
+  assert.equal(C.topBarFrom('x crop=548:894:10:218\n crop=548:896:10:216', { width: 720, height: 1280 }, size), 216);
+  assert.equal(C.topBarFrom('crop=718:1200:2:80', { width: 720, height: 1280 }, size), null, 'a thin dark strip is not a bar');
+  assert.equal(C.topBarFrom('crop=1076:1520:2:200', { width: 1080, height: 1920 }, size), 133, 'scaled to the 720x1280 frame');
+  assert.equal(C.topBarFrom('crop=1280:600:0:120', { width: 1280, height: 720 }, size), null, 'a landscape source is not measured against a portrait frame');
+  assert.equal(C.brandLayout({ ...size, topBar: 216 }).bandH, 216);
+  assert.equal(C.brandLayout({ ...size, topBar: 500 }).bandH, 256, 'capped at 20%');
+  assert.equal(C.brandLayout(size).bandH, 288);
+});
+
+test('the short phone cut: middle of the hottest moment + the last seconds of the verdict, ~25 s', () => {
+  const p = C.socialPlan({ hotDur: 20, verdictDur: 60, hasHot: true }, C.DEFAULTS);
+  assert.deepEqual(p, { hotSeek: 4, hotLen: 12, verdictSeek: 48, verdictLen: 12 });
+  const short = C.socialPlan({ hotDur: 0, verdictDur: 40, hasHot: false }, C.DEFAULTS);
+  assert.deepEqual(short, { hotSeek: null, hotLen: 0, verdictSeek: 16, verdictLen: 24 });
+  const tiny = C.socialPlan({ hotDur: 8, verdictDur: 10, hasHot: true }, C.DEFAULTS);
+  assert.equal(tiny.hotLen, 8); assert.equal(tiny.verdictSeek, 0);
+  const a = C.highlightArgs({ hotFile: 'hot.mp4', verdictFile: 'verdict.mp4', outFile: 'v.mp4', size: C.targetSize(720, 1280), font: 'font.ttf', hotDur: 12, verdictDur: 12, hotSeek: 4, verdictSeek: 48, texts: {}, introSec: 3.5, endSec: 1.8 });
+  assert.deepEqual(a.slice(a.indexOf('-ss'), a.indexOf('-ss') + 5), ['-ss', '4.000', '-t', '12.000', '-i']);
+  const fc = a[a.indexOf('-filter_complex') + 1];
+  assert.ok(fc.includes('tpad=stop_mode=clone:stop_duration=1.8') && fc.includes("enable='gte(t,23.500)'") && fc.includes('apad=pad_dur=1.8'));
+});

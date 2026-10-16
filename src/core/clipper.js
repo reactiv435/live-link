@@ -16,7 +16,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const DEFAULTS = { delayMs: 8000, padStartMs: 4000, padEndMs: 8000, hotSec: 20, verdictSec: 60, minHotGapSec: 2, maxFullSec: 30 * 60 };
+const DEFAULTS = { delayMs: 8000, padStartMs: 4000, padEndMs: 8000, hotSec: 20, verdictSec: 60, minHotGapSec: 2, maxFullSec: 30 * 60, socialHotSec: 12, socialVerdictSec: 12 };
 
 // ------------------------------------------------------------ session + timeline
 function readSession(dir) {
@@ -156,8 +156,67 @@ function copyArgs(listFile, outFile, { reencode = false } = {}) {
 // Target frame for a source size: portrait stays 720x1280, landscape 1280x720.
 function targetSize(w, h) { return w && h && h > w ? { w: 720, h: 1280, portrait: true } : { w: 1280, h: 720, portrait: false }; }
 
-// Text for drawtext lives in small files next to the job (no escaping problems with quotes, colons or emoji).
-function brandFilter({ hasHot, hotDur, verdictDur, size, font, endSec = 2.4, introSec = 4.5, hasAudio = [true, true] }) {
+// Sizes for the title band and the end card. The band is solid and covers the top of the frame, where streams keep
+// their logos and titles (a see-through strip collided with them); faces sit lower.
+// size.topBar (px in the target frame) = a black bar the stream already has at the top (TikTok's multi-guest layout):
+// the band sits inside it. Without one the band is tall enough to cover a typical stream logo.
+function brandLayout({ w: W, h: H, portrait, topBar }) {
+  const pad = Math.round(W * 0.05);
+  const bandH = topBar ? Math.round(Math.min(H * 0.2, Math.max(H * 0.12, topBar))) : Math.round(H * (portrait ? 0.225 : 0.2));
+  const big = Math.round(Math.min(W * 0.095, H * (portrait ? 0.055 : 0.1)));
+  return {
+    W, H, portrait, pad, bandH, line: Math.max(3, Math.round(H * 0.0035)),
+    kicker: Math.round(H * (portrait ? 0.019 : 0.025)), artist: Math.round(H * (portrait ? 0.036 : 0.05)), song: Math.round(H * (portrait ? 0.021 : 0.03)),
+    end: { big, label: Math.round(big * 0.4), artist: Math.round(big * 0.52), song: Math.round(big * 0.4), host: Math.round(big * 0.36), cta: Math.round(big * 0.34) },
+  };
+}
+
+// The top black bar from ffmpeg's cropdetect output ("crop=720:1100:0:90" -> 90 px), scaled to the target frame.
+// Only trusted when the stream already has the target's shape and the bar is a real one (>= 9% of the height; a dark room can read as a thin bar).
+function topBarFrom(cropdetectText, src, size) {
+  const all = [...String(cropdetectText).matchAll(/crop=(\d+):(\d+):(\d+):(\d+)/g)];
+  if (!all.length || !src.width || !src.height) return null;
+  const [, , , , y] = all[all.length - 1].map(Number);
+  if (Math.abs(src.width / src.height - size.w / size.h) > 0.02) return null;
+  const px = Math.round(y * (size.h / src.height));
+  return px >= size.h * 0.09 ? px : null;
+}
+
+function cropdetectArgs(inFile) {
+  return ['-hide_banner', '-ss', '2', '-i', inFile, '-t', '4', '-vf', 'cropdetect=limit=24:round=2:reset=0', '-an', '-f', 'null', '-'];
+}
+
+// The longest text that fits one line at a font size (Chakra Petch Bold runs ~0.62 em per glyph; no wrapping in drawtext).
+function fitText(s, width, fontSize) {
+  const max = Math.max(4, Math.floor(width / (fontSize * 0.62)));
+  const t = String(s || '').replace(/\s+/g, ' ').trim();
+  return t.length <= max ? t : `${t.slice(0, max - 1).trimEnd()}…`;
+}
+
+const BRAND = 'ReactivVibeAI';
+const sameName = (a, b) => String(a || '').toLowerCase().replace(/[^a-z0-9]/g, '') === String(b || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+// The words on the clip, one file each (drawtext reads files: quotes, colons and emoji need no escaping).
+// The host line is left out when the host IS the brand ("with ReactivVibeAI" under "ReactivVibeAI" reads twice).
+function brandTexts(size, { artist, title, host }) {
+  const L = brandLayout(size), width = L.W - 2 * L.pad;
+  const showHost = !!host && !sameName(host, BRAND);
+  const song = title ? `“${String(title).trim()}”` : 'Live review';
+  return {
+    'kicker.txt': `LIVE REVIEW · ${BRAND}`,
+    'artist.txt': fitText(String(artist || BRAND).toUpperCase(), width, L.artist),
+    'song.txt': fitText(showHost ? `${song} · with ${host}` : song, width, L.song),
+    'end-label.txt': 'REVIEWED LIVE ON',
+    'end-brand.txt': BRAND,
+    'end-artist.txt': fitText(String(artist || '').toUpperCase(), width, L.end.artist),
+    'end-song.txt': title ? fitText(song, width, L.end.song) : '',
+    'end-host.txt': showHost ? fitText(`with ${host}`, width, L.end.host) : '',
+    'cta.txt': 'GET YOUR MUSIC REVIEWED LIVE',
+    'tag.txt': BRAND,
+  };
+}
+
+function brandFilter({ hasHot, hotDur, verdictDur, size, font, endSec = 2.4, introSec = 4.5, hasAudio = [true, true], texts = {} }) {
   const { w: W, h: H, portrait } = size;
   const fit = `scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps=30,format=yuv420p`;
   const aud = 'aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo';
@@ -174,38 +233,74 @@ function brandFilter({ hasHot, hotDur, verdictDur, size, font, endSec = 2.4, int
     f.push(`[0:v]${fit}[mv]`);
     f.push(hasAudio[0] ? `[0:a]${aud}[ma]` : silence(verdictDur, 'ma'));
   }
-  // Title strip near the top for the first seconds (clear of TikTok/Reels UI, and of the host's band in the middle).
-  const fs1 = Math.round(H * (portrait ? 0.032 : 0.05)), fs2 = Math.round(fs1 * 0.62), pad = Math.round(W * 0.05);
-  const y0 = Math.round(H * (portrait ? 0.12 : 0.06)), bh = Math.round(fs1 * 2.6);
-  const show = `enable='between(t,0,${introSec})'`;
-  const alpha = `alpha='if(lt(t,0.35),t/0.35,if(gt(t,${introSec - 0.35}),(${introSec}-t)/0.35,1))'`;
-  const font1 = `fontfile=${font}`;
-  f.push(`[mv]drawbox=x=0:y=${y0}:w=iw:h=${bh}:color=black@0.62:t=fill:${show},` +
-    `drawbox=x=0:y=${y0}:w=${Math.round(W * 0.012)}:h=${bh}:color=0xE01E3C@1:t=fill:${show},` +
-    `drawtext=${font1}:textfile=title.txt:expansion=none:fontcolor=white:fontsize=${fs1}:x=${pad}:y=${y0 + Math.round(bh * 0.14)}:${alpha}:${show},` +
-    `drawtext=${font1}:textfile=sub.txt:expansion=none:fontcolor=0xD6D6D6:fontsize=${fs2}:x=${pad}:y=${y0 + Math.round(bh * 0.6)}:${alpha}:${show},` +
-    // the small ReactivVibeAI tag, top right, all the way through
-    `drawtext=${font1}:text='ReactivVibeAI':expansion=none:fontcolor=white@0.9:fontsize=${Math.round(fs2 * 0.85)}:box=1:boxcolor=black@0.45:boxborderw=${Math.round(fs2 * 0.35)}:x=w-tw-${pad}:y=${Math.round(H * (portrait ? 0.075 : 0.04))}[bv]`);
-  // End card: "Reviewed live on ReactivVibeAI" + the host.
-  const e1 = Math.round(H * (portrait ? 0.022 : 0.034)), e2 = Math.round(e1 * 2.4), e3 = Math.round(e1 * 1.05);
-  f.push(`color=c=0x0A0A0A:s=${W}x${H}:r=30:d=${endSec},format=yuv420p,` +
-    `drawbox=x=(iw-${Math.round(W * 0.18)})/2:y=ih/2-${Math.round(e2 * 0.15)}:w=${Math.round(W * 0.18)}:h=${Math.max(3, Math.round(H * 0.004))}:color=0xE01E3C@1:t=fill,` +
-    `drawtext=${font1}:text='REVIEWED LIVE ON':expansion=none:fontcolor=0xBDBDBD:fontsize=${e1}:x=(w-tw)/2:y=h/2-${Math.round(e2 * 1.55)},` +
-    `drawtext=${font1}:text='ReactivVibeAI':expansion=none:fontcolor=white:fontsize=${e2}:x=(w-tw)/2:y=h/2-${Math.round(e2 * 1.15)},` +
-    `drawtext=${font1}:textfile=host.txt:expansion=none:fontcolor=0xD6D6D6:fontsize=${e3}:x=(w-tw)/2:y=h/2+${Math.round(e2 * 0.45)},` +
-    `fade=t=in:st=0:d=0.3[ev]`);
-  f.push(`anullsrc=r=48000:cl=stereo,atrim=0:${endSec}[ea]`);
-  f.push(`[bv][ma][ev][ea]concat=n=2:v=1:a=1[v][a]`);
+  const L = brandLayout(size), font1 = `fontfile=${font}`;
+  const has = (name) => !!String(texts[name] || '').trim();
+  const shadow = 'shadowcolor=black@0.55:shadowx=0:shadowy=2';
+  const txt = (file, color, fontSize, x, y, extra = '') => `drawtext=${font1}:textfile=${file}:expansion=none:fontcolor=${color}:fontsize=${fontSize}:x=${x}:y=${y}:${shadow}${extra}`;
+  // Title band: solid black glass across the top with a chrome hairline over a crimson edge; fades in and out.
+  // The three lines sit centred in the band, whatever its height.
+  const bh = L.bandH;
+  const block = Math.round(L.kicker * 1.5 + L.artist * 1.35 + L.song);
+  const top = Math.max(Math.round(L.kicker * 0.5), Math.round((bh - L.line - 2 - block) / 2));
+  f.push(`color=c=0x0A0A0AFF:s=${W}x${bh}:r=30:d=${introSec},format=rgba,` +
+    `drawbox=x=0:y=${bh - L.line - 2}:w=iw:h=2:color=0xBDBDBD@0.55:t=fill,` +
+    `drawbox=x=0:y=${bh - L.line}:w=iw:h=${L.line}:color=0xE01E3C@1:t=fill,` +
+    `${txt('kicker.txt', '0xFF3B55', L.kicker, L.pad, top)},` +
+    `${txt('artist.txt', 'white', L.artist, L.pad, top + Math.round(L.kicker * 1.5))},` +
+    `${txt('song.txt', '0xD0D0D0', L.song, L.pad, top + Math.round(L.kicker * 1.5 + L.artist * 1.35))},` +
+    `fade=t=in:st=0:d=0.3:alpha=1,fade=t=out:st=${(introSec - 0.35).toFixed(2)}:d=0.35:alpha=1[band]`);
+  // The small ReactivVibeAI tag, top right, once the band has gone.
+  const tagSize = Math.round(L.song * 0.8);
+  f.push(`[mv][band]overlay=0:0:eof_action=pass[t1]`,
+    `[t1]drawtext=${font1}:textfile=tag.txt:expansion=none:fontcolor=white@0.9:fontsize=${tagSize}:box=1:boxcolor=black@0.45:boxborderw=${Math.round(tagSize * 0.4)}:` +
+    `x=w-tw-${L.pad}:y=${Math.round(H * (portrait ? 0.06 : 0.05))}:enable='gte(t,${introSec})'[bv]`);
+  // End card: the last frame frozen, blurred and darkened, with the brand, the song and a call to action.
+  const D = hasHot ? Math.max(0.6, hotDur + verdictDur - 0.5) : Math.max(0.6, verdictDur);
+  const T = D.toFixed(3), on = `enable='gte(t,${T})'`, fadeIn = `:alpha='min(1,(t-${T})/0.3)':${on}`;
+  const E = L.end;
+  let y = Math.round(H * (portrait ? 0.35 : 0.24));
+  const ys = {};
+  ys.label = y; y += Math.round(E.label * 1.5);
+  ys.brand = y; y += Math.round(E.big * 1.15);
+  ys.bar = y; y += Math.round(E.big * 0.45);
+  if (has('end-artist.txt')) { ys.artist = y; y += Math.round(E.artist * 1.35); }
+  if (has('end-song.txt')) { ys.song = y; y += Math.round(E.song * 1.4); }
+  if (has('end-host.txt')) { ys.host = y; }
+  const barW = Math.round(W * 0.22);
+  const end = [`tpad=stop_mode=clone:stop_duration=${endSec}`,
+    `boxblur=luma_radius=18:luma_power=2:${on}`, `eq=brightness=-0.2:saturation=0.55:${on}`,
+    `drawbox=x=0:y=0:w=iw:h=ih:color=black@0.35:t=fill:${on}`,
+    txt('end-label.txt', '0xC8C8C8', E.label, '(w-tw)/2', ys.label, fadeIn),
+    txt('end-brand.txt', 'white', E.big, '(w-tw)/2', ys.brand, fadeIn),
+    `drawbox=x=${Math.round((W - barW) / 2)}:y=${ys.bar}:w=${barW}:h=${L.line + 2}:color=0xE01E3C@1:t=fill:${on}`];
+  if (ys.artist != null) end.push(txt('end-artist.txt', 'white', E.artist, '(w-tw)/2', ys.artist, fadeIn));
+  if (ys.song != null) end.push(txt('end-song.txt', '0xD0D0D0', E.song, '(w-tw)/2', ys.song, fadeIn));
+  if (ys.host != null) end.push(txt('end-host.txt', '0xD0D0D0', E.host, '(w-tw)/2', ys.host, fadeIn));
+  end.push(`drawtext=${font1}:textfile=cta.txt:expansion=none:fontcolor=white:fontsize=${E.cta}:box=1:boxcolor=0xE01E3C@1:boxborderw=${Math.round(E.cta * 0.75)}:` +
+    `x=(w-tw)/2:y=${Math.round(H * (portrait ? 0.7 : 0.78))}${fadeIn}`);
+  f.push(`[bv]${end.join(',')}[v]`);
+  // The sound fades out under the end card instead of cutting.
+  f.push(`[ma]afade=t=out:st=${Math.max(0, D - 0.6).toFixed(3)}:d=0.6,apad=pad_dur=${endSec}[a]`);
   return f.join(';');
 }
 
-function highlightArgs({ hotFile, verdictFile, outFile, size, font, hotDur, verdictDur, hasAudio }) {
+function highlightArgs({ hotFile, verdictFile, outFile, size, font, hotDur, verdictDur, hasAudio, texts, hotSeek, verdictSeek, introSec, endSec }) {
   const a = ['-hide_banner', '-loglevel', 'error', '-y'];
-  if (hotFile) a.push('-i', hotFile);
-  a.push('-i', verdictFile);
-  a.push('-filter_complex', brandFilter({ hasHot: !!hotFile, hotDur, verdictDur, size, font, hasAudio }), '-map', '[v]', '-map', '[a]',
+  // Seeks (the short social cut) apply to the input; durations then mean the trimmed lengths.
+  const input = (file, seek, dur) => { if (seek != null) a.push('-ss', Number(seek).toFixed(3), '-t', Number(dur).toFixed(3)); a.push('-i', file); };
+  if (hotFile) input(hotFile, hotSeek, hotDur);
+  input(verdictFile, verdictSeek, verdictDur);
+  a.push('-filter_complex', brandFilter({ hasHot: !!hotFile, hotDur, verdictDur, size, font, hasAudio, texts, introSec, endSec }), '-map', '[v]', '-map', '[a]',
     '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', outFile);
   return a;
+}
+
+// The short cut for TikTok / Reels / Shorts (measured: 16-26 s posts keep viewers): the middle of the hottest moment
+// plus the last seconds before the host moves on (the verdict), with a shorter band and end card.
+function socialPlan({ hotDur, verdictDur, hasHot }, o = {}) {
+  const hotLen = hasHot ? Math.min(o.socialHotSec || 12, hotDur) : 0;
+  const verdictLen = Math.min(hasHot ? (o.socialVerdictSec || 12) : (o.socialHotSec || 12) + (o.socialVerdictSec || 12), verdictDur);
+  return { hotSeek: hasHot ? Math.max(0, (hotDur - hotLen) / 2) : null, hotLen, verdictSeek: Math.max(0, verdictDur - verdictLen), verdictLen };
 }
 
 function verticalArgs(inFile, outFile) {
@@ -232,4 +327,4 @@ function parseProbe(text) {
 }
 
 module.exports = { DEFAULTS, readSession, readParts, mediaToWall, wallToMedia, timeline, cutsFor, coveredMs, planReview,
-  concatList, copyArgs, targetSize, brandFilter, highlightArgs, verticalArgs, posterArgs, parseProbe };
+  concatList, copyArgs, targetSize, brandLayout, topBarFrom, cropdetectArgs, brandTexts, fitText, brandFilter, highlightArgs, socialPlan, verticalArgs, posterArgs, parseProbe };

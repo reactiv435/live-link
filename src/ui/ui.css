@@ -105,6 +105,9 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .about { padding: 10px 14px; font-size: 13px; color: #d6d6d6; }
 .about summary { cursor: pointer; font-weight: 600; color: var(--text); }
 .about p { margin: 8px 0 2px; line-height: 1.5; }
+.about .guide { margin: 8px 0 2px; padding-left: 18px; line-height: 1.5; }
+.about .guide li { margin: 6px 0; }
+.about .guide b { color: var(--text); }
 .actions { margin-top: 4px; }
 
 /* animated atom status: red = not connected to the TikTok LIVE, green = connected */

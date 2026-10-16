@@ -152,11 +152,6 @@ class ClipJobs extends EventEmitter {
     const job = path.join(dir, 'clips', String(r.play_id).replace(/[^\w-]/g, ''));
     fs.mkdirSync(job, { recursive: true });
     const write = (name, text) => fs.writeFileSync(path.join(job, name), text);
-    // Text for the title strip and end card (files, so quotes/colons/emoji need no escaping).
-    const host = String(r.host_name || session.handle || '').slice(0, 60);
-    write('title.txt', String(r.artist || 'ReactivVibeAI').toUpperCase().slice(0, 40));
-    write('sub.txt', `${r.title ? `"${String(r.title).slice(0, 48)}" · ` : ''}live review${host ? ` with ${host}` : ''}`);
-    write('host.txt', host ? `with ${host}` : 'live music reviews');
     if (this.fontFile) fs.copyFileSync(this.fontFile, path.join(job, 'font.ttf'));
 
     // 1) the full review, copied (re-encoded only if the stream isn't H.264, so every browser can play it)
@@ -182,18 +177,28 @@ class ClipJobs extends EventEmitter {
     const vp = C.parseProbe(await this._probe(path.join(job, 'verdict.mp4')));
     hasAudio[1] = vp.hasAudio;
     const verdictDur = vp.duration || (plan.verdict.to - plan.verdict.from) / 1000;
-    await this._ff(C.highlightArgs({ hotFile: plan.hot ? 'hot.mp4' : null, verdictFile: 'verdict.mp4', outFile: 'highlight.mp4', size, font: 'font.ttf', hotDur, verdictDur, hasAudio }), job);
+    // A black bar the stream already has at the top (TikTok's multi-guest layout) takes the title band.
+    size.topBar = C.topBarFrom(await this._probe(null, C.cropdetectArgs(path.join(job, 'verdict.mp4'))), src, size);
+    // Words for the title band and end card, fitted to the frame (files, so quotes/colons/emoji need no escaping).
+    const host = String(r.host_name || session.handle || '').slice(0, 60);
+    const texts = C.brandTexts(size, { artist: r.artist, title: r.title, host });
+    for (const [name, text] of Object.entries(texts)) write(name, text);
+    await this._ff(C.highlightArgs({ hotFile: plan.hot ? 'hot.mp4' : null, verdictFile: 'verdict.mp4', outFile: 'highlight.mp4', size, font: 'font.ttf', hotDur, verdictDur, hasAudio, texts }), job);
 
-    // 3) a phone-shaped copy for landscape streams (portrait ones already are)
-    if (!size.portrait) await this._ff(C.verticalArgs('highlight.mp4', 'vertical.mp4'), job);
+    // 3) the short phone cut for TikTok / Reels / Shorts (~25 s); landscape streams get it centred on a blurred copy
+    const sp = C.socialPlan({ hotDur, verdictDur, hasHot: !!plan.hot }, opts);
+    const socialOut = size.portrait ? 'vertical.mp4' : 'social.mp4';
+    await this._ff(C.highlightArgs({ hotFile: plan.hot ? 'hot.mp4' : null, verdictFile: 'verdict.mp4', outFile: socialOut, size, font: 'font.ttf',
+      hotDur: sp.hotLen, verdictDur: sp.verdictLen, hotSeek: sp.hotSeek, verdictSeek: sp.verdictSeek, hasAudio, texts, introSec: 3.5, endSec: 1.8 }), job);
+    if (!size.portrait) await this._ff(C.verticalArgs('social.mp4', 'vertical.mp4'), job);
     // 4) the poster, from the hottest moment
     await this._ff(C.posterArgs(plan.hot ? 'hot.mp4' : 'verdict.mp4', plan.hot ? hotDur / 2 : 3, 'poster.jpg'), job);
-    for (const f of ['hot.mp4', 'verdict.mp4', 'full.txt', 'hot.txt', 'verdict.txt', 'title.txt', 'sub.txt', 'host.txt', 'font.ttf']) { try { fs.unlinkSync(path.join(job, f)); } catch {} }
+    for (const f of ['hot.mp4', 'verdict.mp4', 'social.mp4', 'full.txt', 'hot.txt', 'verdict.txt', 'font.ttf', ...Object.keys(texts)]) { try { fs.unlinkSync(path.join(job, f)); } catch {} }
 
     // 5) send the highlight first (the artist is told when it lands); the full review goes in pass 2
     const recipe = { hot: plan.hot ? { from: new Date(plan.hot.from).toISOString(), weight: plan.hotWeight } : null, delay_ms: opts.delayMs };
     const files = [];
-    for (const kind of ['highlight', 'poster', ...(size.portrait ? [] : ['vertical'])]) {
+    for (const kind of ['highlight', 'poster', 'vertical']) {
       files.push(await this._upload(r, kind, path.join(job, kind === 'poster' ? 'poster.jpg' : `${kind}.mp4`)));
     }
     await this._retry(() => this.api.clipComplete({ play_id: r.play_id, files, recipe }), 'complete');
@@ -221,11 +226,11 @@ class ClipJobs extends EventEmitter {
   }
 
   // ffmpeg prints a file's details on stderr when given only an input.
-  _probe(file) {
+  _probe(file, args = ['-hide_banner', '-i', file]) {
     return new Promise((resolve) => {
       let text = '';
-      const p = this.spawn(this.ffmpegPath, ['-hide_banner', '-i', file], { windowsHide: true });
-      p.stderr.on('data', (d) => { text += d; });
+      const p = this.spawn(this.ffmpegPath, args, { windowsHide: true });
+      p.stderr.on('data', (d) => { text = (text + d).slice(-8000); });
       p.on('error', () => resolve(text));
       p.on('close', () => resolve(text));
     });
