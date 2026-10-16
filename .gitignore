@@ -3,3 +3,4 @@ dist/
 dist-source/
 *.log
 dist-mac/
+vendor/

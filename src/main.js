@@ -1,6 +1,6 @@
 'use strict';
 // ReactivVibe LIVE Link: Electron main process. Owns the TikTok link, the site client, the tray and one window.
-const { app, BrowserWindow, Tray, Menu, ipcMain, shell, safeStorage, nativeImage, Notification, powerMonitor } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, shell, safeStorage, nativeImage, Notification, powerMonitor, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -8,7 +8,20 @@ const { TikTokLink } = require('./core/tiktok-link');
 const { LiveLinkApi } = require('./core/api');
 const { Controller } = require('./core/controller');
 const { Store } = require('./core/store');
+const { ShowManager } = require('./core/show-manager');
 const SITE = require('./site-config.json');
+
+// The bundled ffmpeg (records the LIVE, cuts the review clips) and the clip font. Packaged: resources/ffmpeg/<os>-<cpu>/
+// and resources/fonts/. Development: the ffmpeg-static package, or FFMPEG=<path>.
+function ffmpegPath() {
+  const exe = process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg';
+  if (app.isPackaged) return path.join(process.resourcesPath, 'ffmpeg', `${process.platform}-${process.arch}`, exe);
+  if (process.env.FFMPEG) return process.env.FFMPEG;
+  try { return require('ffmpeg-static'); } catch { return null; }
+}
+function fontPath() {
+  return app.isPackaged ? path.join(process.resourcesPath, 'fonts', 'ChakraPetch-Bold.ttf') : path.join(__dirname, '..', 'assets', 'fonts', 'ChakraPetch-Bold.ttf');
+}
 
 const APP_ID = 'ai.reactivvibe.livelink';
 const VERSION = app.getVersion();
@@ -37,7 +50,7 @@ function log(level, msg) {
 process.on('uncaughtException', (e) => log('error', `uncaught: ${e && e.stack || e}`));
 process.on('unhandledRejection', (e) => log('error', `unhandled: ${e && e.stack || e}`));
 
-let win = null, tray = null, ctl = null, store = null;
+let win = null, tray = null, ctl = null, store = null, show = null;
 let trayKind = '';
 
 // Pop-ups: connected to the LIVE, lost it for more than 20 s, and the end-of-LIVE summary.
@@ -192,6 +205,15 @@ app.whenReady().then(async () => {
   const api = new LiveLinkApi({ baseUrl: API_BASE, apiKey: SITE.publishableKey, getToken: () => store.getToken(), userAgent: `ReactivVibe-LIVE-Link/${VERSION}` });
   ctl = new Controller({ api, link, store, log, appVersion: VERSION, deviceName: store.get('deviceName') });
 
+  // Recording + review clips + the "remind chat" nudge.
+  show = new ShowManager({ ctl, link, api, store, log, ffmpegPath: ffmpegPath(), fontFile: fontPath(), defaultRoot: path.join(app.getPath('videos'), 'LIVE Link Recordings') });
+  if (!show.ffmpegOk) log('warn', `recording unavailable: ffmpeg not found (${ffmpegPath()})`);
+  show.on('state', (st) => { if (win && !win.isDestroyed()) win.webContents.send('show', st); });
+  show.on('nudge', () => notify('Remind chat to tap', 'Nobody has tapped for 2 minutes. Tell chat: tapping the screen fills the hype bar.'));
+  show.on('clipsSent', (x) => notify('Review clips sent', `${x.sent} review clip${x.sent === 1 ? '' : 's'} from your LIVE ${x.sent === 1 ? 'is' : 'are'} on ReactivVibeAI. The artists get a message.`));
+  show.on('clipsFailed', (x) => notify('Some clips didn’t send', `${x.failed} review clip${x.failed === 1 ? '' : 's'} failed. Open LIVE Link > Recordings and click "Make & send clips" to try again.`));
+  show.on('storageReminder', (x) => notify('Time to clear old recordings', `Your LIVE recordings use ${(x.totalBytes / 1024 ** 3).toFixed(0)} GB. Open LIVE Link > Recordings to delete the ones you don't need.`));
+
   ctl.on('sessionEnded', (x) => {
     dropNotified = false;
     if (dropTimer) { clearTimeout(dropTimer); dropTimer = null; }   // the next LIVE gets its "Connected" pop-up
@@ -229,7 +251,35 @@ app.whenReady().then(async () => {
     version: VERSION,
     platform: process.platform,
     testServer: API_BASE !== SITE.apiBase ? API_BASE : null,
+    recordEnabled: show ? show.enabled() : true,
+    recordRoot: show ? show.root() : null,
+    recordAvailable: !!(show && show.ffmpegOk),
   }));
+  ipcMain.handle('show:get', () => show.getState());
+  ipcMain.handle('show:list', () => show.listRecordings());
+  ipcMain.handle('show:preview', () => {
+    const p = show.previewPath();
+    try { return p ? `data:image/jpeg;base64,${fs.readFileSync(p).toString('base64')}` : null; } catch { return null; }
+  });
+  ipcMain.handle('show:open', (_e, dir) => {
+    const target = dir && show._inRoot(dir) ? dir : show.root();
+    try { fs.mkdirSync(target, { recursive: true }); } catch {}
+    shell.openPath(target);
+    return true;
+  });
+  ipcMain.handle('show:delete', (_e, dir) => show.deleteRecording(dir));
+  ipcMain.handle('show:makeClips', (_e, dir) => show.makeClips(dir));
+  ipcMain.handle('show:stop', async () => { await show.stopByHost(); return true; });
+  ipcMain.handle('show:start', () => { show.resumeByHost(); return true; });
+  ipcMain.handle('show:chooseFolder', async () => {
+    const r = await dialog.showOpenDialog(win, { title: 'Where should LIVE Link save your LIVE recordings?', defaultPath: show.root(), properties: ['openDirectory', 'createDirectory'] });
+    if (r.canceled || !r.filePaths || !r.filePaths[0]) return null;
+    if (show.recorder.active) return { error: 'recording' };
+    store.set('recordRoot', r.filePaths[0]);
+    show._checkStorage(false);
+    show._emit();
+    return { root: r.filePaths[0] };
+  });
   ipcMain.handle('pair', async (_e, code) => {
     try { await ctl.pair(String(code || '')); return { ok: true }; }
     catch (e) { return { ok: false, code: e.code || 'error', message: e.message }; }
@@ -245,6 +295,12 @@ app.whenReady().then(async () => {
     else if (key === 'dryRun') ctl.setDryRun(!!value);
     else if (key === 'paused') ctl.setPaused(!!value);
     else if (key === 'notify') store.set('notify', !!value);
+    else if (key === 'recordEnabled') {
+      store.set('recordEnabled', !!value);
+      if (!value) show.stopRecording('recording switched off in Settings');
+      else show.resumeByHost();
+      show._emit();
+    }
     else return false;
     return true;
   });
@@ -292,12 +348,14 @@ app.on('before-quit', (e) => {
   quitting = true;
   if (quitFlushed || !ctl) { if (ctl) ctl.stop(); return; }
   quitFlushed = true;
-  const needGifts = ctl.hasPendingGifts(), needStatus = ctl.getState().phase === 'ready';
-  if (!needGifts && !needStatus) { ctl.stop(); return; }          // nothing to send: quit right away
+  const needGifts = ctl.hasPendingGifts(), needStatus = ctl.getState().phase === 'ready', needRec = !!(show && show.recorder.active);
+  if (!needGifts && !needStatus && !needRec) { ctl.stop(); return; }          // nothing to send or close: quit right away
   e.preventDefault();
+  // A recording is closed properly first (ffmpeg finishes its last piece), in parallel with the gift flush.
+  const rec = needRec ? show.shutdown().catch(() => {}) : Promise.resolve();
   const gifts = needGifts ? ctl.flushBeforeQuit(3000).catch(() => {}) : Promise.resolve();
   // Quit again from a FRESH task. Called from this handler's own promise callbacks it can run nested inside the first
   // quit, whose "prevented" result then cancels it: on macOS the app never exited (Cmd+Q / SIGTERM did nothing).
-  gifts.then(() => ctl.sendFinalStatus(1500)).catch(() => {}).finally(() => setTimeout(() => app.quit(), 0));
-  setTimeout(() => { log('warn', 'quit did not finish in 6 s: exiting'); app.exit(0); }, 6000).unref();
+  Promise.all([gifts, rec]).then(() => ctl.sendFinalStatus(1500)).catch(() => {}).finally(() => setTimeout(() => app.quit(), 0));
+  setTimeout(() => { log('warn', 'quit did not finish in 11 s: exiting'); app.exit(0); }, needRec ? 11000 : 6000).unref();
 });

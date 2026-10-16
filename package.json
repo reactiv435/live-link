@@ -1,8 +1,8 @@
 {
   "name": "reactivvibe-live-link",
   "productName": "ReactivVibe LIVE Link",
-  "version": "1.0.7",
-  "description": "Sends your TikTok LIVE taps to the ReactivVibe hype bar.",
+  "version": "2.0.0",
+  "description": "Sends your TikTok LIVE taps to the ReactivVibe hype bar, records your LIVEs and turns every review into a clip.",
   "main": "src/main.js",
   "license": "AGPL-3.0-only",
   "author": "ReactivVibeAI",
@@ -12,7 +12,8 @@
     "test": "node --test \"test/*.test.js\"",
     "mock": "node test/mock-server.js",
     "smoke": "node scripts/smoke.js",
-    "dist": "node scripts/make-source.js && electron-builder --win nsis && node scripts/release.js"
+    "dist": "node scripts/fetch-ffmpeg.js win32-x64 && node scripts/make-source.js && electron-builder --win nsis && node scripts/release.js",
+    "fetch-ffmpeg": "node scripts/fetch-ffmpeg.js"
   },
   "dependencies": {
     "tiktok-live-connector": "2.4.4"
@@ -43,6 +44,10 @@
       {
         "from": "dist-source",
         "to": "source"
+      },
+      {
+        "from": "assets/fonts",
+        "to": "fonts"
       }
     ],
     "win": {
@@ -54,7 +59,13 @@
           ]
         }
       ],
-      "icon": "build/icon.ico"
+      "icon": "build/icon.ico",
+      "extraResources": [
+        {
+          "from": "vendor/ffmpeg/win32-x64",
+          "to": "ffmpeg/win32-x64"
+        }
+      ]
     },
     "nsis": {
       "oneClick": true,
@@ -84,7 +95,18 @@
       "identity": null,
       "hardenedRuntime": false,
       "gatekeeperAssess": false,
-      "artifactName": "LIVE-Link-${version}-mac.${ext}"
+      "artifactName": "LIVE-Link-${version}-mac.${ext}",
+      "extraResources": [
+        {
+          "from": "vendor/ffmpeg/darwin-x64",
+          "to": "ffmpeg/darwin-x64"
+        },
+        {
+          "from": "vendor/ffmpeg/darwin-arm64",
+          "to": "ffmpeg/darwin-arm64"
+        }
+      ],
+      "x64ArchFiles": "Contents/Resources/ffmpeg/**"
     },
     "dmg": {
       "artifactName": "LIVE-Link-${version}-mac.${ext}",

@@ -497,7 +497,11 @@ class TikTokLink extends EventEmitter {
       const count = Math.max(0, Math.floor(Number(d && (d.count ?? d.likeCount)) || 0));
       const t = usableTotal(d && (d.total ?? d.totalLikeCount), count);
       const total = t === null ? NaN : t;
-      if (count > 0 || t !== null) this.emit('like', { count, total, at: this.now() });
+      // Who tapped: the overlay's ticker names them ("@handle +12"). Display only; crediting uses the room total.
+      const u = (d && d.user) || {};
+      const handle = clip(String(u.displayId || u.uniqueId || '').replace(/^@/, ''), 60) || null;
+      const name = clip(u.nickname || '', 80) || null;
+      if (count > 0 || t !== null) this.emit('like', { count, total, at: this.now(), handle, name });
     });
 
     try {

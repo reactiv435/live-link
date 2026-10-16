@@ -14,6 +14,8 @@ const MAX_GIFT_CHARS = 9000;    // keep a push's gifts well under the site's req
 // Gifts held while the site can't be reached. One item per combo (frames merge), so this covers a very long outage
 // of a busy LIVE; past it the oldest go first and the controller logs how many.
 const MAX_QUEUED_GIFTS = 20000;
+const MAX_TAPPERS = 20;           // tapper names per push (contract item 21)
+const MAX_TAPPER_HANDLES = 500;   // distinct handles held between two pushes (a huge room can't grow it without limit)
 
 // A usable room total. tiktok-live-proto v3 DEFAULTS `total` to "0" when the wire omits it, so 0 (or anything
 // smaller than the batch itself) means "no total in this message", never "the room has 0 likes".
@@ -50,6 +52,17 @@ class LikeBatcher {
     this.sessionTaps = 0;       // taps seen since we joined this room (for the UI)
     this.gifts = [];            // gift frames waiting to be sent (contract shape); kept through stale marks: they were seen
     this.droppedGifts = 0;      // gifts pushed out of a full queue (the controller logs them)
+    this.tappers = new Map();   // handle -> { name, count } since the last push (the overlay ticker's names; display only)
+  }
+
+  // The viewers who tapped since the last push, most taps first (contract item 21: at most 20, counts 1..100000).
+  takeTappers(max = MAX_TAPPERS) {
+    const list = [...this.tappers.entries()]
+      .map(([handle, t]) => ({ handle, name: t.name || handle, count: Math.min(100000, t.count) }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, max);
+    this.tappers.clear();
+    return list;
   }
 
   // The site only needs each combo's latest running count, so frames of a combo still waiting to be sent merge into
@@ -70,12 +83,17 @@ class LikeBatcher {
   takeGifts(max = MAX_GIFTS, maxChars = MAX_GIFT_CHARS) { return takeGiftChunk(this.gifts, max, maxChars); }
   restoreGifts(list) { if (list && list.length) this.gifts.unshift(...list); }
 
-  add({ count, total, at }) {
+  add({ count, total, at, handle, name }) {
     const c = Math.max(0, Math.floor(Number(count) || 0));
     if (c > 0) {
       const sec = Math.floor(Number(at) / 1000);
       this.buckets.set(sec, (this.buckets.get(sec) || 0) + c);
       this.sessionTaps += c;
+      if (handle) {
+        const t = this.tappers.get(handle);
+        if (t) t.count += c;
+        else if (this.tappers.size < MAX_TAPPER_HANDLES) this.tappers.set(handle, { name: name || null, count: c });
+      }
     }
     const t = usableTotal(total, c);
     if (t !== null) {
@@ -87,6 +105,7 @@ class LikeBatcher {
   // Start counting from "now": taps seen so far in this room will never be credited (Test mode off, show not on).
   rebaseNow() {
     this.buckets.clear();
+    this.tappers.clear();
     this.firstBase = this.sessionTotal;   // null: the next batch with a total sets it
     this.rebase = true;
     this.gen++;
@@ -96,6 +115,7 @@ class LikeBatcher {
   // once watching resumes and baseline just before its first batch, so taps from the gap are never credited.
   markStale() {
     this.buckets.clear();
+    this.tappers.clear();
     this.sessionTotal = null;
     this.firstBase = null;
     this.rebase = true;
@@ -130,7 +150,7 @@ class LikeBatcher {
     this.buckets.clear();
     // Keep the newest events if a huge burst would exceed the per-push limit (crediting uses session_total anyway).
     const dropped = events.length > MAX_EVENTS ? events.length - MAX_EVENTS : 0;
-    return { events: dropped ? events.slice(dropped) : events, stale, dropped, sessionTotal: this.nextTotal(), rebaseline: this.rebase, gen: this.gen, gifts: this.takeGifts(maxGifts) };
+    return { events: dropped ? events.slice(dropped) : events, stale, dropped, sessionTotal: this.nextTotal(), rebaseline: this.rebase, gen: this.gen, gifts: this.takeGifts(maxGifts), tappers: this.takeTappers() };
   }
 
   // gen = the batcher generation the push was taken at: a baseline requested after it stays pending.
@@ -140,4 +160,4 @@ class LikeBatcher {
   }
 }
 
-module.exports = { LikeBatcher, usableTotal, takeGiftChunk, MAX_EVENTS, MAX_COUNT, STALE_MS, MAX_GIFTS, MAX_GIFT_CHARS, MAX_QUEUED_GIFTS };
+module.exports = { LikeBatcher, usableTotal, takeGiftChunk, MAX_EVENTS, MAX_COUNT, STALE_MS, MAX_GIFTS, MAX_GIFT_CHARS, MAX_QUEUED_GIFTS, MAX_TAPPERS };

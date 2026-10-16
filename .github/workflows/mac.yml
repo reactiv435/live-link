@@ -37,8 +37,20 @@ jobs:
 
       - run: npm ci
 
+      - name: FFmpeg for recording (Intel + Apple Silicon builds, bundled in Resources/ffmpeg)
+        run: |
+          node scripts/fetch-ffmpeg.js darwin-x64 darwin-arm64
+          chmod +x vendor/ffmpeg/darwin-x64/ffmpeg vendor/ffmpeg/darwin-arm64/ffmpeg
+          vendor/ffmpeg/darwin-arm64/ffmpeg -hide_banner -version | head -1
+          arch -x86_64 vendor/ffmpeg/darwin-x64/ffmpeg -hide_banner -version | head -1
+          for f in drawtext xfade acrossfade boxblur; do vendor/ffmpeg/darwin-arm64/ffmpeg -hide_banner -filters 2>/dev/null | grep -q " $f " || { echo "::error title=FFmpeg::missing filter $f"; exit 1; }; done
+          vendor/ffmpeg/darwin-arm64/ffmpeg -hide_banner -encoders 2>/dev/null | grep -q " libx264 " || { echo "::error title=FFmpeg::missing libx264"; exit 1; }
+
       - name: Tests
         run: node --test "test/*.test.js"
+
+      - name: Recording + review clips end to end (real FFmpeg, ~2 min)
+        run: RUN_E2E=1 FFMPEG="$PWD/vendor/ffmpeg/darwin-arm64/ffmpeg" node --test test/clip-e2e.test.js
 
       - name: Source zip (AGPL; bundled into the app's Resources/source)
         run: node scripts/make-source.js
@@ -84,7 +96,12 @@ jobs:
       - name: Sign and verify
         run: |
           APP="$(ls -d dist/mac-universal/*.app | head -1)"
+          # The bundled FFmpeg binaries are signed on their own first (codesign --deep skips plain files in Resources).
+          for f in "$APP"/Contents/Resources/ffmpeg/*/ffmpeg; do codesign --force --sign "$SIGN_ID" --keychain "$SIGN_KC" "$f"; done
           codesign --force --deep --sign "$SIGN_ID" --keychain "$SIGN_KC" "$APP"
+          "$APP/Contents/Resources/ffmpeg/darwin-arm64/ffmpeg" -hide_banner -version | head -1
+          arch -x86_64 "$APP/Contents/Resources/ffmpeg/darwin-x64/ffmpeg" -hide_banner -version | head -1
+          test -f "$APP/Contents/Resources/fonts/ChakraPetch-Bold.ttf"
           codesign --verify --deep --strict --verbose=2 "$APP"
           # The designated requirement is what the Keychain trusts: it must name the certificate, not this build's hash.
           DR="$(codesign -d -r- "$APP" 2>&1 | grep -E '^designated' || true)"

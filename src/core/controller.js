@@ -565,7 +565,7 @@ class Controller extends EventEmitter {
       if (!this._warnedNoTotal) { this._warnedNoTotal = true; this.log('warn', 'like events arrive without a room total; waiting for one'); }
       return;
     }
-    const { events, stale, dropped, sessionTotal, rebaseline, gen, gifts } = this.batcher.take(this.now(), this.clockOffset, this.giftsPerPush);
+    const { events, stale, dropped, sessionTotal, rebaseline, gen, gifts, tappers } = this.batcher.take(this.now(), this.clockOffset, this.giftsPerPush);
     if (stale || dropped) this.log('info', `push: ${stale} stale taps, ${dropped} events trimmed (credited via session_total)`);
     const body = {
       batch_id: crypto.randomUUID(),
@@ -580,6 +580,8 @@ class Controller extends EventEmitter {
       if (rebaseline) body.rebaseline = true;   // count from session_total, credit nothing for the gap
     }
     if (gifts.length) body.gifts = gifts;
+    // Names for the overlay ticker. A test push shows nothing, so it doesn't carry them.
+    if (tappers && tappers.length && !body.dry_run) body.tappers = tappers;
     this.inFlight = body;
     this.inFlightMeta = { gen, stripped: false };
     await this._sendPush();
@@ -714,6 +716,7 @@ class Controller extends EventEmitter {
     if (giftCount && !tooBig && (giftsRefused || meta.stripped || !sameRoom)) this.log('error', `${giftCount} gift frames dropped: the site refused them`);
     if (sameRoom && field !== 'session_total' && !meta.stripped) {
       this.inFlight = { ...body, batch_id: crypto.randomUUID(), events: [], status: this._statusBody(false) };
+      delete this.inFlight.tappers;   // display-only names: never worth a second refusal
       if (giftsRefused || tooBig) delete this.inFlight.gifts;
       if (!this.inFlight.gifts && this.inFlight.session_total === undefined) {   // nothing creditable left to resend
         this.inFlight = null; this.inFlightMeta = null; this._pushSoon(); return;

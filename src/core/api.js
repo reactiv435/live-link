@@ -71,6 +71,10 @@ class LiveLinkApi {
   }
   push(body) { return this._call('POST', 'live-link-push', body); }
   status(body) { return this._call('POST', 'live-link-status', body); }
+  // 2.0 review clips (contract items 22-25): which reviews played in a recording, one-time upload links, "it's ready".
+  reviews(since, until) { return this._call('GET', `live-link-reviews?since=${encodeURIComponent(since)}&until=${encodeURIComponent(until)}`); }
+  clipUpload(body) { return this._call('POST', 'live-link-clip-upload', body); }
+  clipComplete(body) { return this._call('POST', 'live-link-clip-complete', body); }
 }
 
 module.exports = { LiveLinkApi, ApiError };

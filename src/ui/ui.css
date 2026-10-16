@@ -179,3 +179,25 @@ button:focus:not(:focus-visible) { outline: none; }
 #status.setup .hero { order: -2; }
 #status.setup .steps-card { order: -1; }
 .live-meta.hold { color: #ffe7a6; }
+
+/* ---------------------------------------------------------------- 2.0 recording card + recordings manager */
+.rec { padding: 12px 14px; display: grid; gap: 8px; }
+.rec-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.rec-head b { font-size: 14px; }
+.rec-meta { margin-left: auto; color: var(--muted); font: 600 12.5px/1 var(--num); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.rec-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--dim); flex: none; }
+.rec-dot.armed { background: transparent; border: 2px solid var(--crimson); box-sizing: border-box; }
+.rec-dot.on { background: var(--crimson); box-shadow: 0 0 0 0 rgba(224,38,63,.6); animation: pulse 1.6s infinite; }
+.rec-preview { width: 100%; max-height: 220px; object-fit: contain; border-radius: 10px; background: #000; border: 1px solid var(--line); }
+.rec-note { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.45; }
+.rec-remind { margin: 0; padding: 8px 10px; border-radius: 9px; border: 1px solid rgba(224,38,63,.4); background: rgba(224,38,63,.08); color: #ffd9de; font-size: 12.5px; line-height: 1.4; }
+.rec-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.rec-actions .ghost { padding: 9px 8px; font-size: 12.5px; }
+.ghost.small { padding: 7px 10px; font-size: 12px; border-radius: 9px; }
+.rec-summary { margin: 0 0 8px; color: var(--muted); font-size: 12.5px; }
+.rec-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.rec-list li { padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--glass); display: grid; gap: 8px; }
+.rl-head b { display: block; font-size: 13.5px; }
+.rl-meta { display: block; margin-top: 3px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.rl-acts { display: flex; flex-wrap: wrap; gap: 6px; }
+.row.static .ghost.small { flex: none; }

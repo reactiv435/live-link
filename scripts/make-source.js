@@ -25,6 +25,8 @@ fs.writeFileSync(path.join(out, 'SOURCE.md'), `# ReactivVibe LIVE Link ${pkg.ver
 
 This app is free software under the GNU Affero General Public License v3.0 (see LICENSE.txt one folder up).
 It includes tiktok-live-connector and tiktok-live-proto (AGPL-3.0-only), plus MIT-licensed libraries.
+It bundles FFmpeg (GPL-3.0) to record LIVEs and cut review clips: see Resources/ffmpeg/*/FFMPEG-NOTICE.txt for its
+source. The clip font Chakra Petch is under the SIL Open Font License (assets/fonts/OFL.txt).
 
 - Complete source for this version: ${zipName} (in this folder), commit ${commit}.
 - The same zip is published next to the installer in the site's live-link bucket (${pkg.version}/${zipName}).

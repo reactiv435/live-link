@@ -89,6 +89,17 @@
       <div class="tile glass"><small>On the bar</small><b id="t-sent">0</b><span class="tile-sub">taps added</span></div>
       <div class="tile glass gifts-tile"><small>Gifts</small><b id="t-gifts">0</b><span id="t-gifts-sub" class="tile-sub">coins</span></div>
     </section>
+    <section class="rec glass hidden" id="rec" aria-label="Recording">
+      <div class="rec-head"><span class="rec-dot" id="rec-dot" aria-hidden="true"></span><b id="rec-title">Recording</b><span class="rec-meta" id="rec-meta"></span></div>
+      <img class="rec-preview hidden" id="rec-preview" alt="What the recording is capturing right now">
+      <p class="rec-note" id="rec-note"></p>
+      <p class="rec-remind hidden" id="rec-remind"></p>
+      <div class="rec-actions">
+        <button class="ghost" id="rec-toggle" type="button">Stop recording</button>
+        <button class="ghost" id="rec-open" type="button">Open folder</button>
+        <button class="ghost" id="rec-manage" type="button">Recordings</button>
+      </div>
+    </section>
     <section class="steps-card glass" aria-label="Setup and status">
       <button class="steps-summary hidden" id="steps-summary" type="button" aria-expanded="false"><span class="ok-dot" aria-hidden="true">&#10003;</span><span id="steps-summary-text">All set</span><span class="more">Show checklist</span></button>
       <ol id="steps" class="checklist"></ol>
@@ -113,6 +124,8 @@
     <label class="row"><span id="s-autostart-label">Start with Windows<small>Runs quietly in the tray after you sign in to Windows.</small></span><input type="checkbox" id="s-autostart"></label>
     <label class="row"><span>Pop-up notifications<small>When it connects to your LIVE, loses it, and when your LIVE ends.</small></span><input type="checkbox" id="s-notify"></label>
     <label class="row"><span>Test mode<small>Checks everything with the site but adds nothing to the bar. Use it for a test show; turn it off before a real one.</small></span><input type="checkbox" id="s-dry"></label>
+    <label class="row"><span>Record my LIVEs<small>Saves each TikTok LIVE on this computer. After the LIVE, every song review becomes a clip for the artist on the site.</small></span><input type="checkbox" id="s-record"></label>
+    <div class="row static"><span>Recordings folder<small id="s-recroot">-</small></span><button class="ghost small" id="s-recroot-btn" type="button">Change</button></div>
     <div class="manual" id="manual">
       <span class="manual-title">Can't find your LIVE?<small>If TikTok blocks LIVE Link's lookup, paste your TikTok LIVE link (Share, then Copy link) or room ID while you're LIVE. It's used until that LIVE ends.</small></span>
       <form id="manual-form" class="manual-form" autocomplete="off"><input id="manual-input" spellcheck="false" placeholder="TikTok LIVE link or room ID" aria-label="TikTok LIVE link or room ID"><button class="ghost" id="manual-btn" type="submit">Use</button></form>
@@ -125,7 +138,16 @@
       <button class="ghost" data-open="logs">Open log folder</button>
       <button class="ghost danger" id="unpair">Remove this computer from my account</button>
     </div>
-    <p class="legal">LIVE Link is free software under the GNU AGPL-3.0. It uses the open-source <i>tiktok-live-connector</i> library. <button class="link" data-open="source">Source code</button> <button class="link" data-open="license">License</button></p>
+    <p class="legal">LIVE Link is free software under the GNU AGPL-3.0. It uses the open-source <i>tiktok-live-connector</i> library and FFmpeg for recording. <button class="link" data-open="source">Source code</button> <button class="link" data-open="license">License</button></p>
+  </aside>
+
+  <!-- RECORDINGS -->
+  <aside id="recordings" class="drawer hidden" aria-label="Recordings">
+    <div class="drawer-head"><h2>Recordings</h2><button class="icon-btn" id="close-recordings" aria-label="Close">&times;</button></div>
+    <p class="rec-summary" id="rec-summary"></p>
+    <ol class="rec-list" id="rec-list"></ol>
+    <p class="note hidden" id="rec-empty">No recordings yet. Your next TikTok LIVE is recorded here.</p>
+    <div class="drawer-actions"><button class="ghost" id="rec-folder" type="button">Open recordings folder</button></div>
   </aside>
 </div>
 <script src="ui.js"></script>

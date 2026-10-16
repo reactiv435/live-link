@@ -95,3 +95,26 @@ The `live-link` bucket is PRIVATE (the project blocks public buckets), files liv
     room-info call now answers status_code 4003110 with no data, so the connector's own check passed and it
     "connected" to finished LIVEs (hosts looked connected while not LIVE). Rooms nobody confirmed live (a remembered
     room, or one only the Euler sign server returned) count as LIVE only after real LIVE data within 20 s.
+
+## 2.0: recording, review clips, tapper names (2026-10-16)
+21. **`tappers` in `live-link-push`** (built by the site 10-16, commit 5dca90a): optional, at most 20 items
+    `{ handle (<= 60, no @), name (<= 80), count (1..100000) }` = taps per viewer since the previous push. Display only
+    (the overlay ticker); bad items are dropped silently; never stored long-term. Not sent on dry runs.
+22. **`GET live-link-reviews?since=<ISO>&until=<ISO>`** (device token; window <= 26 h). The reviews that played on the
+    device's host's show in that window, from `hype_plays` (plays overlapping the window, including one still open):
+    `{ server_time, reviews: [{ play_id, submission_id, started_at, ended_at|null, title, artist, host_name,
+    rank_name|null, taps }] }`. The app calls it after a LIVE ends to know what to cut.
+23. **`POST live-link-clip-upload`** `{ play_id, kind: 'highlight'|'full'|'vertical'|'poster', bytes, content_type,
+    duration_ms?, width?, height? }` -> `{ upload_url, path, expires_at }`. The play must belong to the device's host.
+    Limits: full <= 400 MB, highlight/vertical <= 150 MB, poster <= 5 MB; content_type video/mp4 (poster image/jpeg).
+    `upload_url` = a signed upload URL (upsert) for the PRIVATE bucket `review-clips` at
+    `<host_id>/<play_id>/<kind>.<mp4|jpg>`; the app PUTs the file with `content-type` and `x-upsert: true`.
+24. **`POST live-link-clip-complete`** `{ play_id, files: [{ kind, path, bytes, content_type, duration_ms, width,
+    height }], recipe: { hot: { from, weight } | null, delay_ms } }` -> `{ ok: true, url }`. The site checks each
+    object exists with that size, upserts `review_clips`, marks them ready (public), and notifies the artist
+    (email + site notification) ONCE per play, when the highlight first becomes ready. Idempotent.
+25. **`live-link-config` gains `clips`:** `{ enabled, delay_ms: 8000, pad_start_ms: 4000, pad_end_ms: 8000, hot_sec: 20,
+    verdict_sec: 60 }`. `enabled` = the host may upload review clips (per-host switch for the rollout). The app
+    records locally either way; it uploads only when enabled, and the host can send a recording later.
+    Recipe: highlight = the hottest `hot_sec` of taps + gift hype (10/coin) + the last `verdict_sec` before the host
+    moved on; review start/end shift by `delay_ms` (the TikTok copy's delay) with padding; tap times are not shifted.

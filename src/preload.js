@@ -12,4 +12,15 @@ contextBridge.exposeInMainWorld('liveLink', {
   setSetting: (key, value) => ipcRenderer.invoke('setSetting', String(key), value),
   open: (which) => ipcRenderer.invoke('open', String(which)),
   onState: (cb) => { const f = (_e, s) => cb(s); ipcRenderer.on('state', f); return () => ipcRenderer.removeListener('state', f); },
+  // 2.0: recording + review clips
+  getShow: () => ipcRenderer.invoke('show:get'),
+  onShow: (cb) => { const f = (_e, s) => cb(s); ipcRenderer.on('show', f); return () => ipcRenderer.removeListener('show', f); },
+  getPreview: () => ipcRenderer.invoke('show:preview'),
+  listRecordings: () => ipcRenderer.invoke('show:list'),
+  openRecording: (dir) => ipcRenderer.invoke('show:open', dir ? String(dir) : ''),
+  deleteRecording: (dir) => ipcRenderer.invoke('show:delete', String(dir || '')),
+  makeClips: (dir) => ipcRenderer.invoke('show:makeClips', String(dir || '')),
+  stopRecording: () => ipcRenderer.invoke('show:stop'),
+  startRecording: () => ipcRenderer.invoke('show:start'),
+  chooseRecordFolder: () => ipcRenderer.invoke('show:chooseFolder'),
 });

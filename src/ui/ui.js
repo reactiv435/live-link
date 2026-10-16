@@ -45,6 +45,7 @@
     renderGifts(s);
     renderSteps(s.steps || []);
     renderManual(s);
+    if (show) renderShow(show);   // the recording card follows the connection (shown once this computer is ready)
   }
 
   // ---------------------------------------------------------------- update banner
@@ -266,6 +267,9 @@
     $('s-notify').checked = st.notify !== false;
     $('s-device').textContent = st.deviceName || '-';
     $('s-version').textContent = st.version || '-';
+    $('s-record').checked = st.recordEnabled !== false;
+    $('s-record').disabled = st.recordAvailable === false;
+    $('s-recroot').textContent = st.recordRoot || '-';
     const ts = $('s-testserver');
     ts.classList.toggle('hidden', !st.testServer);
     if (st.testServer) ts.textContent = `Connected to a TEST server: ${st.testServer}`;
@@ -308,6 +312,12 @@
   $('s-autostart').addEventListener('change', (e) => bridge.setSetting('startWithWindows', e.target.checked));
   $('s-dry').addEventListener('change', (e) => bridge.setSetting('dryRun', e.target.checked));
   $('s-notify').addEventListener('change', (e) => bridge.setSetting('notify', e.target.checked));
+  $('s-record').addEventListener('change', (e) => bridge.setSetting('recordEnabled', e.target.checked));
+  $('s-recroot-btn').addEventListener('click', async () => {
+    const r = await bridge.chooseRecordFolder();
+    if (r && r.root) $('s-recroot').textContent = r.root;
+    else if (r && r.error === 'recording') $('s-recroot').textContent += ' (change it after this LIVE ends)';
+  });
   $('unpair').addEventListener('click', async () => {
     if (!confirm('Remove this computer from your account? It stops sending taps until you connect it again with a new code from your dashboard. (To stop for a while, use Pause instead.)')) return;
     await bridge.unpair();
@@ -316,6 +326,89 @@
 
   bridge.onState(render);
   bridge.getState().then(render);
+
+  // ------------------------------------------------------------ recording + review clips (2.0)
+  const fmtBytes = (n) => (n >= 1024 ** 3 ? `${(n / 1024 ** 3).toFixed(1)} GB` : `${Math.max(0, Math.round((n || 0) / 1024 ** 2))} MB`);
+  const fmtClock = (ms) => { const s = Math.max(0, Math.floor(ms / 1000)), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60; return `${h ? h + ':' : ''}${String(m).padStart(h ? 2 : 1, '0')}:${String(x).padStart(2, '0')}`; };
+  let show = null, previewAt = 0;
+  function renderShow(st) {
+    if (!st) return;
+    show = st;
+    const r = st.recording || {};
+    const card = $('rec');
+    card.classList.toggle('hidden', !current || current.phase !== 'ready');
+    $('rec-dot').className = 'rec-dot' + (r.recording ? ' on' : st.enabled && st.ffmpegOk ? ' armed' : '');
+    let title, note;
+    if (!st.ffmpegOk) { title = 'Recording unavailable'; note = 'This copy of LIVE Link is missing its recorder. Download the latest version from your dashboard.'; }
+    else if (r.recording) { title = 'Recording your LIVE'; note = st.clipsOn ? 'When your LIVE ends, every song review becomes a clip for the artist.' : 'Saved on this computer. Review clips start once the site switches them on for your channel.'; }
+    else if (r.error === 'disk_full') { title = 'Not recording: disk almost full'; note = 'Less than 2 GB free. Delete old recordings (Recordings) or pick another folder in Settings.'; }
+    else if (!st.enabled) { title = 'Recording is off'; note = 'Switch it on in Settings to record your LIVEs and make review clips.'; }
+    else if (st.live && st.hostStopped) { title = 'Recording stopped'; note = 'You stopped it for this LIVE. Press Record to start again.'; }
+    else if (st.live) { title = 'Starting the recording...'; note = 'Getting your LIVE from TikTok.'; }
+    else { title = 'Ready to record'; note = 'Your next TikTok LIVE is recorded automatically.'; }
+    if (st.clips && st.clips.phase === 'clip') note = `Making review clips: ${st.clips.index} of ${st.clips.total}${st.clips.title ? ` · ${st.clips.title}` : ''}`;
+    else if (st.clips && st.clips.phase === 'reviews') note = 'Finding the reviews from your LIVE...';
+    $('rec-title').textContent = title;
+    $('rec-note').textContent = note;
+    const remind = $('rec-remind');
+    remind.classList.toggle('hidden', !(st.storage && st.storage.remind));
+    if (st.storage && st.storage.remind) remind.textContent = `Your recordings use ${fmtBytes(st.storage.totalBytes)}${st.storage.freeBytes != null ? ` and ${fmtBytes(st.storage.freeBytes)} is free` : ''}. Open Recordings to clear the ones you don't need.`;
+    const tg = $('rec-toggle');
+    tg.classList.toggle('hidden', !st.ffmpegOk || !(r.recording || (st.live && st.enabled)));
+    tg.textContent = r.recording ? 'Stop recording' : 'Record';
+    tickRec();
+    if (r.recording && r.previewAt && r.previewAt !== previewAt && bridge.getPreview) {
+      previewAt = r.previewAt;
+      bridge.getPreview().then((src) => { const img = $('rec-preview'); if (src) { img.src = src; img.classList.remove('hidden'); } });
+    }
+    if (!r.recording) $('rec-preview').classList.add('hidden');
+    if (!$('recordings').classList.contains('hidden')) loadRecordings();
+  }
+  function tickRec() {
+    const r = show && show.recording;
+    $('rec-meta').textContent = r && r.recording ? `${fmtClock(Date.now() - r.startedAt)} · ${fmtBytes(r.bytes)}` : '';
+  }
+  setInterval(tickRec, 1000);
+  $('rec-toggle').addEventListener('click', () => (show && show.recording && show.recording.recording ? bridge.stopRecording() : bridge.startRecording()));
+  $('rec-open').addEventListener('click', () => bridge.openRecording(show && show.recording && show.recording.recording ? show.recording.dir : ''));
+  $('rec-manage').addEventListener('click', () => { $('recordings').classList.remove('hidden'); loadRecordings(); });
+  $('rec-folder').addEventListener('click', () => bridge.openRecording(''));
+  $('close-recordings').addEventListener('click', () => $('recordings').classList.add('hidden'));
+
+  async function loadRecordings() {
+    const list = (await bridge.listRecordings()) || [];
+    const ol = $('rec-list');
+    ol.textContent = '';
+    $('rec-empty').classList.toggle('hidden', list.length > 0);
+    const total = list.reduce((n, x) => n + (x.bytes || 0), 0);
+    $('rec-summary').textContent = list.length ? `${list.length} recording${list.length === 1 ? '' : 's'} · ${fmtBytes(total)}${show && show.storage && show.storage.freeBytes != null ? ` · ${fmtBytes(show.storage.freeBytes)} free` : ''}. Kept until you delete them.` : '';
+    for (const x of list) {
+      const li = document.createElement('li');
+      const head = document.createElement('div'); head.className = 'rl-head';
+      const when = new Date(x.startedAt || Date.now());
+      const t = document.createElement('b'); t.textContent = `${when.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })} · ${when.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
+      const meta = document.createElement('span'); meta.className = 'rl-meta';
+      const dur = x.endedAt ? fmtClock(x.endedAt - x.startedAt) : 'recording now';
+      const clips = x.working ? 'making clips...' : x.clips.sent ? `${x.clips.sent} clip${x.clips.sent === 1 ? '' : 's'} sent${x.clips.failed ? `, ${x.clips.failed} failed` : ''}` : x.clips.failed ? `${x.clips.failed} clip${x.clips.failed === 1 ? '' : 's'} failed` : 'no clips yet';
+      meta.textContent = `@${x.handle || ''} · ${dur} · ${fmtBytes(x.bytes)} · ${clips}`;
+      head.append(t, meta);
+      const acts = document.createElement('div'); acts.className = 'rl-acts';
+      const btn = (label, cls, fn) => { const b = document.createElement('button'); b.type = 'button'; b.className = `ghost small ${cls || ''}`; b.textContent = label; b.addEventListener('click', fn); acts.append(b); return b; };
+      btn('Open', '', () => bridge.openRecording(x.dir));
+      if (!x.recording && show && show.clipsOn && !x.working) btn('Make & send clips', '', async () => { const r = await bridge.makeClips(x.dir); if (!r || !r.ok) meta.textContent += ` · ${r && r.error === 'clips_off' ? 'clips are not switched on for your channel yet' : "couldn't start"}`; else loadRecordings(); });
+      if (!x.recording && !x.working) {
+        const del = btn('Delete', 'danger', async () => {
+          if (del.dataset.sure !== '1') { del.dataset.sure = '1'; del.textContent = 'Delete for good?'; setTimeout(() => { del.dataset.sure = ''; del.textContent = 'Delete'; }, 4000); return; }
+          const r = await bridge.deleteRecording(x.dir);
+          if (r && r.ok) loadRecordings(); else meta.textContent += " · couldn't delete";
+        });
+      }
+      li.append(head, acts);
+      ol.append(li);
+    }
+  }
+
+  if (bridge.onShow) { bridge.onShow(renderShow); bridge.getShow().then(renderShow); }
 
   // ------------------------------------------------------------ demo (browser only)
   function demoBridge() {
@@ -378,6 +471,20 @@
       unpair: async () => true, retry: async () => true, setSetting: async () => true, open: async () => true,
       setManualRoom: async (t) => (/\d{15,}/.test(t) ? { ok: true } : { ok: false, error: 'no_room_id' }),
       onState: (f) => { listeners.push(f); return () => {}; },
+      // recording demo: ?demo=live shows a recording in progress
+      getShow: async () => ({ ffmpegOk: true, enabled: true, clipsOn: true, live: pick === 'live', hostStopped: false, root: 'C:\\Users\\host\\Videos\\LIVE Link Recordings',
+        recording: { recording: pick === 'live', startedAt: Date.now() - 42 * 60000, bytes: 3.1 * 1024 ** 3, previewAt: 0 },
+        clips: pick === 'waiting' ? { phase: 'clip', index: 3, total: 9, title: 'Midnight Engine (AI remix)' } : null,
+        storage: { totalBytes: 61 * 1024 ** 3, freeBytes: 24 * 1024 ** 3, remind: pick === 'waiting' } }),
+      onShow: () => () => {},
+      getPreview: async () => null,
+      listRecordings: async () => [
+        { dir: 'a', handle: 'the_boneyard_ai', startedAt: Date.now() - 42 * 60000, endedAt: null, recording: true, bytes: 3.1 * 1024 ** 3, clips: { sent: 0, failed: 0 }, working: false },
+        { dir: 'b', handle: 'the_boneyard_ai', startedAt: Date.now() - 3 * 86400000, endedAt: Date.now() - 3 * 86400000 + 2.4 * 3600000, recording: false, bytes: 8.7 * 1024 ** 3, clips: { sent: 11, failed: 1 }, working: false },
+        { dir: 'c', handle: 'the_boneyard_ai', startedAt: Date.now() - 7 * 86400000, endedAt: Date.now() - 7 * 86400000 + 1.9 * 3600000, recording: false, bytes: 6.2 * 1024 ** 3, clips: { sent: 9, failed: 0 }, working: false },
+      ],
+      openRecording: async () => true, deleteRecording: async () => ({ ok: true }), makeClips: async () => ({ ok: true }),
+      stopRecording: async () => true, startRecording: async () => true, chooseRecordFolder: async () => null,
     };
   }
 })();
