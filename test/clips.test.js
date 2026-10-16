@@ -100,3 +100,12 @@ test('probe parsing reads duration, codec, size and audio', () => {
   const p = C.parseProbe('  Duration: 00:01:02.34, start: 0\n  Stream #0:0: Video: h264 (High), yuv420p, 720x1280, 30 fps\n  Stream #0:1: Audio: aac');
   assert.deepEqual(p, { duration: 62.34, codec: 'h264', width: 720, height: 1280, hasAudio: true });
 });
+
+test('stream picker also reads the LIVE page and api-live shapes (streamData.pull_data)', () => {
+  const pull = { stream_data: JSON.stringify({ data: { origin: { main: { flv: 'https://pull.example/page.flv', sdk_params: JSON.stringify({ VCodec: 'h264', resolution: '720x1280' }) } } } }) };
+  const page = pickStream({ liveRoom: { streamData: { pull_data: pull } } });             // fetchRoomInfoFromHtmlRoute result
+  assert.equal(page.url, 'https://pull.example/page.flv');
+  const apiLive = pickStream({ data: { liveRoom: { streamData: { pull_data: pull } } } });   // api-live answer
+  assert.equal(apiLive.url, 'https://pull.example/page.flv');
+  assert.equal(pickStream({ liveRoomUserInfo: { liveRoom: { streamData: { pull_data: pull } } } }).height, 1280);
+});

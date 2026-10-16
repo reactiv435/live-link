@@ -521,6 +521,15 @@ class TikTokLink extends EventEmitter {
     }
   }
 
+  // For the recorder, when room info carried no stream links: the LIVE page's room data (it lists them too).
+  async liveRoomFromPage() {
+    const conn = this.conn;
+    const L = this.lib || loadConnector();
+    if (!conn || !L.fetchRoomInfoFromHtmlRoute || !this.username) return null;
+    try { return await L.fetchRoomInfoFromHtmlRoute({ webClient: conn.webClient, uniqueId: this.username }); }
+    catch (e) { this.log('info', `recording: the LIVE page was refused (${e && e.message})`); return null; }
+  }
+
   // Finds the LIVE's room AND whether it is live, before any connection: TikTok's LIVE page (one request, what the
   // connector itself asks first), then TikTok's API. The connector's own check can't be trusted: for an ended room
   // TikTok's room-info call now answers an error with no status (4003110), so the connector "connects" to a LIVE that

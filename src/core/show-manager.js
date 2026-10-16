@@ -19,6 +19,8 @@ const CLIP_DELAY_MS = 90000;                // after a LIVE ends, give the site 
 const REMIND_TOTAL_BYTES = 50 * 1024 ** 3;  // remind when recordings use more than 50 GB...
 const REMIND_FREE_BYTES = 30 * 1024 ** 3;   // ...or the disk has less than 30 GB free
 const REMIND_EVERY_MS = 14 * 24 * 3600000;  // and not more than every 2 weeks
+const RETRY_LATER_MS = 30 * 60000;          // clips still owed after a run: try again in 30 min (3 times per app run)
+const RESUME_WINDOW_MS = 7 * 24 * 3600000;  // unfinished clips of recordings up to a week old are picked up after a restart
 
 function dirBytes(dir) {
   let n = 0;
@@ -46,10 +48,13 @@ class ShowManager extends EventEmitter {
 
     this.recorder.on('state', () => this._emit());
     this.recorder.on('finished', ({ dir }) => this._recordingFinished(dir));
+    this.retries = new Map();       // dir -> automatic re-runs this app session (uploads that didn't finish)
     this.jobs.on('progress', (p) => {
       this.clipState = p.phase === 'done' || p.phase === 'error' ? null : p;
       if (p.phase === 'done' && p.sent > 0) this.emit('clipsSent', { dir: p.dir, sent: p.sent, failed: p.failed });
       if (p.phase === 'done' && p.failed > 0) this.emit('clipsFailed', { dir: p.dir, failed: p.failed });
+      // Something still owed (an upload that kept failing, a full review not sent): try again in 30 min, up to 3 times.
+      if ((p.phase === 'done' && p.pending) || p.phase === 'error') this._retryLater(p.dir);
       this._emit();
     });
     ctl.on('state', (s) => this._onState(s));
@@ -103,6 +108,8 @@ class ShowManager extends EventEmitter {
     if (target !== this.lastTarget) { this.lastTarget = target; this.songSince = this.now(); }
     this.lastS = s;
     if (live !== this.prevLive) { this.prevLive = live; this._emit(); }
+    // Once the app is connected (and the site has clips on), pick up any clips a restart interrupted. Not mid-LIVE.
+    if (s.phase === 'ready' && !live && !this.recorder.active) this._resumePending();
   }
 
   async _start(s, roomId) {
@@ -115,14 +122,17 @@ class ShowManager extends EventEmitter {
     finally { this.starting = false; this._emit(); }
   }
 
+  // The stream link, from (1) the room info kept since connecting, (2) a fresh room info, (3) the LIVE page.
   async _stream(fresh) {
     const conn = this.link.conn;
     if (!conn) return null;
-    let info = fresh ? null : conn.roomInfo;
-    let s = info ? pickStream(info) : null;
+    let s = !fresh && conn.roomInfo ? pickStream(conn.roomInfo) : null;
     if (!s && typeof conn.fetchRoomInfo === 'function') {
-      try { info = await conn.fetchRoomInfo(); s = pickStream(info); } catch (e) { this.log('info', `recording: room info refused (${e && e.message})`); }
+      try { s = pickStream(await conn.fetchRoomInfo()); } catch (e) { this.log('info', `recording: room info refused (${e && e.message})`); }
     }
+    if (!s && typeof this.link.liveRoomFromPage === 'function') s = pickStream(await this.link.liveRoomFromPage());
+    if (!s) this.log('warn', 'recording: TikTok gave no stream link for this LIVE');
+    else this.log('info', `recording: stream ${s.quality} ${s.kind}${s.codec ? ` ${s.codec}` : ''}${s.width ? ` ${s.width}x${s.height}` : ''}`);
     return s;
   }
 
@@ -152,6 +162,44 @@ class ShowManager extends EventEmitter {
     if (!dir || !this.clipsOn()) return;
     const t = this.setTimeout(() => { this.clipTimers.delete(t); this.jobs.enqueue(dir); }, this.clipDelayMs);
     this.clipTimers.add(t);
+  }
+
+  _retryLater(dir) {
+    const n = this.retries.get(dir) || 0;
+    if (!dir || n >= 3 || !this.clipsOn()) return;
+    this.retries.set(dir, n + 1);
+    const t = this.setTimeout(() => { this.clipTimers.delete(t); this.jobs.enqueue(dir); }, RETRY_LATER_MS);
+    this.clipTimers.add(t);
+  }
+
+  // After a restart (the app was closed or the PC shut down before the clips were done), and when clips get switched on:
+  // recordings from the last 7 days whose clips aren't all sent are picked up again. A recording cut off by a crash
+  // gets its end time from what was recorded.
+  _resumePending() {
+    if (this.resumed || !this.clipsOn()) return;
+    this.resumed = true;
+    const now = this.now();
+    for (const x of this.listRecordings()) {
+      if (x.recording || x.working) continue;
+      const file = path.join(x.dir, 'session.json');
+      let s;
+      try { s = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { continue; }
+      if (s.clipsDoneAt) continue;
+      if (!s.endedAt) {
+        let end = s.startedAt || 0;
+        for (const r of s.runs || []) {
+          end = Math.max(end, r.endedAt || 0);
+          const last = (r.samples || [])[Math.max(0, (r.samples || []).length - 1)];
+          if (last) end = Math.max(end, last[1] + Math.max(0, (r.lastMediaMs || 0) - last[0]));
+        }
+        if (!(end > (s.startedAt || 0))) continue;
+        s.endedAt = end;
+        try { fs.writeFileSync(file + '.tmp', JSON.stringify(s, null, 1)); fs.renameSync(file + '.tmp', file); } catch { continue; }
+      }
+      if (now - s.endedAt > RESUME_WINDOW_MS) continue;
+      this.log('info', `clips: picking up ${path.basename(x.dir)} again`);
+      this.jobs.enqueue(x.dir);
+    }
   }
 
   // ---------------------------------------------------------------- the recordings list (the window's manager)

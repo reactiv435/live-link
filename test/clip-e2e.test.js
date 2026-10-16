@@ -51,14 +51,18 @@ test('records a LIVE and turns one review into a full review, a branded highligh
   // The review: song on air at media 5 s, host moves on at media 70 s (as server times).
   const startedAt = C.mediaToWall(run, 5000), endedAt = C.mediaToWall(run, 70000);
   const got = {};
-  const server = http.createServer((req, res) => { let n = 0; req.on('data', (d) => { n += d.length; }); req.on('end', () => { got[req.url] = n; res.writeHead(200); res.end('{}'); }); });
+  const upDir = path.join(root, 'uploads'); fs.mkdirSync(upDir);
+  const server = http.createServer((req, res) => {
+    const chunks = []; req.on('data', (d) => chunks.push(d));
+    req.on('end', () => { const b = Buffer.concat(chunks); got[req.url] = b.length; fs.writeFileSync(path.join(upDir, path.basename(req.url) + (req.url.endsWith('poster') ? '.jpg' : '.mp4')), b); res.writeHead(200); res.end('{}'); });
+  });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const port = server.address().port;
-  let completed = null;
+  const completes = [];
   const api = {
     reviews: async () => ({ reviews: [{ play_id: 'play-1', started_at: new Date(startedAt).toISOString(), ended_at: new Date(endedAt).toISOString(), title: 'Midnight Signal', artist: 'Sample Artist', host_name: 'ReactivVibeAI' }] }),
     clipUpload: async (m) => ({ upload_url: `http://127.0.0.1:${port}/up/${m.kind}`, path: `host/play-1/${m.kind}` }),
-    clipComplete: async (b) => { completed = b; return { ok: true }; },
+    clipComplete: async (b) => { completes.push(b); return { ok: true }; },
   };
   const jobs = new ClipJobs({ api, ffmpegPath: FF, fontFile: FONT, log: (l, m) => logs.push(`${l} ${m}`), getOptions: () => ({ delayMs: 0, padStartMs: 1000, padEndMs: 1000, hotSec: 8, verdictSec: 20 }) });
   const result = await jobs.processSession(dir);
@@ -66,7 +70,10 @@ test('records a LIVE and turns one review into a full review, a branded highligh
   assert.equal(result.sent, 1, `clip not sent: ${JSON.stringify(result)}\n${logs.join('\n')}`);
   assert.ok(got['/up/highlight'] > 50000 && got['/up/full'] > 50000 && got['/up/poster'] > 2000, `uploads: ${JSON.stringify(got)}`);
   assert.equal(got['/up/vertical'], undefined, 'a portrait stream needs no extra vertical copy');
-  assert.equal(completed.files.length, 3);
+  // the artist is told after the FIRST "ready" (highlight + poster); the full review follows in a second one
+  assert.equal(completes.length, 2);
+  assert.deepEqual(completes[0].files.map((f) => f.kind), ['highlight', 'poster']);
+  assert.deepEqual(completes[1].files.map((f) => f.kind), ['full']);
 
   const job = path.join(dir, 'clips', 'play-1');
   const hl = probe(path.join(job, 'highlight.mp4'));
@@ -74,9 +81,11 @@ test('records a LIVE and turns one review into a full review, a branded highligh
   assert.equal(hl.width, 720); assert.equal(hl.height, 1280);
   // 8 s hot + 20 s verdict (+ keyframe slack) - 0.5 s crossfade + 2.4 s end card
   assert.ok(hl.duration > 27 && hl.duration < 38, `highlight duration ${hl.duration}`);
-  const full = probe(path.join(job, 'full.mp4'));
+  const full = probe(path.join(upDir, 'full.mp4'));
   assert.ok(full.duration > 62 && full.duration < 72, `full review duration ${full.duration}`);
-  const hotFrom = Date.parse(completed.recipe.hot.from);
+  assert.ok(!fs.existsSync(path.join(job, 'full.mp4')), 'the local copy of the full review is removed once sent');
+  assert.ok(JSON.parse(fs.readFileSync(path.join(dir, 'session.json'), 'utf8')).clipsDoneAt, 'the recording is marked done');
+  const hotFrom = Date.parse(completes[0].recipe.hot.from);
   const burstWall = C.mediaToWall(run, 24000);
   assert.ok(Math.abs(hotFrom - burstWall) < 8000, `hottest moment ${((hotFrom - burstWall) / 1000).toFixed(1)} s from the burst`);
   const st = JSON.parse(fs.readFileSync(path.join(dir, 'session.json'), 'utf8')).clips['play-1'];

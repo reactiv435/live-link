@@ -20,13 +20,23 @@ function parseResolution(r) {
   return m ? { width: Number(m[1]), height: Number(m[2]) } : null;
 }
 
+// The same "pull data" (every quality, codec, resolution) sits in different places depending on where it came from:
+// room/info (data.stream_url.live_core_sdk_data), the LIVE page (liveRoomUserInfo.liveRoom.streamData) or the
+// api-live answer (data.liveRoom.streamData).
+function pullData(roomInfo) {
+  if (!roomInfo || typeof roomInfo !== 'object') return { pull: null, su: null };
+  const d = roomInfo.data || roomInfo;
+  const su = d && d.stream_url && typeof d.stream_url === 'object' ? d.stream_url : null;
+  const liveRoom = (roomInfo.liveRoomUserInfo && roomInfo.liveRoomUserInfo.liveRoom) || roomInfo.liveRoom || (d && d.liveRoom) || null;
+  const pull = (su && su.live_core_sdk_data && su.live_core_sdk_data.pull_data) || (liveRoom && liveRoom.streamData && liveRoom.streamData.pull_data) || null;
+  return { pull, su };
+}
+
 function pickStream(roomInfo) {
-  const d = roomInfo && (roomInfo.data || roomInfo);
-  const su = d && d.stream_url;
-  if (!su || typeof su !== 'object') return null;
+  const { pull: sdk, su } = pullData(roomInfo);
+  if (!sdk && !su) return null;
 
   // The SDK pull data lists every quality with its codec and resolution.
-  const sdk = su.live_core_sdk_data && su.live_core_sdk_data.pull_data;
   const streamData = parseJson(sdk && sdk.stream_data);
   const qualities = streamData && streamData.data;
   if (qualities && typeof qualities === 'object') {
@@ -44,6 +54,7 @@ function pickStream(roomInfo) {
     if (h264 || found.length) return h264 || found[0];
   }
 
+  if (!su) return null;
   const flv = su.flv_pull_url || {};
   for (const q of FLV_ORDER) if (isLink(flv[q])) return { url: flv[q], kind: 'flv', quality: q, codec: null };
   if (isLink(su.rtmp_pull_url)) return { url: su.rtmp_pull_url, kind: 'flv', quality: 'default', codec: null };

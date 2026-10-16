@@ -88,3 +88,19 @@ test('taps and gifts feed the hottest-moment log; the quiet nudge waits 2 min an
   ctl.emit('state', live({ target: null }));
   adv(20 * 60000); show._checkNudge(); assert.equal(nudges, 2, 'no song on air: no nudge');
 });
+
+test('after a restart, unfinished clips are picked up once the app is ready (a crashed recording gets its end time)', async () => {
+  const { ctl, show, queued, live } = setup();
+  const root = show.root();
+  const mk = (name, s) => { const d = path.join(root, name); fs.mkdirSync(d, { recursive: true }); fs.writeFileSync(path.join(d, 'session.json'), JSON.stringify(s)); return d; };
+  const t = 1_790_000_000_000;   // real epoch times (the test clock is far behind: every recording counts as recent)
+  const done = mk('done', { startedAt: t - 7200000, endedAt: t - 3600000, runs: [], clipsDoneAt: 'x' });
+  const crashed = mk('crashed', { startedAt: t - 7200000, endedAt: null, runs: [{ index: 0, endedAt: null, samples: [[0, t - 7200000], [3000000, t - 4200000]], lastMediaMs: 3600000 }] });
+  const pending = mk('pending', { startedAt: t - 7200000, endedAt: t - 3600000, runs: [] });
+  ctl.emit('state', { ...live(), connected: false, tiktok: { status: 'offline' } });
+  const dirs = queued.map((q) => q[0]);
+  assert.ok(dirs.includes(pending) && dirs.includes(crashed) && !dirs.includes(done));
+  assert.equal(JSON.parse(fs.readFileSync(path.join(crashed, 'session.json'), 'utf8')).endedAt, t - 3600000);
+  ctl.emit('state', { ...live(), connected: false, tiktok: { status: 'offline' } });
+  assert.equal(queued.length, dirs.length, 'only once per app run');
+});

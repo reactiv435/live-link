@@ -16,6 +16,7 @@ const C = require('./clipper');
 
 const CONTENT_TYPE = { full: 'video/mp4', highlight: 'video/mp4', vertical: 'video/mp4', poster: 'image/jpeg' };
 const MIN_COVERAGE = 0.6;   // a review the recording covers less than this is skipped (recording started late, gap)
+const MAX_ATTEMPTS = 3;     // a review that failed this often waits for the host's "Make & send clips"
 
 class ClipJobs extends EventEmitter {
   constructor({ api, ffmpegPath, fontFile, log = () => {}, spawn = require('child_process').spawn, fetch = globalThis.fetch, getOptions = () => ({}), now = Date.now }) {
@@ -48,37 +49,99 @@ class ClipJobs extends EventEmitter {
     finally { this.running = null; this._next(); }
   }
 
+  // Two passes so artists hear fast: pass 1 makes every review's files and sends the highlight + poster (the artist is
+  // told as soon as the highlight lands); pass 2 sends the big full reviews. Status per review:
+  //   highlight_sent -> pass 2 still owes the full review; sent = everything is up; failed (attempts counted).
   async processSession(dir, { force = false } = {}) {
     const session = C.readSession(dir);
     if (!session.endedAt) throw new Error('the recording is still running');
     const until = session.endedAt + 60000, since = session.startedAt - 60000;
     this.emit('progress', { dir, phase: 'reviews' });
-    const res = await this.api.reviews(new Date(since).toISOString(), new Date(until).toISOString());
+    const res = await this._retry(() => this.api.reviews(new Date(since).toISOString(), new Date(until).toISOString()), 'reviews');
     const reviews = (res && Array.isArray(res.reviews)) ? res.reviews : [];
     let taps = {};
     try { taps = JSON.parse(fs.readFileSync(path.join(dir, 'taps.json'), 'utf8')); } catch {}
     const tl = C.timeline(session);
     const opts = { ...C.DEFAULTS, ...(this.getOptions() || {}) };
+    const clips = () => (C.readSession(dir).clips || {});
     let sent = 0, skipped = 0, failed = 0;
+    // pass 1: files + highlight
     for (let i = 0; i < reviews.length; i++) {
       const r = reviews[i];
       const key = String(r.play_id);
-      const prev = (session.clips || {})[key];
-      if (prev && (prev.status === 'sent' || (!force && (prev.status === 'not_recorded' || prev.status === 'failed')))) { if (prev.status === 'sent') sent++; else skipped++; continue; }
+      const prev = clips()[key];
+      if (prev && (prev.status === 'sent' || prev.status === 'highlight_sent')) continue;
+      if (prev && !force && (prev.status === 'not_recorded' || (prev.status === 'failed' && (prev.attempts || 0) >= MAX_ATTEMPTS))) { skipped++; continue; }
       this.emit('progress', { dir, phase: 'clip', index: i + 1, total: reviews.length, title: r.title || '' });
       try {
         const out = await this._oneReview(dir, session, tl, taps, r, opts);
         if (out === 'not_recorded') { this._mark(dir, key, { status: 'not_recorded' }); skipped++; continue; }
-        this._mark(dir, key, { status: 'sent', files: out });
-        sent++;
+        this._mark(dir, key, { status: 'highlight_sent', files: out.files, job: out.job, recipe: out.recipe });
       } catch (e) {
         failed++;
         this.log('error', `clips: review ${key} failed: ${e && e.message}`);
-        this._mark(dir, key, { status: 'failed', error: String((e && e.message) || e).slice(0, 300) });
+        this._mark(dir, key, { status: 'failed', attempts: ((prev && prev.attempts) || 0) + 1, error: String((e && e.message) || e).slice(0, 300) });
       }
     }
-    this.emit('progress', { dir, phase: 'done', sent, skipped, failed, total: reviews.length });
-    return { sent, skipped, failed, total: reviews.length };
+    // pass 2: the full reviews
+    const owed = reviews.filter((r) => (clips()[String(r.play_id)] || {}).status === 'highlight_sent');
+    for (let i = 0; i < owed.length; i++) {
+      const r = owed[i], key = String(r.play_id), st = clips()[key];
+      this.emit('progress', { dir, phase: 'full', index: i + 1, total: owed.length, title: r.title || '' });
+      try {
+        const file = path.join(dir, 'clips', st.job || key.replace(/[^\w-]/g, ''), 'full.mp4');
+        const f = await this._upload(r, 'full', file);
+        await this._retry(() => this.api.clipComplete({ play_id: r.play_id, files: [f], recipe: st.recipe || {} }), 'complete');
+        try { fs.unlinkSync(file); } catch {}          // a copy of the recording: the recording itself stays
+        this._mark(dir, key, { status: 'sent', files: [...(st.files || []), { kind: 'full', bytes: f.bytes }] });
+        sent++;
+      } catch (e) {
+        this.log('warn', `clips: full review ${key} not sent yet: ${e && e.message}`);
+        this._mark(dir, key, { error: String((e && e.message) || e).slice(0, 300) });   // stays highlight_sent: retried next time
+      }
+    }
+    const final = clips();
+    const pending = reviews.some((r) => { const s = final[String(r.play_id)]; return !s || s.status === 'highlight_sent' || (s.status === 'failed' && (s.attempts || 0) < MAX_ATTEMPTS); });
+    this._markSession(dir, { clipsCheckedAt: new Date(this.now()).toISOString(), ...(pending ? {} : { clipsDoneAt: new Date(this.now()).toISOString() }) });
+    sent = reviews.filter((r) => ['sent', 'highlight_sent'].includes((final[String(r.play_id)] || {}).status)).length;
+    this.emit('progress', { dir, phase: 'done', sent, skipped, failed, total: reviews.length, pending });
+    return { sent, skipped, failed, total: reviews.length, pending };
+  }
+
+  // A site call or an upload that hits a network blip or a server error gets two more tries (5 s, then 20 s).
+  async _retry(fn, what) {
+    let last;
+    for (let i = 0; i < 3; i++) {
+      try { return await fn(); }
+      catch (e) {
+        last = e;
+        const s = Number(e && e.status);
+        if (s >= 400 && s < 500 && s !== 408 && s !== 429) break;     // refused for a reason: retrying won't help
+        if (i < 2) { this.log('info', `clips: ${what} failed (${e && e.message}), trying again`); await new Promise((r) => setTimeout(r, [5000, 20000][i])); }
+      }
+    }
+    throw last;
+  }
+
+  async _upload(r, kind, file) {
+    const bytes = fs.statSync(file).size;
+    const probe = kind === 'poster' ? {} : C.parseProbe(await this._probe(file));
+    const meta = { play_id: r.play_id, kind, bytes, content_type: CONTENT_TYPE[kind], duration_ms: probe.duration ? Math.round(probe.duration * 1000) : null, width: probe.width || null, height: probe.height || null };
+    return this._retry(async () => {
+      const up = await this.api.clipUpload(meta);
+      await this._put(up.upload_url, file, CONTENT_TYPE[kind], bytes);
+      return { ...meta, path: up.path };
+    }, `${kind} upload`);
+  }
+
+  _markSession(dir, patch) {
+    const file = path.join(dir, 'session.json');
+    try {
+      const s = JSON.parse(fs.readFileSync(file, 'utf8'));
+      Object.assign(s, patch);
+      fs.writeFileSync(file + '.tmp', JSON.stringify(s, null, 1));
+      fs.renameSync(file + '.tmp', file);
+    } catch (e) { this.log('warn', `clips: can't save status (${e.message})`); }
   }
 
   async _oneReview(dir, session, tl, taps, r, opts) {
@@ -127,20 +190,14 @@ class ClipJobs extends EventEmitter {
     await this._ff(C.posterArgs(plan.hot ? 'hot.mp4' : 'verdict.mp4', plan.hot ? hotDur / 2 : 3, 'poster.jpg'), job);
     for (const f of ['hot.mp4', 'verdict.mp4', 'full.txt', 'hot.txt', 'verdict.txt', 'title.txt', 'sub.txt', 'host.txt', 'font.ttf']) { try { fs.unlinkSync(path.join(job, f)); } catch {} }
 
-    // 5) upload and register
-    const kinds = ['highlight', 'full', 'poster', ...(size.portrait ? [] : ['vertical'])];
+    // 5) send the highlight first (the artist is told when it lands); the full review goes in pass 2
+    const recipe = { hot: plan.hot ? { from: new Date(plan.hot.from).toISOString(), weight: plan.hotWeight } : null, delay_ms: opts.delayMs };
     const files = [];
-    for (const kind of kinds) {
-      const file = path.join(job, kind === 'poster' ? 'poster.jpg' : `${kind}.mp4`);
-      const bytes = fs.statSync(file).size;
-      const probe = kind === 'poster' ? {} : C.parseProbe(await this._probe(file));
-      const meta = { play_id: r.play_id, kind, bytes, content_type: CONTENT_TYPE[kind], duration_ms: probe.duration ? Math.round(probe.duration * 1000) : null, width: probe.width || null, height: probe.height || null };
-      const up = await this.api.clipUpload(meta);
-      await this._put(up.upload_url, file, CONTENT_TYPE[kind], bytes);
-      files.push({ ...meta, path: up.path });
+    for (const kind of ['highlight', 'poster', ...(size.portrait ? [] : ['vertical'])]) {
+      files.push(await this._upload(r, kind, path.join(job, kind === 'poster' ? 'poster.jpg' : `${kind}.mp4`)));
     }
-    await this.api.clipComplete({ play_id: r.play_id, files, recipe: { hot: plan.hot ? { from: new Date(plan.hot.from).toISOString(), weight: plan.hotWeight } : null, delay_ms: opts.delayMs } });
-    return files.map((f) => ({ kind: f.kind, bytes: f.bytes }));
+    await this._retry(() => this.api.clipComplete({ play_id: r.play_id, files, recipe }), 'complete');
+    return { files: files.map((f) => ({ kind: f.kind, bytes: f.bytes })), job: path.basename(job), recipe };
   }
 
   _mark(dir, key, patch) {
@@ -149,7 +206,7 @@ class ClipJobs extends EventEmitter {
       const s = JSON.parse(fs.readFileSync(file, 'utf8'));
       s.clips = s.clips || {};
       s.clips[key] = { ...(s.clips[key] || {}), ...patch, at: new Date(this.now()).toISOString() };
-      if (patch.status !== 'failed') delete s.clips[key].error;
+      if (patch.status && patch.status !== 'failed' && !('error' in patch)) delete s.clips[key].error;
       fs.writeFileSync(file + '.tmp', JSON.stringify(s, null, 1));
       fs.renameSync(file + '.tmp', file);
     } catch (e) { this.log('warn', `clips: can't save status (${e.message})`); }
