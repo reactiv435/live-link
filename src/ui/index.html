@@ -94,6 +94,10 @@
       <img class="rec-preview hidden" id="rec-preview" alt="What the recording is capturing right now">
       <p class="rec-note" id="rec-note"></p>
       <p class="rec-remind hidden" id="rec-remind"></p>
+      <div class="moment hidden" id="moment">
+        <button class="moment-btn" id="moment-btn" type="button"><svg class="moment-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M13.5 2 4 13.5h6.5L9.5 22 20 9.5h-6.6z" fill="currentColor"/></svg><span id="moment-label">Clip that</span><kbd id="moment-key">F8</kbd></button>
+        <p class="moment-note" id="moment-note" aria-live="polite">Something wild just happened? Press it: the last 35 seconds become a clip after your LIVE.</p>
+      </div>
       <div class="rec-actions">
         <button class="ghost" id="rec-toggle" type="button">Stop recording</button>
         <button class="ghost" id="rec-open" type="button">Open folder</button>
@@ -119,6 +123,7 @@
         <li><b>Every song you put on air becomes a clip.</b> A couple of minutes after your LIVE ends, each review is cut three ways: a 25-second clip for TikTok, Reels and Shorts, a highlight (the hottest moment and your verdict), and the full review.</li>
         <li><b>Leave LIVE Link open until the "Review clips sent" pop-up.</b> It takes about 1 to 2 minutes per song you reviewed. If you close it or shut down, it finishes the next time you open LIVE Link (within 7 days).</li>
         <li><b>The artist gets their clip</b> by email and on their dashboard, their profile and the song's AI Radio page, with buttons to share it to TikTok, Instagram and more.</li>
+        <li><b>Clip that.</b> When something wild happens on stream, press the hotkey (F8 unless you changed it in Settings) or the <b>Clip that</b> button. After the LIVE, each one becomes a 45-second phone clip in that recording's <b>moments</b> folder, ready to post. These stay on your computer.</li>
         <li><b>Your full recordings stay on this computer</b> in the Recordings folder. LIVE Link reminds you when they take up a lot of space; delete old ones from Recordings.</li>
       </ol>
       <p>Only songs you play on the hype bar through reactivvibeai.com get clips. You can stop recording at any time with <b>Stop recording</b>, or turn it off in Settings.</p>
@@ -137,6 +142,8 @@
     <label class="row"><span>Test mode<small>Checks everything with the site but adds nothing to the bar. Use it for a test show; turn it off before a real one.</small></span><input type="checkbox" id="s-dry"></label>
     <label class="row"><span>Record my LIVEs<small>Saves each TikTok LIVE on this computer. After the LIVE, every song review becomes a clip for the artist on the site.</small></span><input type="checkbox" id="s-record"></label>
     <div class="row static"><span>Recordings folder<small id="s-recroot">-</small></span><button class="ghost small" id="s-recroot-btn" type="button">Change</button></div>
+    <label class="row"><span>"Clip that" hotkey<small id="s-momentkey-note">Works while TikTok LIVE Studio is in front. Only held while LIVE Link is recording.</small></span>
+      <select id="s-momentkey" aria-label="Clip that hotkey"><option value="F8">F8</option><option value="F9">F9</option><option value="F10">F10</option><option value="Ctrl+Shift+M">Ctrl+Shift+M</option><option value="off">Off (button only)</option></select></label>
     <div class="manual" id="manual">
       <span class="manual-title">Can't find your LIVE?<small>If TikTok blocks LIVE Link's lookup, paste your TikTok LIVE link (Share, then Copy link) or room ID while you're LIVE. It's used until that LIVE ends.</small></span>
       <form id="manual-form" class="manual-form" autocomplete="off"><input id="manual-input" spellcheck="false" placeholder="TikTok LIVE link or room ID" aria-label="TikTok LIVE link or room ID"><button class="ghost" id="manual-btn" type="submit">Use</button></form>

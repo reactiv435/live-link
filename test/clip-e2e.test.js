@@ -35,9 +35,11 @@ test('records a LIVE and turns one review into a full review, a branded highligh
   const t0 = Date.now();
   // A tap burst ~24-31 s into the stream: the highlight's hottest moment should land there.
   const burst = setInterval(() => { const s = (Date.now() - t0) / 1000; if (s > 24 && s < 31) rec.noteActivity(40, Date.now()); else if (s > 3) rec.noteActivity(1, Date.now()); }, 250);
+  // The host presses "Clip that" ~50 s in: the moment clip should cover ~15-60 s of the stream.
+  const mark = setTimeout(() => rec.markMoment(Date.now(), 'hotkey'), 50000);
   // Wait for the 75 s stream to end (ffmpeg exits at the end of the file), then stop cleanly.
   for (let i = 0; i < 120; i++) { await sleep(1000); const s = JSON.parse(fs.readFileSync(path.join(dir, 'session.json'), 'utf8')); if (s.runs[0] && s.runs[0].endedAt) break; }
-  clearInterval(burst);
+  clearInterval(burst); clearTimeout(mark);
   await rec.stop();
 
   const session = C.readSession(dir);
@@ -91,11 +93,23 @@ test('records a LIVE and turns one review into a full review, a branded highligh
   const st = JSON.parse(fs.readFileSync(path.join(dir, 'session.json'), 'utf8')).clips['play-1'];
   assert.equal(st.status, 'sent');
 
+  // "Clip that": the marked moment becomes a ~45 s phone clip in moments/ (kept on this computer).
+  const mo = await jobs.processMoments(dir);
+  assert.deepEqual(mo, { made: 1, failed: 0, total: 1 });
+  const made = JSON.parse(fs.readFileSync(path.join(dir, 'session.json'), 'utf8')).momentClips;
+  const momentFile = path.join(dir, 'moments', Object.values(made)[0]);
+  const mp = probe(momentFile);
+  assert.equal(mp.width, 720); assert.equal(mp.height, 1280);
+  assert.ok(mp.duration > 40 && mp.duration < 52, `moment clip duration ${mp.duration}`);
+  assert.deepEqual(fs.readdirSync(path.join(dir, 'moments')).filter((f) => f.startsWith('.work')), [], 'work files cleaned up');
+  assert.deepEqual(await jobs.processMoments(dir), { made: 0, failed: 0, total: 1 }, 'a second run makes nothing new');
+
   // Stills for a human look: the title strip and the end card.
   if (process.env.E2E_OUT) {
     fs.mkdirSync(process.env.E2E_OUT, { recursive: true });
     spawnSync(FF, ['-hide_banner', '-loglevel', 'error', '-y', '-ss', '1.5', '-i', path.join(job, 'highlight.mp4'), '-frames:v', '1', path.join(process.env.E2E_OUT, 'hl-title.png')]);
     spawnSync(FF, ['-hide_banner', '-loglevel', 'error', '-y', '-sseof', '-1.2', '-i', path.join(job, 'highlight.mp4'), '-frames:v', '1', path.join(process.env.E2E_OUT, 'hl-end.png')]);
     fs.copyFileSync(path.join(job, 'poster.jpg'), path.join(process.env.E2E_OUT, 'poster.jpg'));
+    spawnSync(FF, ['-hide_banner', '-loglevel', 'error', '-y', '-ss', '1.5', '-i', momentFile, '-frames:v', '1', path.join(process.env.E2E_OUT, 'moment-title.png')]);
   }
 });

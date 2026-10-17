@@ -69,7 +69,7 @@ class Recorder extends EventEmitter {
     this.flushTimer = null;
     this.restartStep = 0;
     this.taps = new Map();    // server second -> weight
-    this.state = { recording: false, dir: null, startedAt: null, bytes: 0, error: null, previewAt: null };
+    this.state = { recording: false, dir: null, startedAt: null, bytes: 0, error: null, previewAt: null, moments: 0, momentAt: null };
   }
 
   getState() { return { ...this.state }; }
@@ -92,12 +92,12 @@ class Recorder extends EventEmitter {
     this.dir = dir;
     this.getStream = getStream;
     this.taps = new Map();
-    this.session = { v: 1, handle: String(handle || ''), roomId: roomId ? String(roomId) : null, startedAt, endedAt: null, stream: null, runs: [], clips: {} };
+    this.session = { v: 1, handle: String(handle || ''), roomId: roomId ? String(roomId) : null, startedAt, endedAt: null, stream: null, runs: [], clips: {}, moments: [] };
     this.active = true;
     this.stopping = null;
     this.restartStep = 0;
     this._write();
-    this._set({ recording: true, dir, startedAt, bytes: 0, error: null, previewAt: null });
+    this._set({ recording: true, dir, startedAt, bytes: 0, error: null, previewAt: null, moments: 0 });
     this.flushTimer = setInterval(() => { this._write(); this._writeTaps(); }, FLUSH_EVERY_MS);
     if (this.flushTimer.unref) this.flushTimer.unref();
     await this._run(false);
@@ -109,6 +109,16 @@ class Recorder extends EventEmitter {
     if (!this.active || !(weight > 0)) return;
     const sec = Math.floor(Number(atMs) / 1000);
     this.taps.set(sec, (this.taps.get(sec) || 0) + weight);
+  }
+
+  // The host's "Clip that": a moment at a SERVER time (pressed just after it happened). Saved at once, so a crash keeps it.
+  markMoment(atMs, by = 'button') {
+    if (!this.active || !this.session) return null;
+    const m = { at: Math.round(Number(atMs)), by: String(by) };
+    (this.session.moments = this.session.moments || []).push(m);
+    this._write();
+    this._set({ moments: this.session.moments.length, momentAt: Date.now() });
+    return m;
   }
 
   async _run(fresh) {

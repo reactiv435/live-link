@@ -21,6 +21,8 @@ function setup({ clips = true } = {}) {
   rec.start = async (o) => { rec.calls.push(['start', o.roomId, o.handle]); rec.active = true; rec.dir = path.join(root, 'r1'); rec.stream = await o.getStream(false); return rec.dir; };
   rec.stop = async () => { rec.calls.push(['stop']); rec.active = false; rec.emit('finished', { dir: rec.dir }); return rec.dir; };
   rec.noteActivity = (w, at) => rec.notes.push([w, at]);
+  rec.session = { moments: [] };
+  rec.markMoment = (at, by) => { if (!rec.active) return null; const m = { at, by }; rec.session.moments.push(m); return m; };
   rec.getState = () => ({ recording: rec.active });
   show.recorder = rec;
   rec.on('finished', ({ dir }) => show._recordingFinished(dir));   // what the constructor wires on the real one
@@ -103,4 +105,22 @@ test('after a restart, unfinished clips are picked up once the app is ready (a c
   assert.equal(JSON.parse(fs.readFileSync(path.join(crashed, 'session.json'), 'utf8')).endedAt, t - 3600000);
   ctl.emit('state', { ...live(), connected: false, tiktok: { status: 'offline' } });
   assert.equal(queued.length, dirs.length, 'only once per app run');
+});
+
+test('"Clip that": only while recording; with review clips off, a LIVE with moments is still queued (moments only)', async () => {
+  const { ctl, rec, show, live, queued, timers, adv, runTimers } = setup({ clips: false });
+  assert.equal(show.markMoment('button').error, 'not_recording');
+  ctl.emit('state', live());
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(show.markMoment('hotkey'), { ok: true, count: 1 });
+  assert.equal(rec.session.moments[0].by, 'hotkey');
+  await rec.stop();
+  assert.equal(timers.length, 1, 'queued after the delay even though review clips are off');
+  adv(90000); runTimers();
+  assert.deepEqual(queued[0][1], { reviews: false });
+  // the Recordings button works for moments when review clips are off
+  fs.mkdirSync(rec.dir, { recursive: true });
+  fs.writeFileSync(path.join(rec.dir, 'session.json'), JSON.stringify({ startedAt: 1, endedAt: 2, runs: [], moments: [{ at: 1 }] }));
+  assert.equal(show.makeClips(rec.dir).ok, true);
+  assert.deepEqual(queued[1][1], { force: true, reviews: false });
 });

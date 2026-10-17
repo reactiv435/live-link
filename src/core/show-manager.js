@@ -3,7 +3,8 @@
 //  - records the host's TikTok LIVE while LIVE Link watches it (recorder.js),
 //  - after the LIVE ends, makes and sends the review clips (clip-jobs.js) when the site has clips switched on,
 //  - reminds the host now and then to clear old recordings (never deletes anything by itself),
-//  - nudges the host when nobody has tapped for 2 minutes during a song ("remind chat: taps fill the bar").
+//  - nudges the host when nobody has tapped for 2 minutes during a song ("remind chat: taps fill the bar"),
+//  - "Clip that": the host marks moments while recording; each becomes a phone clip after the LIVE (kept on this PC).
 // Electron-free: main.js passes paths, and shows the notifications this emits.
 
 const EventEmitter = require('events');
@@ -50,7 +51,8 @@ class ShowManager extends EventEmitter {
     this.recorder.on('finished', ({ dir }) => this._recordingFinished(dir));
     this.retries = new Map();       // dir -> automatic re-runs this app session (uploads that didn't finish)
     this.jobs.on('progress', (p) => {
-      this.clipState = p.phase === 'done' || p.phase === 'error' ? null : p;
+      this.clipState = ['done', 'error', 'moments_done'].includes(p.phase) ? null : p;
+      if (p.phase === 'moments_done' && p.made > 0) this.emit('momentsMade', { dir: p.dir, made: p.made, outDir: p.outDir });
       if (p.phase === 'done' && p.sent > 0) this.emit('clipsSent', { dir: p.dir, sent: p.sent, failed: p.failed });
       if (p.phase === 'done' && p.failed > 0) this.emit('clipsFailed', { dir: p.dir, failed: p.failed });
       // Something still owed (an upload that kept failing, a full review not sent): try again in 30 min, up to 3 times.
@@ -155,12 +157,22 @@ class ShowManager extends EventEmitter {
     this._emit();
   }
 
+  // "Clip that": mark this moment of the recording (the host presses it just after something happened).
+  markMoment(by = 'button') {
+    if (!this.recorder.active) return { ok: false, error: 'not_recording' };
+    const m = this.recorder.markMoment(this.serverNow(), by);
+    this.log('info', `moment marked (${by})`);
+    return { ok: !!m, count: (this.recorder.session && this.recorder.session.moments || []).length };
+  }
+
   _recordingFinished(dir) {
     this.room = null;
     this._checkStorage(true);
     this._emit();
-    if (!dir || !this.clipsOn()) return;
-    const t = this.setTimeout(() => { this.clipTimers.delete(t); this.jobs.enqueue(dir); }, this.clipDelayMs);
+    const moments = this.recorder.session && (this.recorder.session.moments || []).length;
+    if (!dir || (!this.clipsOn() && !moments)) return;
+    const reviews = this.clipsOn();
+    const t = this.setTimeout(() => { this.clipTimers.delete(t); this.jobs.enqueue(dir, { reviews }); }, this.clipDelayMs);
     this.clipTimers.add(t);
   }
 
@@ -175,16 +187,22 @@ class ShowManager extends EventEmitter {
   // After a restart (the app was closed or the PC shut down before the clips were done), and when clips get switched on:
   // recordings from the last 7 days whose clips aren't all sent are picked up again. A recording cut off by a crash
   // gets its end time from what was recorded.
+  // "Clip that" moments are made whether or not the site has review clips on (they stay on this computer).
   _resumePending() {
-    if (this.resumed || !this.clipsOn()) return;
-    this.resumed = true;
+    const doReviews = !this.resumedReviews && this.clipsOn();
+    const doMoments = !this.resumedMoments;
+    if (!doReviews && !doMoments) return;
+    if (doReviews) this.resumedReviews = true;
+    this.resumedMoments = true;
     const now = this.now();
     for (const x of this.listRecordings()) {
       if (x.recording || x.working) continue;
       const file = path.join(x.dir, 'session.json');
       let s;
       try { s = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { continue; }
-      if (s.clipsDoneAt) continue;
+      const reviews = doReviews && !s.clipsDoneAt;
+      const momentsOwed = doMoments && (s.moments || []).length > Object.keys(s.momentClips || {}).length;
+      if (!reviews && !momentsOwed) continue;
       if (!s.endedAt) {
         let end = s.startedAt || 0;
         for (const r of s.runs || []) {
@@ -198,7 +216,7 @@ class ShowManager extends EventEmitter {
       }
       if (now - s.endedAt > RESUME_WINDOW_MS) continue;
       this.log('info', `clips: picking up ${path.basename(x.dir)} again`);
-      this.jobs.enqueue(x.dir);
+      this.jobs.enqueue(x.dir, { reviews });
     }
   }
 
@@ -218,6 +236,7 @@ class ShowManager extends EventEmitter {
         recording: this.recorder.active && this.recorder.dir === dir,
         bytes: dirBytes(dir),
         clips: { sent: clips.filter((c) => c.status === 'sent').length, failed: clips.filter((c) => c.status === 'failed').length, skipped: clips.filter((c) => c.status === 'not_recorded').length },
+        moments: { marked: (s.moments || []).length, made: Object.keys(s.momentClips || {}).length },
         working: !!(this.clipState && this.clipState.dir === dir) || this.jobs.running === dir,
       });
     }
@@ -232,11 +251,18 @@ class ShowManager extends EventEmitter {
   makeClips(dir) {
     if (!this._inRoot(dir)) return { ok: false, error: 'not_a_recording' };
     if (this.recorder.active && this.recorder.dir === dir) return { ok: false, error: 'still_recording' };
-    if (!this.clipsOn()) return { ok: false, error: 'clips_off' };
-    this.jobs.enqueue(dir, { force: true });
+    if (!this.clipsOn() && !this._momentsIn(dir)) return { ok: false, error: 'clips_off' };
+    this.jobs.enqueue(dir, { force: true, reviews: this.clipsOn() });
     this._emit();
     return { ok: true };
   }
+
+  _momentsIn(dir) {
+    try { return (JSON.parse(fs.readFileSync(path.join(dir, 'session.json'), 'utf8')).moments || []).length; } catch { return 0; }
+  }
+
+  // The recording's "Clip that" clips folder (inside the recordings folder only).
+  momentsDir(dir) { return this._inRoot(dir) ? path.join(dir, 'moments') : null; }
 
   deleteRecording(dir) {
     if (!this._inRoot(dir)) return { ok: false, error: 'not_a_recording' };

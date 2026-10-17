@@ -270,6 +270,8 @@
     $('s-record').checked = st.recordEnabled !== false;
     $('s-record').disabled = st.recordAvailable === false;
     $('s-recroot').textContent = st.recordRoot || '-';
+    $('s-momentkey').value = st.momentKey || 'F8';
+    momentKeyNote(st.momentKeyOk !== false);
     const ts = $('s-testserver');
     ts.classList.toggle('hidden', !st.testServer);
     if (st.testServer) ts.textContent = `Connected to a TEST server: ${st.testServer}`;
@@ -313,6 +315,15 @@
   $('s-dry').addEventListener('change', (e) => bridge.setSetting('dryRun', e.target.checked));
   $('s-notify').addEventListener('change', (e) => bridge.setSetting('notify', e.target.checked));
   $('s-record').addEventListener('change', (e) => bridge.setSetting('recordEnabled', e.target.checked));
+  function momentKeyNote(ok) {
+    const n = $('s-momentkey-note');
+    n.textContent = ok ? 'Works while TikTok LIVE Studio is in front. Only held while LIVE Link is recording.' : 'Another app is using that key. Pick a different one.';
+    n.classList.toggle('bad', !ok);
+  }
+  $('s-momentkey').addEventListener('change', async (e) => {
+    const r = await bridge.setSetting('momentKey', e.target.value);
+    momentKeyNote(!(r && r.ok === false));
+  });
   $('s-recroot-btn').addEventListener('click', async () => {
     const r = await bridge.chooseRecordFolder();
     if (r && r.root) $('s-recroot').textContent = r.root;
@@ -348,6 +359,8 @@
     else { title = 'Ready to record'; note = 'Your next TikTok LIVE is recorded automatically.'; }
     if (st.clips && st.clips.phase === 'clip') note = `Making review clips: ${st.clips.index} of ${st.clips.total}${st.clips.title ? ` · ${st.clips.title}` : ''}`;
     else if (st.clips && st.clips.phase === 'reviews') note = 'Finding the reviews from your LIVE...';
+    else if (st.clips && st.clips.phase === 'moment') note = `Making your "Clip that" moments: ${st.clips.index} of ${st.clips.total}`;
+    renderMoment(st, r);
     $('rec-title').textContent = title;
     $('rec-note').textContent = note;
     const remind = $('rec-remind');
@@ -364,6 +377,31 @@
     if (!r.recording) $('rec-preview').classList.add('hidden');
     if (!$('recordings').classList.contains('hidden')) loadRecordings();
   }
+  // "Clip that": only while recording. The label shows the hotkey; each new mark (button or hotkey) flashes "Marked!".
+  let momentFlash = null, lastMoments = null;
+  function renderMoment(st, r) {
+    const box = $('moment');
+    box.classList.toggle('hidden', !r.recording);
+    if (!r.recording) { lastMoments = null; return; }
+    const key = st.momentKey && st.momentKey !== 'off' ? st.momentKey : null;
+    $('moment-key').textContent = key || '';
+    $('moment-key').classList.toggle('hidden', !key);
+    const n = r.moments || 0;
+    if (lastMoments !== null && n > lastMoments) flashMarked();
+    lastMoments = n;
+    if (!momentFlash) $('moment-label').textContent = 'Clip that';
+    $('moment-note').textContent = n
+      ? `${n} moment${n === 1 ? '' : 's'} marked. Each becomes a 45-second phone clip after your LIVE.${st.momentKeyOk === false ? ' (Your hotkey is taken by another app: change it in Settings.)' : ''}`
+      : `Something wild just happened? ${key ? `Press ${key} or this button` : 'Press this button'}: the last 35 seconds become a clip after your LIVE.`;
+  }
+  function flashMarked() {
+    const b = $('moment-btn');
+    b.classList.add('marked');
+    $('moment-label').textContent = 'Marked!';
+    clearTimeout(momentFlash);
+    momentFlash = setTimeout(() => { momentFlash = null; b.classList.remove('marked'); $('moment-label').textContent = 'Clip that'; }, 1400);
+  }
+  $('moment-btn').addEventListener('click', () => { if (bridge.markMoment) bridge.markMoment(); });
   function tickRec() {
     const r = show && show.recording;
     $('rec-meta').textContent = r && r.recording ? `${fmtClock(Date.now() - r.startedAt)} · ${fmtBytes(r.bytes)}` : '';
@@ -390,12 +428,16 @@
       const meta = document.createElement('span'); meta.className = 'rl-meta';
       const dur = x.endedAt ? fmtClock(x.endedAt - x.startedAt) : 'recording now';
       const clips = x.working ? 'making clips...' : x.clips.sent ? `${x.clips.sent} clip${x.clips.sent === 1 ? '' : 's'} sent${x.clips.failed ? `, ${x.clips.failed} failed` : ''}` : x.clips.failed ? `${x.clips.failed} clip${x.clips.failed === 1 ? '' : 's'} failed` : 'no clips yet';
-      meta.textContent = `@${x.handle || ''} · ${dur} · ${fmtBytes(x.bytes)} · ${clips}`;
+      const mo = x.moments || { marked: 0, made: 0 };
+      const moments = mo.marked ? ` · ${mo.made} of ${mo.marked} moment clip${mo.marked === 1 ? '' : 's'}` : '';
+      meta.textContent = `@${x.handle || ''} · ${dur} · ${fmtBytes(x.bytes)} · ${clips}${moments}`;
       head.append(t, meta);
       const acts = document.createElement('div'); acts.className = 'rl-acts';
       const btn = (label, cls, fn) => { const b = document.createElement('button'); b.type = 'button'; b.className = `ghost small ${cls || ''}`; b.textContent = label; b.addEventListener('click', fn); acts.append(b); return b; };
       btn('Open', '', () => bridge.openRecording(x.dir));
-      if (!x.recording && show && show.clipsOn && !x.working) btn('Make & send clips', '', async () => { const r = await bridge.makeClips(x.dir); if (!r || !r.ok) meta.textContent += ` · ${r && r.error === 'clips_off' ? 'clips are not switched on for your channel yet' : "couldn't start"}`; else loadRecordings(); });
+      if (mo.made && bridge.openMoments) btn('Open moments', '', () => bridge.openMoments(x.dir));
+      const canMake = show && (show.clipsOn || mo.marked > mo.made);
+      if (!x.recording && canMake && !x.working) btn(show.clipsOn ? 'Make & send clips' : 'Make moment clips', '', async () => { const r = await bridge.makeClips(x.dir); if (!r || !r.ok) meta.textContent += ` · ${r && r.error === 'clips_off' ? 'clips are not switched on for your channel yet' : "couldn't start"}`; else loadRecordings(); });
       if (!x.recording && !x.working) {
         const del = btn('Delete', 'danger', async () => {
           if (del.dataset.sure !== '1') { del.dataset.sure = '1'; del.textContent = 'Delete for good?'; setTimeout(() => { del.dataset.sure = ''; del.textContent = 'Delete'; }, 4000); return; }
@@ -473,18 +515,20 @@
       onState: (f) => { listeners.push(f); return () => {}; },
       // recording demo: ?demo=live shows a recording in progress
       getShow: async () => ({ ffmpegOk: true, enabled: true, clipsOn: true, live: pick === 'live', hostStopped: false, root: 'C:\\Users\\host\\Videos\\LIVE Link Recordings',
-        recording: { recording: pick === 'live', startedAt: Date.now() - 42 * 60000, bytes: 3.1 * 1024 ** 3, previewAt: 0 },
+        momentKey: 'F8', momentKeyOk: true,
+        recording: { recording: pick === 'live', startedAt: Date.now() - 42 * 60000, bytes: 3.1 * 1024 ** 3, previewAt: 0, moments: 2 },
         clips: pick === 'waiting' ? { phase: 'clip', index: 3, total: 9, title: 'Midnight Engine (AI remix)' } : null,
         storage: { totalBytes: 61 * 1024 ** 3, freeBytes: 24 * 1024 ** 3, remind: pick === 'waiting' } }),
       onShow: () => () => {},
       getPreview: async () => null,
       listRecordings: async () => [
         { dir: 'a', handle: 'the_boneyard_ai', startedAt: Date.now() - 42 * 60000, endedAt: null, recording: true, bytes: 3.1 * 1024 ** 3, clips: { sent: 0, failed: 0 }, working: false },
-        { dir: 'b', handle: 'the_boneyard_ai', startedAt: Date.now() - 3 * 86400000, endedAt: Date.now() - 3 * 86400000 + 2.4 * 3600000, recording: false, bytes: 8.7 * 1024 ** 3, clips: { sent: 11, failed: 1 }, working: false },
+        { dir: 'b', handle: 'the_boneyard_ai', startedAt: Date.now() - 3 * 86400000, endedAt: Date.now() - 3 * 86400000 + 2.4 * 3600000, recording: false, bytes: 8.7 * 1024 ** 3, clips: { sent: 11, failed: 1 }, moments: { marked: 4, made: 4 }, working: false },
         { dir: 'c', handle: 'the_boneyard_ai', startedAt: Date.now() - 7 * 86400000, endedAt: Date.now() - 7 * 86400000 + 1.9 * 3600000, recording: false, bytes: 6.2 * 1024 ** 3, clips: { sent: 9, failed: 0 }, working: false },
       ],
       openRecording: async () => true, deleteRecording: async () => ({ ok: true }), makeClips: async () => ({ ok: true }),
       stopRecording: async () => true, startRecording: async () => true, chooseRecordFolder: async () => null,
+      markMoment: async () => ({ ok: true, count: 3 }), openMoments: async () => true,
     };
   }
 })();

@@ -1,6 +1,6 @@
 'use strict';
 // ReactivVibe LIVE Link: Electron main process. Owns the TikTok link, the site client, the tray and one window.
-const { app, BrowserWindow, Tray, Menu, ipcMain, shell, safeStorage, nativeImage, Notification, powerMonitor, dialog } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, shell, safeStorage, nativeImage, Notification, powerMonitor, dialog, globalShortcut } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -54,11 +54,36 @@ let win = null, tray = null, ctl = null, store = null, show = null;
 let trayKind = '';
 
 // Pop-ups: connected to the LIVE, lost it for more than 20 s, and the end-of-LIVE summary.
-function notify(title, body) {
+function notify(title, body, onClick) {
   if (!store || store.get('notify') === false || !Notification.isSupported()) return;
   // silent: a hosting PC is usually capturing its own audio into the stream
-  try { new Notification({ title, body, icon: iconPath('icon.png'), silent: true }).show(); } catch {}
+  try { const n = new Notification({ title, body, icon: iconPath('icon.png'), silent: true }); if (onClick) n.on('click', onClick); n.show(); } catch {}
 }
+
+// "Clip that" hotkey: held only while a recording runs, so the key isn't taken from other apps the rest of the time.
+// No pop-up or sound when pressed (the PC may be capturing its screen and audio into the stream): the taskbar flashes.
+const MOMENT_KEYS = { F8: 'F8', F9: 'F9', F10: 'F10', 'Ctrl+Shift+M': 'CommandOrControl+Shift+M', off: null };
+let momentKeyHeld = null, momentKeyOk = true;
+function momentKey() { const k = store && store.get('momentKey'); return Object.prototype.hasOwnProperty.call(MOMENT_KEYS, k) ? k : 'F8'; }
+function syncMomentKey(recording) {
+  const want = recording ? MOMENT_KEYS[momentKey()] : null;
+  if (momentKeyHeld === want) return;
+  if (momentKeyHeld) { try { globalShortcut.unregister(momentKeyHeld); } catch {} momentKeyHeld = null; }
+  momentKeyOk = true;
+  if (!want) return;
+  try { momentKeyOk = globalShortcut.register(want, () => markMoment('hotkey')); } catch { momentKeyOk = false; }
+  if (momentKeyOk) momentKeyHeld = want;
+  else log('warn', `"Clip that" hotkey ${momentKey()} is taken by another app`);
+}
+function markMoment(by) {
+  const r = show ? show.markMoment(by) : { ok: false };
+  if (r.ok && win && !win.isDestroyed()) {
+    win.flashFrame(true);
+    setTimeout(() => { if (win && !win.isDestroyed()) win.flashFrame(false); }, 1500);
+  }
+  return r;
+}
+const showState = () => ({ ...show.getState(), momentKey: momentKey(), momentKeyOk });
 const fmtDur = (ms) => { const m = Math.max(1, Math.round(ms / 60000)); return m >= 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m} min`; };
 let prevConnected = false, dropTimer = null, dropNotified = false, lastLostAt = -Infinity;
 // A real drop: TikTok is being re-tried. Stopping on purpose (idle) or the LIVE ending (offline) is not a drop.
@@ -208,7 +233,11 @@ app.whenReady().then(async () => {
   // Recording + review clips + the "remind chat" nudge.
   show = new ShowManager({ ctl, link, api, store, log, ffmpegPath: ffmpegPath(), fontFile: fontPath(), defaultRoot: path.join(app.getPath('videos'), 'LIVE Link Recordings') });
   if (!show.ffmpegOk) log('warn', `recording unavailable: ffmpeg not found (${ffmpegPath()})`);
-  show.on('state', (st) => { if (win && !win.isDestroyed()) win.webContents.send('show', st); });
+  show.on('state', (st) => {
+    syncMomentKey(!!(st.recording && st.recording.recording));
+    if (win && !win.isDestroyed()) win.webContents.send('show', { ...st, momentKey: momentKey(), momentKeyOk });
+  });
+  show.on('momentsMade', (x) => notify('Moment clips ready', `${x.made} "Clip that" moment${x.made === 1 ? ' is' : 's are'} ready to post. Click to open the folder.`, () => { if (x.outDir) shell.openPath(x.outDir); }));
   show.on('nudge', () => notify('Remind chat to tap', 'Nobody has tapped for 2 minutes. Tell chat: tapping the screen fills the hype bar.'));
   show.on('clipsSent', (x) => notify('Review clips sent', `${x.sent} review clip${x.sent === 1 ? '' : 's'} from your LIVE ${x.sent === 1 ? 'is' : 'are'} on ReactivVibeAI. The artists get a message.`));
   show.on('clipsFailed', (x) => notify('Some clips didn’t send', `${x.failed} review clip${x.failed === 1 ? '' : 's'} failed. Open LIVE Link > Recordings and click "Make & send clips" to try again.`));
@@ -254,8 +283,18 @@ app.whenReady().then(async () => {
     recordEnabled: show ? show.enabled() : true,
     recordRoot: show ? show.root() : null,
     recordAvailable: !!(show && show.ffmpegOk),
+    momentKey: momentKey(),
+    momentKeyOk,
   }));
-  ipcMain.handle('show:get', () => show.getState());
+  ipcMain.handle('show:get', () => showState());
+  ipcMain.handle('show:mark', () => markMoment('button'));
+  ipcMain.handle('show:openMoments', (_e, dir) => {
+    const d = show.momentsDir(String(dir || ''));
+    if (!d) return false;
+    try { fs.mkdirSync(d, { recursive: true }); } catch {}
+    shell.openPath(d);
+    return true;
+  });
   ipcMain.handle('show:list', () => show.listRecordings());
   ipcMain.handle('show:preview', () => {
     const p = show.previewPath();
@@ -301,6 +340,13 @@ app.whenReady().then(async () => {
       else show.resumeByHost();
       show._emit();
     }
+    else if (key === 'momentKey') {
+      if (!Object.prototype.hasOwnProperty.call(MOMENT_KEYS, value)) return false;
+      store.set('momentKey', value);
+      syncMomentKey(show.recorder.active);
+      show._emit();
+      return { ok: momentKeyOk };
+    }
     else return false;
     return true;
   });
@@ -344,6 +390,7 @@ app.on('window-all-closed', (e) => { /* stay in the tray */ });
 // Before quitting: up to 3 s for queued gifts (quitting right after a gift must not lose it), then up to 1.5 s to
 // tell the site this computer stopped watching (the dashboard shows it at once), then quit.
 let quitFlushed = false;
+app.on('will-quit', () => { try { globalShortcut.unregisterAll(); } catch {} });
 app.on('before-quit', (e) => {
   quitting = true;
   if (quitFlushed || !ctl) { if (ctl) ctl.stop(); return; }

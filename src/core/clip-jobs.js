@@ -17,6 +17,7 @@ const C = require('./clipper');
 const CONTENT_TYPE = { full: 'video/mp4', highlight: 'video/mp4', vertical: 'video/mp4', poster: 'image/jpeg' };
 const MIN_COVERAGE = 0.6;   // a review the recording covers less than this is skipped (recording started late, gap)
 const MAX_ATTEMPTS = 3;     // a review that failed this often waits for the host's "Make & send clips"
+const clockStamp = (ms) => { const d = new Date(Number(ms)); return [d.getHours(), d.getMinutes(), d.getSeconds()].map((n) => String(n).padStart(2, '0')).join('.'); };
 
 class ClipJobs extends EventEmitter {
   constructor({ api, ffmpegPath, fontFile, log = () => {}, spawn = require('child_process').spawn, fetch = globalThis.fetch, getOptions = () => ({}), now = Date.now }) {
@@ -33,20 +34,77 @@ class ClipJobs extends EventEmitter {
     this.running = null;               // dir being processed
   }
 
-  // Queue a recording folder. force: also redo reviews that failed or were skipped.
-  enqueue(dir, { force = false } = {}) {
-    if (this.running === dir || this.queue.some((q) => q.dir === dir)) return;
-    this.queue.push({ dir, force });
+  // Queue a recording folder. force: also redo reviews that failed or were skipped. reviews: false = only the host's
+  // "Clip that" moments (review clips aren't switched on for this channel). Moments are always made, after the reviews.
+  enqueue(dir, { force = false, reviews = true } = {}) {
+    const q = this.queue.find((x) => x.dir === dir);
+    if (q) { q.force = q.force || force; q.reviews = q.reviews || reviews; return; }
+    if (this.running === dir) return;
+    this.queue.push({ dir, force, reviews });
     this._next();
   }
 
   async _next() {
     if (this.running || !this.queue.length) return;
-    const { dir, force } = this.queue.shift();
+    const { dir, force, reviews } = this.queue.shift();
     this.running = dir;
-    try { await this.processSession(dir, { force }); }
-    catch (e) { this.log('error', `clips: ${path.basename(dir)}: ${e && e.message}`); this.emit('progress', { dir, phase: 'error', error: e && e.message }); }
-    finally { this.running = null; this._next(); }
+    try {
+      try { if (reviews) await this.processSession(dir, { force }); }
+      catch (e) { this.log('error', `clips: ${path.basename(dir)}: ${e && e.message}`); this.emit('progress', { dir, phase: 'error', error: e && e.message }); }
+      try { await this.processMoments(dir); }
+      catch (e) { this.log('error', `moments: ${path.basename(dir)}: ${e && e.message}`); this.emit('progress', { dir, phase: 'moments_done', made: 0, failed: 1, total: 0 }); }
+    } finally { this.running = null; this._next(); }
+  }
+
+  // The host's "Clip that" marks become ~45 s phone clips in <recording>/moments/, kept on this computer for the host to
+  // post. Status per moment lives in session.json under `momentClips[key]` = the file's name.
+  async processMoments(dir) {
+    const session = C.readSession(dir);
+    const plan = C.planMoments(session.moments, { ...C.DEFAULTS, ...(this.getOptions() || {}) });
+    if (!session.endedAt || !plan.length) return { made: 0, failed: 0, total: 0 };
+    const done = { ...(session.momentClips || {}) };
+    const tl = C.timeline(session);
+    const outDir = path.join(dir, 'moments');
+    fs.mkdirSync(outDir, { recursive: true });
+    let made = 0, failed = 0;
+    for (const m of plan) {
+      if (done[m.key] && fs.existsSync(path.join(outDir, done[m.key]))) continue;
+      this.emit('progress', { dir, phase: 'moment', index: m.index + 1, total: plan.length });
+      try {
+        const name = await this._oneMoment(dir, session, tl, m, outDir);
+        if (!name) { this.log('info', `moments: #${m.index + 1} wasn't recorded (the stream dropped there)`); continue; }
+        done[m.key] = name; made++;
+        this._markSession(dir, { momentClips: done });
+      } catch (e) { failed++; this.log('warn', `moments: #${m.index + 1} failed (${e && e.message})`); }
+    }
+    this.emit('progress', { dir, phase: 'moments_done', made, failed, total: plan.length, outDir });
+    return { made, failed, total: plan.length };
+  }
+
+  async _oneMoment(dir, session, tl, m, outDir) {
+    const cuts = C.cutsFor(tl, m.from, m.to);
+    if (C.coveredMs(cuts) < (m.to - m.from) * 0.5) return null;
+    const job = path.join(outDir, `.work-${m.index + 1}`);
+    fs.mkdirSync(job, { recursive: true });
+    const write = (name, text) => fs.writeFileSync(path.join(job, name), text);
+    try {
+      if (this.fontFile) fs.copyFileSync(this.fontFile, path.join(job, 'font.ttf'));
+      write('src.txt', C.concatList(cuts.map((c) => ({ ...c, file: path.relative(job, path.join(dir, c.file)).replace(/\\/g, '/') }))));
+      await this._ff(C.copyArgs('src.txt', 'src.mp4'), job);
+      const sp = C.parseProbe(await this._probe(path.join(job, 'src.mp4')));
+      const size = C.targetSize(sp.width, sp.height);
+      size.topBar = C.topBarFrom(await this._probe(null, C.cropdetectArgs(path.join(job, 'src.mp4'))), sp, size);
+      const texts = C.momentTexts(size, { handle: session.handle, at: m.at });
+      for (const [name, text] of Object.entries(texts)) write(name, text);
+      const dur = sp.duration || (m.to - m.from) / 1000;
+      const out = size.portrait ? 'clip.mp4' : 'wide.mp4';
+      await this._ff(C.highlightArgs({ hotFile: null, verdictFile: 'src.mp4', outFile: out, size, font: 'font.ttf', hotDur: 0, verdictDur: dur,
+        hasAudio: [sp.hasAudio, sp.hasAudio], texts, introSec: 3, endSec: 1.8 }), job);
+      if (!size.portrait) await this._ff(C.verticalArgs('wide.mp4', 'clip.mp4'), job);
+      const name = `moment-${String(m.index + 1).padStart(2, '0')}-${clockStamp(m.at)}.mp4`;
+      fs.renameSync(path.join(job, 'clip.mp4'), path.join(outDir, name));
+      return name;
+    } finally { try { fs.rmSync(job, { recursive: true, force: true }); } catch {} }
   }
 
   // Two passes so artists hear fast: pass 1 makes every review's files and sends the highlight + poster (the artist is

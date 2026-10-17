@@ -16,7 +16,8 @@
 const fs = require('fs');
 const path = require('path');
 
-const DEFAULTS = { delayMs: 8000, padStartMs: 4000, padEndMs: 8000, hotSec: 20, verdictSec: 60, minHotGapSec: 2, maxFullSec: 30 * 60, socialHotSec: 12, socialVerdictSec: 12 };
+const DEFAULTS = { delayMs: 8000, padStartMs: 4000, padEndMs: 8000, hotSec: 20, verdictSec: 60, minHotGapSec: 2, maxFullSec: 30 * 60, socialHotSec: 12, socialVerdictSec: 12,
+  momentBeforeSec: 35, momentAfterSec: 10, momentMaxSec: 90 };
 
 // ------------------------------------------------------------ session + timeline
 function readSession(dir) {
@@ -137,6 +138,37 @@ function planReview(review, taps, sessionEnd, opts = {}) {
     hot = { from: at, to: at + hotMs };
   }
   return { full, hot, verdict, posterAt: (hot.from + hot.to) / 2, hotWeight: Math.max(0, best) };
+}
+
+// The host's "Clip that" marks -> server-time windows: what happened before the press (they press after the moment)
+// plus a little after, shifted by the stream delay like the reviews. Presses close together become one clip.
+function planMoments(moments, opts = {}) {
+  const o = { ...DEFAULTS, ...opts };
+  const marks = (moments || []).map((m) => (m && m.at != null && m.at !== '' ? Number(m.at) : NaN)).filter((n) => Number.isFinite(n) && n > 0).sort((a, b) => a - b);
+  const out = [];
+  for (const at of marks) {
+    const from = at - o.momentBeforeSec * 1000 + o.delayMs, to = at + o.momentAfterSec * 1000 + o.delayMs;
+    const last = out[out.length - 1];
+    if (last && from <= last.to && to - last.from <= o.momentMaxSec * 1000) { last.to = Math.max(last.to, to); last.marks++; }
+    else out.push({ key: String(at), at, from, to, marks: 1 });
+  }
+  return out.map((m, i) => ({ ...m, index: i }));
+}
+
+// Words for a moment clip: no song, the host's @handle and the time instead.
+function momentTexts(size, { handle, at }) {
+  const L = brandLayout(size), width = L.W - 2 * L.pad;
+  const base = brandTexts(size, { artist: null, title: null, host: null });
+  const who = handle ? `@${String(handle).replace(/^@/, '')}` : BRAND;
+  const d = new Date(Number(at) || Date.now());
+  const when = `Live · ${d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`;
+  return { ...base,
+    'kicker.txt': `CLIPPED LIVE · ${BRAND}`,
+    'artist.txt': fitText(who, width, L.artist),
+    'song.txt': fitText(when, width, L.song),
+    'end-label.txt': 'CLIPPED LIVE ON',
+    'end-artist.txt': fitText(who, width, L.end.artist),
+    'end-song.txt': '', 'end-host.txt': '' };
 }
 
 // ------------------------------------------------------------ ffmpeg argument builders
@@ -327,4 +359,5 @@ function parseProbe(text) {
 }
 
 module.exports = { DEFAULTS, readSession, readParts, mediaToWall, wallToMedia, timeline, cutsFor, coveredMs, planReview,
-  concatList, copyArgs, targetSize, brandLayout, topBarFrom, cropdetectArgs, brandTexts, fitText, brandFilter, highlightArgs, socialPlan, verticalArgs, posterArgs, parseProbe };
+  planMoments, momentTexts, concatList, copyArgs, targetSize, brandLayout, topBarFrom, cropdetectArgs, brandTexts, fitText, brandFilter,
+  highlightArgs, socialPlan, verticalArgs, posterArgs, parseProbe };

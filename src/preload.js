@@ -23,4 +23,7 @@ contextBridge.exposeInMainWorld('liveLink', {
   stopRecording: () => ipcRenderer.invoke('show:stop'),
   startRecording: () => ipcRenderer.invoke('show:start'),
   chooseRecordFolder: () => ipcRenderer.invoke('show:chooseFolder'),
+  // 2.0.3: "Clip that" moments
+  markMoment: () => ipcRenderer.invoke('show:mark'),
+  openMoments: (dir) => ipcRenderer.invoke('show:openMoments', String(dir || '')),
 });

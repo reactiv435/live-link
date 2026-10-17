@@ -150,3 +150,21 @@ test('the short phone cut: middle of the hottest moment + the last seconds of th
   const fc = a[a.indexOf('-filter_complex') + 1];
   assert.ok(fc.includes('tpad=stop_mode=clone:stop_duration=1.8') && fc.includes("enable='gte(t,23.500)'") && fc.includes('apad=pad_dur=1.8'));
 });
+
+test('"Clip that" marks: 35 s before + 10 s after the press, shifted by the delay; close presses merge, capped at 90 s', () => {
+  const t = 1_000_000_000_000, o = { delayMs: 8000 };
+  const one = C.planMoments([{ at: t }], o);
+  assert.deepEqual(one.map(({ from, to, marks, index }) => ({ from, to, marks, index })), [{ from: t - 27000, to: t + 18000, marks: 1, index: 0 }]);
+  const merged = C.planMoments([{ at: t + 5000 }, { at: t }], o);
+  assert.equal(merged.length, 1); assert.equal(merged[0].marks, 2); assert.equal(merged[0].to, t + 23000);
+  assert.equal(C.planMoments([{ at: t }, { at: t + 60000 }], o).length, 2, 'a minute apart: two clips');
+  const chain = C.planMoments([0, 20, 40, 60, 80].map((s) => ({ at: t + s * 1000 })), o);
+  assert.ok(chain.length >= 2 && chain.every((m) => m.to - m.from <= 90000), 'a long chain splits at 90 s');
+  assert.deepEqual(C.planMoments([{ at: 'x' }, null], o), []);
+  const words = C.momentTexts(C.targetSize(720, 1280), { handle: 'reactivvibeai', at: t });
+  assert.equal(words['kicker.txt'], 'CLIPPED LIVE · ReactivVibeAI');
+  assert.equal(words['artist.txt'], '@reactivvibeai');
+  assert.match(words['song.txt'], /^Live · [A-Z][a-z]{2} \d+$/);
+  assert.equal(words['end-label.txt'], 'CLIPPED LIVE ON');
+  for (const v of Object.values(C.momentTexts(C.targetSize(720, 1280), { handle: null, at: null }))) assert.ok(!/null|undefined|NaN/.test(v));
+});
