@@ -264,6 +264,7 @@ app.whenReady().then(async () => {
     if (win && !win.isDestroyed()) win.webContents.send('show', { ...st, momentKey: momentKey(), momentKeyOk });
   });
   show.on('momentsMade', (x) => notify('Moment clips ready', `${x.made} "Clip that" moment${x.made === 1 ? ' is' : 's are'} ready to post. Click to open the folder.`, () => { if (x.outDir) shell.openPath(x.outDir); }));
+  show.on('videoLate', () => notify('Recording hasn’t started yet', 'Your LIVE is on, but TikTok hasn’t sent the video yet. LIVE Link keeps asking every few seconds. If it lasts, open LIVE Link and press Check TikTok now.'));
   show.on('nudge', () => notify('Remind chat to tap', 'Nobody has tapped for 2 minutes. Tell chat: tapping the screen fills the hype bar.'));
   // One pop-up when everything after the LIVE is done: the clips, the moments, the full-show file.
   show.on('safeToClose', (x) => {

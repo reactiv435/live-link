@@ -390,9 +390,14 @@
     const r = st.recording || {};
     const card = $('rec');
     card.classList.toggle('hidden', !current || current.phase !== 'ready');
-    $('rec-dot').className = 'rec-dot' + (r.recording ? ' on' : st.enabled && st.ffmpegOk ? ' armed' : '');
+    $('rec-dot').className = 'rec-dot' + (r.recording && r.video !== false ? ' on' : (r.recording || (st.enabled && st.ffmpegOk)) ? ' armed' : '');
     let title, note;
     if (!st.ffmpegOk) { title = 'Recording unavailable'; note = 'This copy of LIVE Link is missing its recorder. Download the latest version from your dashboard.'; }
+    else if (r.recording && !r.video) {
+      const secs = r.waitingSince ? Math.round((Date.now() - r.waitingSince) / 1000) : 0;
+      title = 'Starting the recording...';
+      note = `Your LIVE is on. Waiting for TikTok to send the video${secs > 5 ? ` (${secs} s)` : ''}; LIVE Link asks again every few seconds.${secs > 60 ? ' Still nothing? Press Check TikTok now.' : ''}`;
+    }
     else if (r.recording) { title = 'Recording your LIVE'; note = st.clipsOn ? 'When your LIVE ends, every song review becomes a clip for the artist.' : 'Saved on this computer. Review clips start once the site switches them on for your channel.'; }
     else if (r.error === 'disk_full') { title = 'Not recording: disk almost full'; note = 'Less than 2 GB free. Delete old recordings (Recordings) or pick another folder in Settings.'; }
     else if (!st.enabled) { title = 'Recording is off'; note = 'Switch it on in Settings to record your LIVEs and make review clips.'; }
@@ -455,8 +460,9 @@
   let momentFlash = null, lastMoments = null;
   function renderMoment(st, r) {
     const box = $('moment');
-    box.classList.toggle('hidden', !r.recording);
-    if (!r.recording) { lastMoments = null; return; }
+    // Only once video is coming in: a mark before that has nothing to clip.
+    box.classList.toggle('hidden', !r.recording || r.video === false);
+    if (!r.recording || r.video === false) { if (!r.recording) lastMoments = null; return; }
     const key = st.momentKey && st.momentKey !== 'off' ? st.momentKey : null;
     $('moment-key').textContent = key || '';
     $('moment-key').classList.toggle('hidden', !key);
@@ -480,7 +486,8 @@
     const r = show && show.recording;
     $('rec-meta').textContent = r && r.recording ? `${fmtClock(Date.now() - r.startedAt)} · ${fmtBytes(r.bytes)}` : '';
   }
-  setInterval(tickRec, 1000);
+  // Once a second: the recording clock, and the "waiting for TikTok's video (N s)" count while it waits.
+  setInterval(() => { const r = show && show.recording; if (r && r.recording && r.video === false) renderShow(show); else tickRec(); }, 1000);
   $('rec-toggle').addEventListener('click', () => (show && show.recording && show.recording.recording ? bridge.stopRecording() : bridge.startRecording()));
   $('rec-open').addEventListener('click', () => bridge.openRecording(show && show.recording && show.recording.recording ? show.recording.dir : ''));
   $('rec-manage').addEventListener('click', () => { $('recordings').classList.remove('hidden'); loadRecordings(); });
@@ -591,9 +598,10 @@
       setManualRoom: async (t) => (/\d{15,}/.test(t) ? { ok: true } : { ok: false, error: 'no_room_id' }),
       onState: (f) => { listeners.push(f); return () => {}; },
       // recording demo: ?demo=live shows a recording in progress
-      getShow: async () => ({ ffmpegOk: true, enabled: true, clipsOn: true, live: pick === 'live', hostStopped: false, root: 'C:\\Users\\host\\Videos\\LIVE Link Recordings',
+      getShow: async () => ({ ffmpegOk: true, enabled: true, clipsOn: true, live: pick === 'live' || pick === 'starting', hostStopped: false, root: 'C:\\Users\\host\\Videos\\LIVE Link Recordings',
         momentKey: 'F8', momentKeyOk: true,
-        recording: { recording: pick === 'live', startedAt: Date.now() - 42 * 60000, bytes: 3.1 * 1024 ** 3, previewAt: 0, moments: 2 },
+        recording: pick === 'starting' ? { recording: true, video: false, waitingSince: Date.now() - 22000, startedAt: Date.now() - 22000, bytes: 0, previewAt: 0, moments: 0 }
+          : { recording: pick === 'live', video: true, startedAt: Date.now() - 42 * 60000, bytes: 3.1 * 1024 ** 3, previewAt: 0, moments: 2 },
         clips: pick === 'working' ? { phase: 'clip', index: 12, total: 31, title: 'Neon Override' } : null,
         busy: pick === 'working', doneAt: pick === 'done' ? Date.now() : null,
         lastClips: pick === 'done' ? { sent: 31, failed: 0, total: 31 } : null, lastFullShow: pick === 'done' ? { files: ['x - full show.mp4'] } : null,

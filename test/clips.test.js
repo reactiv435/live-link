@@ -195,3 +195,19 @@ test('full show plan: runs with the same picture join into one file with running
   const a = C.joinArgs('.join.txt', 'out.mp4');
   assert.ok(a.includes('copy') && a.includes('+faststart') && a.includes('concat'));
 });
+
+test('recorder: no video link yet -> asks again every 4 s (not the slow backoff), and says it has no video', async () => {
+  const fs = require('fs'), os = require('os'), path = require('path');
+  const { Recorder } = require('../src/core/recorder');
+  const waits = [];
+  const rec = new Recorder({ ffmpegPath: process.execPath, clock: () => Date.now(), setTimeout: (fn, ms) => { waits.push(ms); return waits.length; }, clearTimeout: () => {} });
+  await rec.start({ root: fs.mkdtempSync(path.join(os.tmpdir(), 'll-rec-')), handle: 'h', roomId: '1', getStream: async () => null });
+  assert.equal(rec.getState().recording, true);
+  assert.equal(rec.getState().video, false);
+  await rec._run(true); await rec._run(true);
+  assert.deepEqual(waits.filter((ms) => ms !== 2000).slice(0, 3), [4000, 4000, 4000]);
+  rec.noLinkSince = Date.now() - 4 * 60000;   // waited more than 3 minutes: back off
+  await rec._run(true);
+  assert.ok(waits[waits.length - 1] >= 3000 && waits[waits.length - 1] !== 4000);
+  clearInterval(rec.flushTimer);
+});

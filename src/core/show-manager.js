@@ -77,7 +77,7 @@ class ShowManager extends EventEmitter {
     });
     // A gift is worth 10 taps per coin on the bar; it counts the same toward a song's hottest moment.
     link.on('gift', (g) => { if (g && g.coins > 0) this.recorder.noteActivity(g.coins * 10, this.serverNow()); });
-    this.nudgeTimer = setInterval(() => this._checkNudge(), 15000);
+    this.nudgeTimer = setInterval(() => { this._checkNudge(); this._checkVideo(); }, 15000);
     if (this.nudgeTimer.unref) this.nudgeTimer.unref();
     this._checkStorage(false);
   }
@@ -140,18 +140,27 @@ class ShowManager extends EventEmitter {
     finally { this.starting = false; this._emit(); }
   }
 
-  // The stream link, from (1) the room info kept since connecting, (2) a fresh room info, (3) the LIVE page.
+  // The stream link. Every try asks all three places (a fresh try asks TikTok first, the kept copy last): the room info
+  // kept since connecting, a fresh room info, and the LIVE page. Which one answered goes in the log.
   async _stream(fresh) {
     const conn = this.link.conn;
     if (!conn) return null;
-    let s = !fresh && conn.roomInfo ? pickStream(conn.roomInfo) : null;
-    if (!s && typeof conn.fetchRoomInfo === 'function') {
-      try { s = pickStream(await conn.fetchRoomInfo()); } catch (e) { this.log('info', `recording: room info refused (${e && e.message})`); }
+    const kept = async () => (conn.roomInfo ? pickStream(conn.roomInfo) : null);
+    const room = async () => {
+      if (typeof conn.fetchRoomInfo !== 'function') return null;
+      try { return pickStream(await conn.fetchRoomInfo()); } catch (e) { this.log('info', `recording: room info refused (${e && e.message})`); return null; }
+    };
+    const page = async () => {
+      if (typeof this.link.liveRoomFromPage !== 'function') return null;
+      try { return pickStream(await this.link.liveRoomFromPage()); } catch (e) { this.log('info', `recording: LIVE page refused (${e && e.message})`); return null; }
+    };
+    const order = fresh ? [['room info', room], ['LIVE page', page], ['kept room info', kept]] : [['kept room info', kept], ['room info', room], ['LIVE page', page]];
+    for (const [from, get] of order) {
+      const s = await get();
+      if (s) { this.log('info', `recording: stream ${s.quality} ${s.kind}${s.codec ? ` ${s.codec}` : ''}${s.width ? ` ${s.width}x${s.height}` : ''} (from the ${from})`); return s; }
     }
-    if (!s && typeof this.link.liveRoomFromPage === 'function') s = pickStream(await this.link.liveRoomFromPage());
-    if (!s) this.log('warn', 'recording: TikTok gave no stream link for this LIVE');
-    else this.log('info', `recording: stream ${s.quality} ${s.kind}${s.codec ? ` ${s.codec}` : ''}${s.width ? ` ${s.width}x${s.height}` : ''}`);
-    return s;
+    this.log('warn', 'recording: TikTok gave no stream link yet (room info, LIVE page and the kept copy all had none)');
+    return null;
   }
 
   async stopRecording(why) {
@@ -330,6 +339,15 @@ class ShowManager extends EventEmitter {
       this.store.set('storageRemindedAt', this.now());
       this.emit('storageReminder', { totalBytes, freeBytes: this.storage.freeBytes });
     }
+  }
+
+  // The LIVE is on but no video has come in for 45 s: tell the host once (the opening of the show isn't being saved).
+  _checkVideo() {
+    const r = this.recorder.getState();
+    if (!r.recording || r.video) { this.videoWarnedAt = null; return; }
+    if (!r.waitingSince || Date.now() - r.waitingSince < 45000 || this.videoWarnedAt === r.waitingSince) return;
+    this.videoWarnedAt = r.waitingSince;
+    this.emit('videoLate', { since: r.waitingSince });
   }
 
   _checkNudge() {

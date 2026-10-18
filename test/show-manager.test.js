@@ -126,3 +126,31 @@ test('"Clip that": only while recording; with review clips off, a LIVE with mome
   assert.equal(show.makeClips(rec.dir).ok, true);
   assert.deepEqual(queued[1][1], { force: true, reviews: false });
 });
+
+test('stream link: a fresh try asks TikTok first and falls back to the kept room info; the LIVE page is asked too', async () => {
+  const { show, link } = setup();
+  const pull = (u) => ({ data: { stream_url: { flv_pull_url: { HD1: u } } } });
+  const asked = [];
+  link.conn = { roomInfo: pull('https://pull.example/kept.flv'), fetchRoomInfo: async () => { asked.push('room'); return { data: {} }; } };
+  link.liveRoomFromPage = async () => { asked.push('page'); return null; };
+  assert.equal((await show._stream(true)).url, 'https://pull.example/kept.flv');
+  assert.deepEqual(asked, ['room', 'page']);
+  asked.length = 0;
+  assert.equal((await show._stream(false)).url, 'https://pull.example/kept.flv');
+  assert.deepEqual(asked, [], 'not fresh: the kept copy answers first');
+  link.conn = { roomInfo: null, fetchRoomInfo: async () => { throw new Error('blocked'); } };
+  link.liveRoomFromPage = async () => ({ liveRoom: { streamData: { pull_data: { stream_data: JSON.stringify({ data: { origin: { main: { flv: 'https://pull.example/page.flv', sdk_params: '{}' } } } }) } } } });
+  assert.equal((await show._stream(true)).url, 'https://pull.example/page.flv', 'room info refused: the LIVE page answers');
+});
+
+test('no video 45 s into a LIVE: the host is told once', () => {
+  const { show } = setup();
+  let warned = 0; show.on('videoLate', () => warned++);
+  const r = { recording: true, video: false, waitingSince: Date.now() - 50000 };
+  show.recorder.getState = () => r;
+  show._checkVideo(); show._checkVideo();
+  assert.equal(warned, 1);
+  r.video = true; show._checkVideo();
+  r.video = false; r.waitingSince = Date.now() - 46000; show._checkVideo();
+  assert.equal(warned, 2, 'a new wait (the stream dropped) warns again');
+});

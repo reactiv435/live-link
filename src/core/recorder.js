@@ -22,6 +22,8 @@ const path = require('path');
 const SEGMENT_SEC = 600;
 const PREVIEW_EVERY_SEC = 3;
 const RESTART_MS = [3000, 5000, 10000, 20000, 30000];
+const FAST_RETRY_MS = 4000;            // no video link yet: ask TikTok again this often...
+const FAST_RETRY_FOR_MS = 3 * 60000;   // ...for the first 3 minutes of the wait, then back off
 const MIN_FREE_BYTES = 2 * 1024 ** 3;        // don't start (or keep) recording below 2 GB free
 const SAMPLE_EVERY_MS = 15000;
 const FLUSH_EVERY_MS = 30000;
@@ -69,7 +71,7 @@ class Recorder extends EventEmitter {
     this.flushTimer = null;
     this.restartStep = 0;
     this.taps = new Map();    // server second -> weight
-    this.state = { recording: false, dir: null, startedAt: null, bytes: 0, error: null, previewAt: null, moments: 0, momentAt: null };
+    this.state = { recording: false, dir: null, startedAt: null, bytes: 0, error: null, previewAt: null, moments: 0, momentAt: null, video: false, waitingSince: null };
   }
 
   getState() { return { ...this.state }; }
@@ -97,7 +99,8 @@ class Recorder extends EventEmitter {
     this.stopping = null;
     this.restartStep = 0;
     this._write();
-    this._set({ recording: true, dir, startedAt, bytes: 0, error: null, previewAt: null, moments: 0 });
+    this.noLinkSince = null;
+    this._set({ recording: true, dir, startedAt, bytes: 0, error: null, previewAt: null, moments: 0, video: false, waitingSince: Date.now() });
     this.flushTimer = setInterval(() => { this._write(); this._writeTaps(); }, FLUSH_EVERY_MS);
     if (this.flushTimer.unref) this.flushTimer.unref();
     await this._run(false);
@@ -126,7 +129,14 @@ class Recorder extends EventEmitter {
     let stream = null;
     try { stream = await this.getStream(fresh); } catch (e) { this.log('warn', `recording: no stream link (${e && e.message})`); }
     if (!this.active || this.stopping) return;
-    if (!stream || !stream.url) { this._scheduleRestart('no stream link from TikTok'); return; }
+    if (!stream || !stream.url) {
+      // TikTok can take a while to hand out the video link when a LIVE starts: keep asking every few seconds at first,
+      // so the opening of the show (greetings, news) is not lost.
+      if (this.noLinkSince == null) this.noLinkSince = Date.now();
+      this._scheduleRestart('no stream link from TikTok', Date.now() - this.noLinkSince < FAST_RETRY_FOR_MS ? FAST_RETRY_MS : null);
+      return;
+    }
+    this.noLinkSince = null;
     if (!this.session.stream) this.session.stream = { quality: stream.quality, codec: stream.codec || null, kind: stream.kind, width: stream.width || null, height: stream.height || null };
     const index = this.session.runs.length;
     const run = { index, startedAt: this.clock(), endedAt: null, samples: [], lastMediaMs: 0 };
@@ -147,6 +157,7 @@ class Recorder extends EventEmitter {
         if (k === 'out_time_us' || k === 'out_time_ms') {
           const mediaMs = Math.floor(Number(v) / 1000);
           if (!(mediaMs > 0)) continue;
+          if (!this.state.video) { this.noLinkSince = null; this._set({ video: true, waitingSince: null }); this.log('info', 'recording: video is coming in'); }
           const wall = this.clock() - mediaMs;               // server time when media time 0 would have arrived
           best = best === null ? wall : Math.min(best, wall);
           run.lastMediaMs = mediaMs;
@@ -167,6 +178,7 @@ class Recorder extends EventEmitter {
     child.on('close', (code) => {
       run.endedAt = this.clock();
       this.child = null;
+      if (this.state.video && !this.stopping) this._set({ video: false, waitingSince: Date.now() });
       this._write();
       if (this.stopping) { this.stopping.resolve(); return; }
       if (!this.active) return;
@@ -195,9 +207,9 @@ class Recorder extends EventEmitter {
     tick();
   }
 
-  _scheduleRestart(why) {
-    const ms = RESTART_MS[Math.min(this.restartStep, RESTART_MS.length - 1)];
-    this.restartStep++;
+  _scheduleRestart(why, fastMs = null) {
+    const ms = fastMs || RESTART_MS[Math.min(this.restartStep, RESTART_MS.length - 1)];
+    if (!fastMs) this.restartStep++;
     this.log('info', `recording: restarting in ${ms / 1000} s (${why})`);
     this.clearTimeout(this.restartTimer);
     this.restartTimer = this.setTimeout(() => { this.restartTimer = null; this._run(true); }, ms);
