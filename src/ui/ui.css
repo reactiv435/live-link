@@ -217,3 +217,12 @@ button:focus:not(:focus-visible) { outline: none; }
 .row select { background: var(--bg2); color: var(--text); border: 1px solid var(--line2); border-radius: 9px; padding: 7px 10px; font: 600 13px var(--font); flex: none; }
 .row select:focus { outline: none; border-color: var(--crimson); }
 .row small.bad { color: #ffb3bd; }
+/* 2.0.5: after the LIVE (keep open / safe to close) */
+.rec-progress { height: 6px; border-radius: 999px; background: #2a2a2a; overflow: hidden; margin: 8px 0 2px; }
+.rec-progress span { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--crimson-deep), #ee3550); transition: width .4s ease; }
+.rec.working { border-color: rgba(224,38,63,.55); box-shadow: 0 0 0 1px rgba(224,38,63,.25), 0 8px 24px rgba(224,38,63,.12); }
+.rec.working .rec-dot { background: transparent; border: 2px solid var(--crimson); box-sizing: border-box; animation: pulse 1.6s infinite; }
+.rec.all-done { border-color: rgba(230,230,230,.35); }
+.rec.all-done .rec-dot { display: none; }
+.rec.all-done #rec-title::before { content: "\2713  "; color: #f2f2f2; }
+.banner button:disabled, .row button:disabled { opacity: .55; cursor: default; }

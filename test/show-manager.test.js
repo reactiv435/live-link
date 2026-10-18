@@ -50,14 +50,16 @@ test('records when the LIVE is confirmed, stops when it ends, then queues the cl
   assert.equal(queued.length, 1);
 });
 
-test('clips off on the site: it still records, but nothing is queued for upload', async () => {
-  const { ctl, rec, queued, timers, live, show } = setup({ clips: false });
+test('clips off on the site: it still records; the full show is made but no review clips are sent', async () => {
+  const { ctl, rec, queued, timers, live, show, adv, runTimers } = setup({ clips: false });
   ctl.emit('state', live());
   await new Promise((r) => setImmediate(r));
   assert.equal(rec.calls[0][0], 'start');
   await rec.stop();
-  assert.equal(timers.length, 0);
-  assert.equal(queued.length, 0);
+  assert.equal(timers.length, 1);
+  assert.equal(show.getState().busy, true, 'waiting to start: not safe to close yet');
+  adv(90000); runTimers();
+  assert.deepEqual(queued[0][1], { reviews: false });
   assert.equal(show.makeClips(rec.dir).error, 'clips_off');
 });
 

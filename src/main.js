@@ -9,6 +9,7 @@ const { LiveLinkApi } = require('./core/api');
 const { Controller } = require('./core/controller');
 const { Store } = require('./core/store');
 const { ShowManager } = require('./core/show-manager');
+const { Updater } = require('./core/updater');
 const SITE = require('./site-config.json');
 
 // The bundled ffmpeg (records the LIVE, cuts the review clips) and the clip font. Packaged: resources/ffmpeg/<os>-<cpu>/
@@ -124,6 +125,30 @@ function watchConnection(s) {
 }
 let quitting = false;
 let lastState = null;
+let updater = null, forceQuit = false;
+
+// Why an update can't download / install right now (null = it can). Downloads wait for the LIVE to end; installing
+// (which restarts LIVE Link) also waits for the recording and the clips.
+function updateBusy(kind) {
+  const st = show ? show.getState() : {};
+  if (st.recording && st.recording.recording) return 'recording';
+  if (st.busy) return 'clips';
+  if (kind === 'download' && lastState && lastState.connected && lastState.tiktok && lastState.tiktok.status === 'live') return 'live';
+  return null;
+}
+
+// "Keep LIVE Link open" text for the tray and the quit question.
+function clipWork() {
+  const st = show ? show.getState() : null;
+  if (!st || !st.busy) return null;
+  const c = st.clips;
+  if (!c) return 'getting ready to make your clips';
+  if (c.phase === 'clip') return `making review clips (${c.index} of ${c.total})`;
+  if (c.phase === 'full') return `uploading full reviews (${c.index} of ${c.total})`;
+  if (c.phase === 'moment') return `making your "Clip that" moments (${c.index} of ${c.total})`;
+  if (c.phase === 'fullshow') return 'saving your full show as one file';
+  return 'finding the reviews from your LIVE';
+}
 
 function iconPath(name) { return path.join(__dirname, '..', 'build', name); }
 // The menu bar wants ~18 pt icons (with an @2x twin next to it); the Windows tray uses the 32 px ones.
@@ -170,8 +195,9 @@ const trayKindOf = (s) => !s ? 'off' : s.paused && s.phase === 'ready' ? 'paused
 let trayMenuKey = '';
 function updateTray(s) {
   if (!tray) return;
-  tray.setToolTip(`ReactivVibe LIVE Link\n${trayLabel(s)}`);
-  const label = trayLabel(s, false);
+  const work = clipWork();
+  tray.setToolTip(`ReactivVibe LIVE Link\n${trayLabel(s)}${work ? `\nKeep open: ${work}` : ''}`);
+  const label = work ? `Keep open: ${work}` : trayLabel(s, false);
   const want = trayKindOf(s);
   if (want !== trayKind) { trayKind = want; tray.setImage(nativeImage.createFromPath(trayIcon(want))); }
   // Rebuilding the menu on every state (several a second while taps flow) makes an open menu flicker on Windows.
@@ -186,7 +212,7 @@ function updateTray(s) {
     { label: paused ? 'Resume' : 'Pause', enabled: ready, click: () => ctl && ctl.setPaused(!(lastState && lastState.paused)) },
     { label: 'Check TikTok now', click: () => ctl && ctl.retryNow() },
     { type: 'separator' },
-    { label: 'Quit (stops sending taps)', click: () => { quitting = true; app.quit(); } },
+    { label: 'Quit (stops sending taps)', click: () => app.quit() },
   ]));
 }
 
@@ -239,8 +265,35 @@ app.whenReady().then(async () => {
   });
   show.on('momentsMade', (x) => notify('Moment clips ready', `${x.made} "Clip that" moment${x.made === 1 ? ' is' : 's are'} ready to post. Click to open the folder.`, () => { if (x.outDir) shell.openPath(x.outDir); }));
   show.on('nudge', () => notify('Remind chat to tap', 'Nobody has tapped for 2 minutes. Tell chat: tapping the screen fills the hype bar.'));
-  show.on('clipsSent', (x) => notify('Review clips sent', `${x.sent} review clip${x.sent === 1 ? '' : 's'} from your LIVE ${x.sent === 1 ? 'is' : 'are'} on ReactivVibeAI. The artists get a message.`));
-  show.on('clipsFailed', (x) => notify('Some clips didn’t send', `${x.failed} review clip${x.failed === 1 ? '' : 's'} failed. Open LIVE Link > Recordings and click "Make & send clips" to try again.`));
+  // One pop-up when everything after the LIVE is done: the clips, the moments, the full-show file.
+  show.on('safeToClose', (x) => {
+    const c = x.clips;
+    const parts = [];
+    if (c && c.sent) parts.push(`${c.sent} review clip${c.sent === 1 ? '' : 's'} sent`);
+    if (c && c.failed) parts.push(`${c.failed} didn't send (Recordings > Make & send clips)`);
+    if (x.fullShow) parts.push('full show saved');
+    notify(c && c.failed ? 'Done, with some clips to resend' : 'All done: safe to close LIVE Link', `${parts.length ? `${parts.join(' · ')}. ` : ''}It's safe to close LIVE Link.`,
+      x.fullShow ? () => shell.openPath(x.dir) : undefined);
+  });
+  show.on('state', () => { if (updater) updater.poke(); updateTray(lastState); });
+
+  // In-app updates: downloaded in the background when no LIVE/recording/clips are running, installed on "Restart to update".
+  updater = new Updater({ dir: path.join(app.getPath('userData'), 'updates'), appVersion: VERSION, appPath: process.execPath, log, busy: updateBusy });
+  updater.on('state', (u) => { if (win && !win.isDestroyed()) win.webContents.send('updater', u); });
+  ipcMain.handle('updater:get', () => updater.getState());
+  ipcMain.handle('updater:check', async () => { const u = await ctl.checkForUpdate(); updater.offer(u); if (updater.state.status === 'error') updater.tryDownload(); return { update: u, updater: updater.getState() }; });
+  ipcMain.handle('updater:retry', () => { updater.tryDownload(); return updater.getState(); });
+  ipcMain.handle('updater:install', async () => {
+    const r = await updater.install();
+    if (r.ok) { log('info', `installing update ${updater.state.version}`); forceQuit = true; setTimeout(() => app.quit(), 300); }
+    return r;
+  });
+  ipcMain.handle('show:makeFullShow', (_e, dir) => show.makeFullShow(String(dir || '')));
+  ipcMain.handle('show:openFullShow', (_e, dir) => {
+    const f = show.fullShowFile(String(dir || ''));
+    if (f && fs.existsSync(f)) { shell.showItemInFolder(f); return true; }
+    return false;
+  });
   show.on('storageReminder', (x) => notify('Time to clear old recordings', `Your LIVE recordings use ${(x.totalBytes / 1024 ** 3).toFixed(0)} GB. Open LIVE Link > Recordings to delete the ones you don't need.`));
 
   ctl.on('sessionEnded', (x) => {
@@ -263,10 +316,12 @@ app.whenReady().then(async () => {
   ctl.on('autoResumed', () => notify('LIVE Link resumed', 'Your show started on reactivvibeai.com, so LIVE Link is watching your TikTok again.'));
   // A sleeping computer drops its sockets and timers: look again as soon as it wakes or is unlocked.
   powerMonitor.on('resume', () => { log('info', 'system resumed from sleep'); ctl.wake(true); });
+  powerMonitor.on('shutdown', () => { forceQuit = true; });   // the computer is shutting down: don't hold it up with a question
   powerMonitor.on('unlock-screen', () => ctl.wake(false));
   ctl.on('state', (s) => {
     lastState = s;
     watchConnection(s);
+    if (updater) { updater.offer(s.update); updater.poke(); }
     updateTray(s);
     if (win && !win.isDestroyed()) win.webContents.send('state', s);
   });
@@ -391,7 +446,22 @@ app.on('window-all-closed', (e) => { /* stay in the tray */ });
 // tell the site this computer stopped watching (the dashboard shows it at once), then quit.
 let quitFlushed = false;
 app.on('will-quit', () => { try { globalShortcut.unregisterAll(); } catch {} });
+// Quitting while clips are still being made: ask first (they'd finish next time, but the host should know).
+let quitAsking = false;
 app.on('before-quit', (e) => {
+  const work = !forceQuit && !quitFlushed && clipWork();
+  if (work) {
+    e.preventDefault();
+    if (quitAsking) return;
+    quitAsking = true;
+    showWindow();
+    dialog.showMessageBox(win, {
+      type: 'warning', buttons: ['Keep LIVE Link running', 'Quit anyway'], defaultId: 0, cancelId: 0, noLink: true,
+      title: 'LIVE Link is still working', message: `LIVE Link is still ${work}.`,
+      detail: 'Leave it running and you get an "All done: safe to close" pop-up when it finishes. If you quit now, it picks up where it left off the next time you open LIVE Link.',
+    }).then(({ response }) => { quitAsking = false; if (response === 1) { forceQuit = true; app.quit(); } }).catch(() => { quitAsking = false; });
+    return;
+  }
   quitting = true;
   if (quitFlushed || !ctl) { if (ctl) ctl.stop(); return; }
   quitFlushed = true;

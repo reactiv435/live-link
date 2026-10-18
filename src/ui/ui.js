@@ -49,19 +49,60 @@
   }
 
   // ---------------------------------------------------------------- update banner
-  // Never during a LIVE: installing means quitting, so the download button waits for the LIVE to end.
+  // 2.0.5: the update downloads by itself (never during a LIVE, a recording or while clips are made) and installs on
+  // "Restart to update". Without the in-app updater (demo), it falls back to the download link.
+  let upd = null;
+  const WAIT_FOR = { recording: 'your recording ends', clips: 'your clips are done', live: 'your LIVE ends' };
   function renderUpdate(s) {
-    const up = s.update && s.update.available, need = s.phase === 'update_required';
-    $('update-banner').classList.toggle('hidden', !up && !need);
-    const btn = $('update-btn');
-    if (need) { $('update-text').textContent = 'This version is too old to send taps. Download the new one.'; btn.classList.remove('hidden'); return; }
-    if (!up) return;
-    if (s.connected) { $('update-text').textContent = `LIVE Link ${s.update.version} is ready. Update after your LIVE.`; btn.classList.add('hidden'); return; }
-    $('update-text').textContent = s.platform === 'darwin'
-      ? `LIVE Link ${s.update.version} is ready: download it, quit this one, then drag the new one into Applications.`
-      : `LIVE Link ${s.update.version} is ready: download it and run the installer (your settings stay).`;
-    btn.classList.remove('hidden');
+    s = s || current || {};
+    const need = s.phase === 'update_required', avail = !!(s.update && s.update.available);
+    const u = upd && upd.status !== 'idle' ? upd : null;
+    const banner = $('update-banner'), btn = $('update-btn'), text = $('update-text');
+    banner.classList.toggle('hidden', !need && !avail && !u);
+    renderUpdateSetting();
+    if (banner.classList.contains('hidden')) return;
+    const v = (u && u.version) || (s.update && s.update.version) || '';
+    const show = (label, action, disabled = false) => { btn.textContent = label; btn.dataset.action = action; btn.disabled = disabled; btn.classList.remove('hidden'); };
+    btn.classList.add('hidden');
+    if (u && u.status === 'ready') { text.textContent = u.blocked ? `LIVE Link ${v} is ready. It can install once ${WAIT_FOR[u.blocked] || 'you finish'}.` : `LIVE Link ${v} is ready to install.`; show('Restart to update', 'install', !!u.blocked); return; }
+    if (u && u.status === 'downloading') { text.textContent = `Downloading LIVE Link ${v}... ${Math.round((u.progress || 0) * 100)}%`; return; }
+    if (u && u.status === 'installing') { text.textContent = `Installing LIVE Link ${v}. It opens again by itself in a moment.`; return; }
+    if (u && u.status === 'waiting') { text.textContent = `LIVE Link ${v} is out. It downloads by itself once ${WAIT_FOR[u.blocked] || 'your LIVE ends'}.`; return; }
+    if (u && u.status === 'error') { text.textContent = `Couldn't download LIVE Link ${v}.`; show('Try again', 'retry'); return; }
+    text.textContent = need ? 'This version is too old to send taps. Get the new one.' : `LIVE Link ${v} is out.`;
+    show('Download', 'open');
   }
+  $('update-btn').addEventListener('click', async () => {
+    const a = $('update-btn').dataset.action;
+    if (a === 'install' && bridge.installUpdate) {
+      $('update-btn').disabled = true;
+      const r = await bridge.installUpdate();
+      if (!r || !r.ok) { $('update-text').textContent = r && WAIT_FOR[r.error] ? `It can install once ${WAIT_FOR[r.error]}.` : "Couldn't start the installer. Use Download instead."; $('update-btn').disabled = false; if (!(r && WAIT_FOR[r.error])) { $('update-btn').textContent = 'Download'; $('update-btn').dataset.action = 'open'; } }
+    } else if (a === 'retry' && bridge.retryUpdate) bridge.retryUpdate();
+    else bridge.open('update');
+  });
+  // Settings > Version: the status and one button (Check for updates / Restart to update).
+  function renderUpdateSetting(note) {
+    const b = $('s-update-btn'); if (!b) return;
+    const base = (settingsVersion || '-');
+    const u = upd || {};
+    let status = note || '';
+    if (!status) status = u.status === 'ready' ? `${u.version} ready to install` : u.status === 'downloading' ? `downloading ${u.version} (${Math.round((u.progress || 0) * 100)}%)` : u.status === 'waiting' ? `${u.version} downloads after ${WAIT_FOR[u.blocked] || 'your LIVE'}` : u.status === 'error' ? "couldn't download the update" : '';
+    $('s-version').textContent = status ? `${base} · ${status}` : base;
+    b.textContent = u.status === 'ready' ? 'Restart to update' : 'Check for updates';
+    b.disabled = u.status === 'downloading' || u.status === 'installing' || (u.status === 'ready' && !!u.blocked);
+  }
+  let settingsVersion = null;
+  $('s-update-btn').addEventListener('click', async () => {
+    if (upd && upd.status === 'ready') { $('update-btn').dataset.action = 'install'; $('update-btn').click(); return; }
+    if (!bridge.checkForUpdates) return;
+    renderUpdateSetting('checking...');
+    const r = await bridge.checkForUpdates();
+    if (r && r.updater) upd = r.updater;
+    renderUpdate();
+    if (r && r.update && !r.update.available) renderUpdateSetting('up to date');
+  });
+  if (bridge.onUpdater) { bridge.onUpdater((u) => { upd = u; renderUpdate(); }); bridge.getUpdater().then((u) => { upd = u; renderUpdate(); }); }
 
   // ---------------------------------------------------------------- atom + hero button
   // Atom: green = taps are filling the bar, gold = connected to the LIVE but nothing is added yet, grey = paused,
@@ -266,7 +307,8 @@
     $('s-dry').checked = !!st.dryRun;
     $('s-notify').checked = st.notify !== false;
     $('s-device').textContent = st.deviceName || '-';
-    $('s-version').textContent = st.version || '-';
+    settingsVersion = st.version || '-';
+    renderUpdateSetting();
     $('s-record').checked = st.recordEnabled !== false;
     $('s-record').disabled = st.recordAvailable === false;
     $('s-recroot').textContent = st.recordRoot || '-';
@@ -357,9 +399,9 @@
     else if (st.live && st.hostStopped) { title = 'Recording stopped'; note = 'You stopped it for this LIVE. Press Record to start again.'; }
     else if (st.live) { title = 'Starting the recording...'; note = 'Getting your LIVE from TikTok.'; }
     else { title = 'Ready to record'; note = 'Your next TikTok LIVE is recorded automatically.'; }
-    if (st.clips && st.clips.phase === 'clip') note = `Making review clips: ${st.clips.index} of ${st.clips.total}${st.clips.title ? ` · ${st.clips.title}` : ''}`;
-    else if (st.clips && st.clips.phase === 'reviews') note = 'Finding the reviews from your LIVE...';
-    else if (st.clips && st.clips.phase === 'moment') note = `Making your "Clip that" moments: ${st.clips.index} of ${st.clips.total}`;
+    // After the LIVE: keep-open while clips are made, then a clear "safe to close".
+    const done = renderAfterShow(st, r);
+    if (done) { title = done.title; note = done.note; }
     renderMoment(st, r);
     $('rec-title').textContent = title;
     $('rec-note').textContent = note;
@@ -377,6 +419,38 @@
     if (!r.recording) $('rec-preview').classList.add('hidden');
     if (!$('recordings').classList.contains('hidden')) loadRecordings();
   }
+  // The card after a LIVE. Busy: "Keep LIVE Link open" with what it's doing and a progress bar. Done: "safe to close".
+  function renderAfterShow(st, r) {
+    const bar = $('rec-progress');
+    const card = $('rec');
+    card.classList.remove('working', 'all-done');
+    bar.classList.add('hidden');
+    if (r.recording) return null;
+    const c = st.clips;
+    if (st.busy) {
+      card.classList.add('working');
+      let note = 'Your LIVE ended. Your clips start in a moment.', pct = null;
+      if (c && c.phase === 'reviews') note = 'Finding the reviews from your LIVE...';
+      else if (c && c.phase === 'clip') { note = `Making review clips: ${c.index} of ${c.total}${c.title ? ` · ${c.title}` : ''}. About ${Math.max(1, Math.round((c.total - c.index + 1) * 1.5))} min left.`; pct = (c.index - 1) / Math.max(1, c.total); }
+      else if (c && c.phase === 'full') { note = `Every artist has their clip. Uploading the full reviews: ${c.index} of ${c.total}.`; pct = (c.index - 1) / Math.max(1, c.total); }
+      else if (c && c.phase === 'moment') { note = `Making your "Clip that" moments: ${c.index} of ${c.total}.`; pct = (c.index - 1) / Math.max(1, c.total); }
+      else if (c && c.phase === 'fullshow') note = 'Saving your full show as one file...';
+      if (pct !== null) { bar.classList.remove('hidden'); $('rec-progress-bar').style.width = `${Math.round(pct * 100)}%`; bar.setAttribute('aria-valuenow', String(Math.round(pct * 100))); }
+      return { title: 'Keep LIVE Link open: finishing your clips', note };
+    }
+    if (st.doneAt && st.lastClips) {
+      card.classList.add('all-done');
+      const l = st.lastClips;
+      const bits = [];
+      if (l.sent) bits.push(`${l.sent} review clip${l.sent === 1 ? '' : 's'} sent`);
+      if (l.failed) bits.push(`${l.failed} didn't send: open Recordings and press Make & send clips`);
+      if (st.lastFullShow) bits.push('full show saved');
+      return { title: l.failed ? 'Done: some clips need resending' : 'All done: safe to close LIVE Link', note: bits.join(' · ') };
+    }
+    if (st.doneAt && st.lastFullShow) { card.classList.add('all-done'); return { title: 'All done: safe to close LIVE Link', note: 'Your full show is saved.' }; }
+    return null;
+  }
+
   // "Clip that": only while recording. The label shows the hotkey; each new mark (button or hotkey) flashes "Marked!".
   let momentFlash = null, lastMoments = null;
   function renderMoment(st, r) {
@@ -430,11 +504,14 @@
       const clips = x.working ? 'making clips...' : x.clips.sent ? `${x.clips.sent} clip${x.clips.sent === 1 ? '' : 's'} sent${x.clips.failed ? `, ${x.clips.failed} failed` : ''}` : x.clips.failed ? `${x.clips.failed} clip${x.clips.failed === 1 ? '' : 's'} failed` : 'no clips yet';
       const mo = x.moments || { marked: 0, made: 0 };
       const moments = mo.marked ? ` · ${mo.made} of ${mo.marked} moment clip${mo.marked === 1 ? '' : 's'}` : '';
-      meta.textContent = `@${x.handle || ''} · ${dur} · ${fmtBytes(x.bytes)} · ${clips}${moments}`;
+      const full = x.fullShow ? ' · full show saved' : '';
+      meta.textContent = `@${x.handle || ''} · ${dur} · ${fmtBytes(x.bytes)} · ${clips}${moments}${full}`;
       head.append(t, meta);
       const acts = document.createElement('div'); acts.className = 'rl-acts';
       const btn = (label, cls, fn) => { const b = document.createElement('button'); b.type = 'button'; b.className = `ghost small ${cls || ''}`; b.textContent = label; b.addEventListener('click', fn); acts.append(b); return b; };
       btn('Open', '', () => bridge.openRecording(x.dir));
+      if (x.fullShow && bridge.openFullShow) btn('Open full show', '', () => bridge.openFullShow(x.dir));
+      else if (!x.recording && !x.working && x.endedAt && bridge.makeFullShow) btn('Make full show', '', async () => { const r = await bridge.makeFullShow(x.dir); if (r && r.ok) loadRecordings(); });
       if (mo.made && bridge.openMoments) btn('Open moments', '', () => bridge.openMoments(x.dir));
       const canMake = show && (show.clipsOn || mo.marked > mo.made);
       if (!x.recording && canMake && !x.working) btn(show.clipsOn ? 'Make & send clips' : 'Make moment clips', '', async () => { const r = await bridge.makeClips(x.dir); if (!r || !r.ok) meta.textContent += ` · ${r && r.error === 'clips_off' ? 'clips are not switched on for your channel yet' : "couldn't start"}`; else loadRecordings(); });
@@ -517,18 +594,23 @@
       getShow: async () => ({ ffmpegOk: true, enabled: true, clipsOn: true, live: pick === 'live', hostStopped: false, root: 'C:\\Users\\host\\Videos\\LIVE Link Recordings',
         momentKey: 'F8', momentKeyOk: true,
         recording: { recording: pick === 'live', startedAt: Date.now() - 42 * 60000, bytes: 3.1 * 1024 ** 3, previewAt: 0, moments: 2 },
-        clips: pick === 'waiting' ? { phase: 'clip', index: 3, total: 9, title: 'Midnight Engine (AI remix)' } : null,
+        clips: pick === 'working' ? { phase: 'clip', index: 12, total: 31, title: 'Neon Override' } : null,
+        busy: pick === 'working', doneAt: pick === 'done' ? Date.now() : null,
+        lastClips: pick === 'done' ? { sent: 31, failed: 0, total: 31 } : null, lastFullShow: pick === 'done' ? { files: ['x - full show.mp4'] } : null,
         storage: { totalBytes: 61 * 1024 ** 3, freeBytes: 24 * 1024 ** 3, remind: pick === 'waiting' } }),
       onShow: () => () => {},
       getPreview: async () => null,
       listRecordings: async () => [
         { dir: 'a', handle: 'the_boneyard_ai', startedAt: Date.now() - 42 * 60000, endedAt: null, recording: true, bytes: 3.1 * 1024 ** 3, clips: { sent: 0, failed: 0 }, working: false },
-        { dir: 'b', handle: 'the_boneyard_ai', startedAt: Date.now() - 3 * 86400000, endedAt: Date.now() - 3 * 86400000 + 2.4 * 3600000, recording: false, bytes: 8.7 * 1024 ** 3, clips: { sent: 11, failed: 1 }, moments: { marked: 4, made: 4 }, working: false },
+        { dir: 'b', handle: 'the_boneyard_ai', startedAt: Date.now() - 3 * 86400000, endedAt: Date.now() - 3 * 86400000 + 2.4 * 3600000, recording: false, bytes: 8.7 * 1024 ** 3, clips: { sent: 11, failed: 1 }, moments: { marked: 4, made: 4 }, fullShow: ['b - full show.mp4'], working: false },
         { dir: 'c', handle: 'the_boneyard_ai', startedAt: Date.now() - 7 * 86400000, endedAt: Date.now() - 7 * 86400000 + 1.9 * 3600000, recording: false, bytes: 6.2 * 1024 ** 3, clips: { sent: 9, failed: 0 }, working: false },
       ],
       openRecording: async () => true, deleteRecording: async () => ({ ok: true }), makeClips: async () => ({ ok: true }),
       stopRecording: async () => true, startRecording: async () => true, chooseRecordFolder: async () => null,
       markMoment: async () => ({ ok: true, count: 3 }), openMoments: async () => true,
+      getUpdater: async () => (pick === 'update' ? { status: 'ready', version: '2.0.5', progress: 1, blocked: null } : pick === 'downloading' ? { status: 'downloading', version: '2.0.5', progress: 0.42 } : { status: 'idle' }),
+      onUpdater: () => () => {}, checkForUpdates: async () => ({ update: { available: false }, updater: { status: 'idle' } }),
+      retryUpdate: async () => ({}), installUpdate: async () => ({ ok: true }), makeFullShow: async () => ({ ok: true }), openFullShow: async () => true,
     };
   }
 })();

@@ -168,3 +168,30 @@ test('"Clip that" marks: 35 s before + 10 s after the press, shifted by the dela
   assert.equal(words['end-label.txt'], 'CLIPPED LIVE ON');
   for (const v of Object.values(C.momentTexts(C.targetSize(720, 1280), { handle: null, at: null }))) assert.ok(!/null|undefined|NaN/.test(v));
 });
+
+test('full show: pieces map into the joined file, cuts cross a piece boundary as one cut', () => {
+  const run = { index: 0, startedAt: 1000000, samples: [[0, 1000000]] };
+  const session = { runs: [run], joined: { files: [{ file: 'x - full show.mp4', parts: [{ run: 0, start: 0, end: 600, offset: 0 }, { run: 0, start: 600, end: 1200, offset: 600 }] }] } };
+  run.parts = C.joinedPartsFor(session, 0);
+  assert.equal(run.parts.length, 2);
+  const cuts = C.cutsFor(C.timeline(session), 1000000 + 590000, 1000000 + 610000);
+  assert.deepEqual(cuts, [{ file: 'x - full show.mp4', inSec: 590, outSec: 610 }]);
+  assert.equal(C.joinedPartsFor({ runs: [] }, 0), null);
+});
+
+test('full show plan: runs with the same picture join into one file with running offsets; a new picture size starts part 2', () => {
+  const s = { runs: [
+    { index: 0, parts: [{ file: 'part-0-000.mp4', start: 0, end: 600 }, { file: 'part-0-001.mp4', start: 600, end: 900 }] },
+    { index: 1, parts: [{ file: 'part-1-000.mp4', start: 0, end: 300 }] },
+  ] };
+  const same = C.fullShowPlan(s, { 'part-0-000.mp4': { codec: 'h264', width: 720, height: 1280 }, 'part-1-000.mp4': { codec: 'h264', width: 720, height: 1280 } }, 'Show');
+  assert.equal(same.length, 1);
+  assert.equal(same[0].file, 'Show - full show.mp4');
+  assert.equal(same[0].duration, 1200);
+  assert.deepEqual(same[0].parts.map((p) => [p.source, p.run, p.offset]), [['part-0-000.mp4', 0, 0], ['part-0-001.mp4', 0, 600], ['part-1-000.mp4', 1, 900]]);
+  const diff = C.fullShowPlan(s, { 'part-0-000.mp4': { codec: 'h264', width: 720, height: 1280 }, 'part-1-000.mp4': { codec: 'h264', width: 1280, height: 720 } }, 'Show');
+  assert.deepEqual(diff.map((f) => f.file), ['Show - full show (part 1).mp4', 'Show - full show (part 2).mp4']);
+  assert.equal(diff[1].parts[0].offset, 0);
+  const a = C.joinArgs('.join.txt', 'out.mp4');
+  assert.ok(a.includes('copy') && a.includes('+faststart') && a.includes('concat'));
+});

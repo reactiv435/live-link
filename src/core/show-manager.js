@@ -50,13 +50,24 @@ class ShowManager extends EventEmitter {
     this.recorder.on('state', () => this._emit());
     this.recorder.on('finished', ({ dir }) => this._recordingFinished(dir));
     this.retries = new Map();       // dir -> automatic re-runs this app session (uploads that didn't finish)
+    this.waiting = new Set();       // recordings waiting out the short pause before their clips start
+    this.lastClips = null;          // { dir, sent, failed, total, pending, at }: the last finished clip run, for "safe to close"
     this.jobs.on('progress', (p) => {
-      this.clipState = ['done', 'error', 'moments_done'].includes(p.phase) ? null : p;
+      this.clipState = ['done', 'error', 'moments_done', 'fullshow_done'].includes(p.phase) ? null : p;
+      if (p.phase === 'done') this.lastClips = { dir: p.dir, sent: p.sent, failed: p.failed, total: p.total, pending: !!p.pending, at: this.now() };
+      if (p.phase === 'fullshow_done' && p.ok && p.files) { this.lastFullShow = { dir: p.dir, files: p.files, at: this.now() }; this.emit('fullShowReady', { dir: p.dir, files: p.files }); }
       if (p.phase === 'moments_done' && p.made > 0) this.emit('momentsMade', { dir: p.dir, made: p.made, outDir: p.outDir });
       if (p.phase === 'done' && p.sent > 0) this.emit('clipsSent', { dir: p.dir, sent: p.sent, failed: p.failed });
       if (p.phase === 'done' && p.failed > 0) this.emit('clipsFailed', { dir: p.dir, failed: p.failed });
       // Something still owed (an upload that kept failing, a full review not sent): try again in 30 min, up to 3 times.
       if ((p.phase === 'done' && p.pending) || p.phase === 'error') this._retryLater(p.dir);
+      this._emit();
+    });
+    // All clip work done (nothing running, queued or about to start): tell the host it's safe to close.
+    this.jobs.on('idle', ({ dir }) => {
+      if (this.waiting.size || this.jobs.queue.length) return;
+      this.doneAt = this.now();
+      this.emit('safeToClose', { dir, clips: this.lastClips && this.lastClips.dir === dir ? this.lastClips : null, fullShow: this.lastFullShow && this.lastFullShow.dir === dir ? this.lastFullShow : null });
       this._emit();
     });
     ctl.on('state', (s) => this._onState(s));
@@ -93,6 +104,11 @@ class ShowManager extends EventEmitter {
       live: !!(this.lastS && this.lastS.connected && this.lastS.tiktok && this.lastS.tiktok.status === 'live'),
       hostStopped: !!this.hostStoppedRoom && !this.recorder.active,
       clips: this.clipState,
+      // Clip work still to do on this computer (closing LIVE Link now would leave it for next time).
+      busy: !!(this.jobs.running || this.jobs.queue.length || this.waiting.size),
+      lastClips: this.lastClips,
+      lastFullShow: this.lastFullShow || null,
+      doneAt: this.doneAt || null,
       storage: { ...this.storage },
     };
   }
@@ -169,11 +185,13 @@ class ShowManager extends EventEmitter {
     this.room = null;
     this._checkStorage(true);
     this._emit();
-    const moments = this.recorder.session && (this.recorder.session.moments || []).length;
-    if (!dir || (!this.clipsOn() && !moments)) return;
+    // Every recording gets its full-show file; review clips when the site has them on; moments when the host marked some.
+    if (!dir) return;
     const reviews = this.clipsOn();
-    const t = this.setTimeout(() => { this.clipTimers.delete(t); this.jobs.enqueue(dir, { reviews }); }, this.clipDelayMs);
+    this.waiting.add(dir);
+    const t = this.setTimeout(() => { this.clipTimers.delete(t); this.waiting.delete(dir); this.jobs.enqueue(dir, { reviews }); this._emit(); }, this.clipDelayMs);
     this.clipTimers.add(t);
+    this._emit();
   }
 
   _retryLater(dir) {
@@ -202,7 +220,8 @@ class ShowManager extends EventEmitter {
       try { s = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { continue; }
       const reviews = doReviews && !s.clipsDoneAt;
       const momentsOwed = doMoments && (s.moments || []).length > Object.keys(s.momentClips || {}).length;
-      if (!reviews && !momentsOwed) continue;
+      const fullShowOwed = doMoments && !s.joined && fs.readdirSync(x.dir).some((f) => /^part-\d+-\d+\.mp4$/.test(f));
+      if (!reviews && !momentsOwed && !fullShowOwed) continue;
       if (!s.endedAt) {
         let end = s.startedAt || 0;
         for (const r of s.runs || []) {
@@ -237,6 +256,7 @@ class ShowManager extends EventEmitter {
         bytes: dirBytes(dir),
         clips: { sent: clips.filter((c) => c.status === 'sent').length, failed: clips.filter((c) => c.status === 'failed').length, skipped: clips.filter((c) => c.status === 'not_recorded').length },
         moments: { marked: (s.moments || []).length, made: Object.keys(s.momentClips || {}).length },
+        fullShow: s.joined && Array.isArray(s.joined.files) ? s.joined.files.map((f) => f.file) : null,
         working: !!(this.clipState && this.clipState.dir === dir) || this.jobs.running === dir,
       });
     }
@@ -263,6 +283,25 @@ class ShowManager extends EventEmitter {
 
   // The recording's "Clip that" clips folder (inside the recordings folder only).
   momentsDir(dir) { return this._inRoot(dir) ? path.join(dir, 'moments') : null; }
+
+  // The recording's full-show file (the first one, if a dropped stream made several), for "Open full show".
+  fullShowFile(dir) {
+    if (!this._inRoot(dir)) return null;
+    try {
+      const s = JSON.parse(fs.readFileSync(path.join(dir, 'session.json'), 'utf8'));
+      const f = s.joined && s.joined.files && s.joined.files[0];
+      return f ? path.join(dir, f.file) : null;
+    } catch { return null; }
+  }
+
+  // "Make full show" for a recording that has none yet (older than a week, or joining was put off for disk space).
+  makeFullShow(dir) {
+    if (!this._inRoot(dir)) return { ok: false, error: 'not_a_recording' };
+    if (this.recorder.active && this.recorder.dir === dir) return { ok: false, error: 'still_recording' };
+    this.jobs.enqueue(dir, { reviews: false });
+    this._emit();
+    return { ok: true };
+  }
 
   deleteRecording(dir) {
     if (!this._inRoot(dir)) return { ok: false, error: 'not_a_recording' };

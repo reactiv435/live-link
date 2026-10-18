@@ -26,4 +26,12 @@ contextBridge.exposeInMainWorld('liveLink', {
   // 2.0.3: "Clip that" moments
   markMoment: () => ipcRenderer.invoke('show:mark'),
   openMoments: (dir) => ipcRenderer.invoke('show:openMoments', String(dir || '')),
+  // 2.0.5: in-app updates + the full-show file
+  getUpdater: () => ipcRenderer.invoke('updater:get'),
+  onUpdater: (cb) => { const f = (_e, s) => cb(s); ipcRenderer.on('updater', f); return () => ipcRenderer.removeListener('updater', f); },
+  checkForUpdates: () => ipcRenderer.invoke('updater:check'),
+  retryUpdate: () => ipcRenderer.invoke('updater:retry'),
+  installUpdate: () => ipcRenderer.invoke('updater:install'),
+  makeFullShow: (dir) => ipcRenderer.invoke('show:makeFullShow', String(dir || '')),
+  openFullShow: (dir) => ipcRenderer.invoke('show:openFullShow', String(dir || '')),
 });

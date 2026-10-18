@@ -53,8 +53,52 @@ class ClipJobs extends EventEmitter {
       catch (e) { this.log('error', `clips: ${path.basename(dir)}: ${e && e.message}`); this.emit('progress', { dir, phase: 'error', error: e && e.message }); }
       try { await this.processMoments(dir); }
       catch (e) { this.log('error', `moments: ${path.basename(dir)}: ${e && e.message}`); this.emit('progress', { dir, phase: 'moments_done', made: 0, failed: 1, total: 0 }); }
-    } finally { this.running = null; this._next(); }
+      try { await this.processFullShow(dir); }
+      catch (e) { this.log('error', `full show: ${path.basename(dir)}: ${e && e.message}`); this.emit('progress', { dir, phase: 'fullshow_done', ok: false, error: e && e.message }); }
+    } finally {
+      this.running = null;
+      if (!this.queue.length) this.emit('idle', { dir });   // nothing left to do on this computer: safe to close
+      this._next();
+    }
   }
+
+  // The 10-minute pieces become one "<recording> - full show.mp4" (no re-encoding). The pieces are removed only after
+  // the joined file is checked (its length matches the pieces), and session.json maps the pieces into it, so clips can
+  // still be made from the recording later. A file of that name already there (joined by hand) is adopted if it checks out.
+  async processFullShow(dir) {
+    const session = C.readSession(dir);
+    if (!session.endedAt || session.joined) return { ok: true, skipped: true };
+    const probes = {};
+    for (const run of session.runs || []) {
+      const first = (run.parts || [])[0];
+      if (first && fs.existsSync(path.join(dir, first.file))) probes[first.file] = C.parseProbe(await this._probe(path.join(dir, first.file)));
+    }
+    const plan = C.fullShowPlan(session, probes, path.basename(dir));
+    const missing = plan.flatMap((f) => f.parts).filter((p) => !fs.existsSync(path.join(dir, p.source)));
+    if (!plan.length || missing.length) return { ok: false, reason: missing.length ? 'pieces_missing' : 'nothing_recorded' };
+    const pieceBytes = plan.flatMap((f) => f.parts).reduce((n, p) => n + fs.statSync(path.join(dir, p.source)).size, 0);
+    if (this.freeBytes(dir) < pieceBytes + 2 * 1024 ** 3) { this.log('warn', 'full show: not enough free space to join the pieces yet'); return { ok: false, reason: 'disk_space' }; }
+    this.emit('progress', { dir, phase: 'fullshow' });
+    for (const f of plan) {
+      const out = path.join(dir, f.file);
+      const ok = (file) => { const d = C.parseProbe(String(file)).duration; return d && Math.abs(d - f.duration) <= Math.max(3, f.duration * 0.002); };
+      if (fs.existsSync(out) && ok(await this._probe(out))) { this.log('info', `full show: using ${f.file} that is already there`); continue; }
+      const list = path.join(dir, '.join.txt');
+      fs.writeFileSync(list, 'ffconcat version 1.0\n' + f.parts.map((p) => `file '${p.source.replace(/'/g, "'\\''")}'\n`).join(''));
+      try { await this._ff(C.joinArgs('.join.txt', `${f.file}.part.mp4`), dir); }
+      finally { try { fs.unlinkSync(list); } catch {} }
+      fs.renameSync(path.join(dir, `${f.file}.part.mp4`), out);
+      if (!ok(await this._probe(out))) { try { fs.unlinkSync(out); } catch {} throw new Error(`${f.file} came out the wrong length; the pieces are kept`); }
+    }
+    // Map the pieces into the joined file(s), then remove them.
+    this._markSession(dir, { joined: { at: new Date(this.now()).toISOString(), files: plan.map((f) => ({ file: f.file, duration: f.duration, parts: f.parts.map(({ run, start, end, offset }) => ({ run, start, end, offset })) })) } });
+    for (const p of plan.flatMap((f) => f.parts)) { try { fs.unlinkSync(path.join(dir, p.source)); } catch {} }
+    this.log('info', `full show: ${plan.map((f) => f.file).join(', ')}`);
+    this.emit('progress', { dir, phase: 'fullshow_done', ok: true, files: plan.map((f) => f.file) });
+    return { ok: true, files: plan.map((f) => f.file) };
+  }
+
+  freeBytes(dir) { try { const s = fs.statfsSync(dir); return Number(s.bavail) * Number(s.bsize); } catch { return Infinity; } }
 
   // The host's "Clip that" marks become ~45 s phone clips in <recording>/moments/, kept on this computer for the host to
   // post. Status per moment lives in session.json under `momentClips[key]` = the file's name.

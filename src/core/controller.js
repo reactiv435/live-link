@@ -391,6 +391,13 @@ class Controller extends EventEmitter {
     this._loadConfig();
   }
 
+  // Settings > "Check for updates": ask the site for the latest version now (nothing else changes).
+  async checkForUpdate() {
+    if (this.s.phase === 'unpaired' || this.s.phase === 'starting' || this.s.phase === 'locked') return this.s.update;
+    await this._loadConfig();
+    return this.s.update;
+  }
+
   // A site call succeeded. If the site had been unreachable (likely this computer's internet), TikTok is probably
   // waiting out a long backoff for the same reason: try it now.
   _siteOk() {

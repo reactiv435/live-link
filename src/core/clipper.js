@@ -20,10 +20,24 @@ const DEFAULTS = { delayMs: 8000, padStartMs: 4000, padEndMs: 8000, hotSec: 20, 
   momentBeforeSec: 35, momentAfterSec: 10, momentMaxSec: 90 };
 
 // ------------------------------------------------------------ session + timeline
+// Once the pieces are joined into the full-show file (session.joined), each run's pieces point into that file at their
+// offset, so clips can still be made (or remade) after the pieces are gone.
 function readSession(dir) {
   const s = JSON.parse(fs.readFileSync(path.join(dir, 'session.json'), 'utf8'));
-  for (const run of s.runs || []) run.parts = readParts(dir, run.index, run);
+  for (const run of s.runs || []) {
+    const joined = joinedPartsFor(s, run.index);
+    run.parts = joined || readParts(dir, run.index, run);
+  }
   return s;
+}
+
+function joinedPartsFor(session, index) {
+  if (!session.joined || !Array.isArray(session.joined.files)) return null;
+  const out = [];
+  for (const f of session.joined.files) {
+    for (const p of f.parts || []) if (p.run === index) out.push({ file: f.file, start: p.start, end: p.end, offset: p.offset });
+  }
+  return out.length ? out : null;
 }
 
 // ffmpeg's segment list: "part-0-000.mp4,0.000000,600.021333" (media seconds). The last piece of a run that was cut
@@ -81,7 +95,7 @@ function timeline(session) {
   const out = [];
   for (const run of session.runs || []) {
     for (const p of run.parts || []) {
-      out.push({ file: p.file, run, mediaStart: p.start * 1000, mediaEnd: p.end * 1000,
+      out.push({ file: p.file, run, mediaStart: p.start * 1000, mediaEnd: p.end * 1000, offset: Number(p.offset) || 0,
         wallStart: mediaToWall(run, p.start * 1000), wallEnd: mediaToWall(run, p.end * 1000) });
     }
   }
@@ -96,9 +110,40 @@ function cutsFor(tl, fromWall, toWall) {
     const a = Math.max(fromWall, p.wallStart), b = Math.min(toWall, p.wallEnd);
     const inSec = Math.max(0, (wallToMedia(p.run, a) - p.mediaStart) / 1000);
     const outSec = Math.min((p.mediaEnd - p.mediaStart) / 1000, (wallToMedia(p.run, b) - p.mediaStart) / 1000);
-    if (outSec - inSec >= 0.5) cuts.push({ file: p.file, inSec: round3(inSec), outSec: round3(outSec) });
+    // In the joined full-show file a piece sits `offset` seconds in; neighbouring pieces of one file merge into one cut.
+    if (outSec - inSec < 0.5) continue;
+    const cut = { file: p.file, inSec: round3(inSec + p.offset), outSec: round3(outSec + p.offset) };
+    const last = cuts[cuts.length - 1];
+    if (p.offset && last && last.file === cut.file && Math.abs(last.outSec - cut.inSec) < 0.05) last.outSec = cut.outSec;
+    else cuts.push(cut);
   }
   return cuts;
+}
+
+// ------------------------------------------------------------ the full-show file
+// The pieces of a recording, in order, grouped into files that can be joined without re-encoding (a stream that came
+// back with a different picture size starts a new file). Each part keeps its run and its offset inside the joined file.
+function fullShowPlan(session, probes, baseName) {
+  const groups = [];
+  for (const run of session.runs || []) {
+    const parts = (run.parts || []).filter((p) => !p.offset && !String(p.file).endsWith('full show.mp4'));
+    if (!parts.length) continue;
+    const pr = probes[parts[0].file] || {};
+    const sig = `${pr.codec || '?'} ${pr.width || 0}x${pr.height || 0}`;
+    let g = groups[groups.length - 1];
+    if (!g || g.sig !== sig) { g = { sig, parts: [], duration: 0 }; groups.push(g); }
+    for (const p of parts) {
+      const dur = Math.max(0, p.end - p.start);
+      g.parts.push({ source: p.file, run: run.index, start: p.start, end: p.end, offset: round3(g.duration) });
+      g.duration += dur;
+    }
+  }
+  return groups.map((g, i) => ({ file: `${baseName} - full show${groups.length > 1 ? ` (part ${i + 1})` : ''}.mp4`, duration: round3(g.duration), parts: g.parts }));
+}
+
+function joinArgs(listFile, outFile) {
+  return ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'concat', '-safe', '0', '-i', listFile, '-map', '0:v:0', '-map', '0:a:0?',
+    '-c', 'copy', '-movflags', '+faststart', outFile];
 }
 const round3 = (x) => Math.round(x * 1000) / 1000;
 const coveredMs = (cuts) => cuts.reduce((n, c) => n + (c.outSec - c.inSec) * 1000, 0);
@@ -358,6 +403,6 @@ function parseProbe(text) {
   };
 }
 
-module.exports = { DEFAULTS, readSession, readParts, mediaToWall, wallToMedia, timeline, cutsFor, coveredMs, planReview,
+module.exports = { DEFAULTS, readSession, readParts, joinedPartsFor, fullShowPlan, joinArgs, mediaToWall, wallToMedia, timeline, cutsFor, coveredMs, planReview,
   planMoments, momentTexts, concatList, copyArgs, targetSize, brandLayout, topBarFrom, cropdetectArgs, brandTexts, fitText, brandFilter,
   highlightArgs, socialPlan, verticalArgs, posterArgs, parseProbe };

@@ -68,7 +68,6 @@ test('records a LIVE and turns one review into a full review, a branded highligh
   };
   const jobs = new ClipJobs({ api, ffmpegPath: FF, fontFile: FONT, log: (l, m) => logs.push(`${l} ${m}`), getOptions: () => ({ delayMs: 0, padStartMs: 1000, padEndMs: 1000, hotSec: 8, verdictSec: 20 }) });
   const result = await jobs.processSession(dir);
-  server.close();
   assert.equal(result.sent, 1, `clip not sent: ${JSON.stringify(result)}\n${logs.join('\n')}`);
   assert.ok(got['/up/highlight'] > 50000 && got['/up/full'] > 50000 && got['/up/poster'] > 2000, `uploads: ${JSON.stringify(got)}`);
   assert.ok(got['/up/vertical'] > 20000, 'the short phone cut is uploaded too');
@@ -87,7 +86,8 @@ test('records a LIVE and turns one review into a full review, a branded highligh
   assert.ok(full.duration > 62 && full.duration < 72, `full review duration ${full.duration}`);
   assert.ok(!fs.existsSync(path.join(job, 'full.mp4')), 'the local copy of the full review is removed once sent');
   assert.ok(JSON.parse(fs.readFileSync(path.join(dir, 'session.json'), 'utf8')).clipsDoneAt, 'the recording is marked done');
-  const hotFrom = Date.parse(completes[0].recipe.hot.from);
+  const hotIso = completes[0].recipe.hot.from;
+  const hotFrom = Date.parse(hotIso);
   const burstWall = C.mediaToWall(run, 24000);
   assert.ok(Math.abs(hotFrom - burstWall) < 8000, `hottest moment ${((hotFrom - burstWall) / 1000).toFixed(1)} s from the burst`);
   const st = JSON.parse(fs.readFileSync(path.join(dir, 'session.json'), 'utf8')).clips['play-1'];
@@ -103,6 +103,24 @@ test('records a LIVE and turns one review into a full review, a branded highligh
   assert.ok(mp.duration > 40 && mp.duration < 52, `moment clip duration ${mp.duration}`);
   assert.deepEqual(fs.readdirSync(path.join(dir, 'moments')).filter((f) => f.startsWith('.work')), [], 'work files cleaned up');
   assert.deepEqual(await jobs.processMoments(dir), { made: 0, failed: 0, total: 1 }, 'a second run makes nothing new');
+
+  // The full show: the 20 s pieces become one file, the pieces go, and clips can still be made from the joined file.
+  const pieceTotal = run.parts.reduce((n, p) => n + (p.end - p.start), 0);
+  const joinedRes = await jobs.processFullShow(dir);
+  assert.equal(joinedRes.ok, true, JSON.stringify(joinedRes));
+  const jp = probe(path.join(dir, joinedRes.files[0]));
+  assert.ok(Math.abs(jp.duration - pieceTotal) < 3, `full show ${jp.duration} s vs pieces ${pieceTotal} s`);
+  assert.deepEqual(fs.readdirSync(dir).filter((f) => /^part-\d+-\d+\.mp4$/.test(f)), [], 'the pieces are removed');
+  assert.ok(JSON.parse(fs.readFileSync(path.join(dir, 'session.json'), 'utf8')).joined, 'the pieces are mapped into the full show');
+  assert.equal((await jobs.processFullShow(dir)).skipped, true, 'joined once');
+  jobs._markSession(dir, { clips: {}, clipsDoneAt: null });
+  completes.length = 0;
+  const again = await jobs.processSession(dir);
+  assert.equal(again.sent, 1, `remade from the full show: ${JSON.stringify(again)}`);
+  assert.equal(completes[0].recipe.hot.from, hotIso, 'same hottest moment from the joined file');
+  const hl2 = probe(path.join(job, 'highlight.mp4'));
+  assert.ok(hl2.duration > 27 && hl2.duration < 38, `remade highlight ${hl2.duration}`);
+  server.close();
 
   // Stills for a human look: the title strip and the end card.
   if (process.env.E2E_OUT) {
