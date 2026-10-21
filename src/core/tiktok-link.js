@@ -92,6 +92,41 @@ function parseRoomInput(text) {
   return { error: 'no_room_id', handle: handle && handle.toLowerCase() };
 }
 
+// A TikTok LIVE page -> its room data ({ user, liveRoom }), or throws why not. TikTok answers networks it distrusts with
+// a short bot-check page ("Please wait...", _wafchallengeid) instead of the LIVE page: that is 'waf', not a layout change.
+function roomFromPageHtml(html) {
+  const text = String(html || '');
+  const fail = (code, message) => { const e = new Error(message); e.code = code; throw e; };
+  const scripts = [];
+  for (const id of ['SIGI_STATE', '__UNIVERSAL_DATA_FOR_REHYDRATION__']) {
+    const m = text.match(new RegExp(`<script id="${id}"[^>]*>([\\s\\S]*?)</script>`));
+    if (m) scripts.push(m[1]);
+  }
+  if (!scripts.length) {
+    if (/_wafchallengeid|waf-aiso|Please wait\.\.\./i.test(text)) fail('waf', `TikTok sent its bot check instead of the LIVE page (${text.length} bytes)`);
+    if (/captcha|verify to continue/i.test(text)) fail('waf', 'TikTok sent a captcha instead of the LIVE page');
+    fail('no_room_data', `the LIVE page has no room data (${text.length} bytes, layout changed?)`);
+  }
+  for (const raw of scripts) {
+    let json;
+    try { json = JSON.parse(raw); } catch { continue; }
+    const found = findRoomData(json, 0);
+    if (found) return found;
+  }
+  return fail('no_room_data', 'the LIVE page has no LiveRoom data (layout changed?)');
+}
+
+// SIGI_STATE.LiveRoom.liveRoomUserInfo today; anywhere else a { liveRoom } or { liveRoomUserInfo } object sits if the
+// layout moves (depth-limited).
+function findRoomData(o, depth) {
+  if (!o || typeof o !== 'object' || depth > 6) return null;
+  if (o.LiveRoom && o.LiveRoom.liveRoomUserInfo) return o.LiveRoom.liveRoomUserInfo;
+  if (o.liveRoomUserInfo && typeof o.liveRoomUserInfo === 'object') return o.liveRoomUserInfo;
+  if (o.liveRoom && typeof o.liveRoom === 'object' && (o.liveRoom.streamData || o.user)) return o;
+  for (const v of Object.values(o)) { const f = findRoomData(v, depth + 1); if (f) return f; }
+  return null;
+}
+
 function loadConnector() {
   // Lazy so tests can inject a fake without loading the real library.
   const L = require('tiktok-live-connector');
@@ -521,13 +556,27 @@ class TikTokLink extends EventEmitter {
     }
   }
 
-  // For the recorder, when room info carried no stream links: the LIVE page's room data (it lists them too).
+  // For the recorder, when room info carried no stream links: the LIVE page's room data (it lists them too). Reads the
+  // page itself so TikTok's bot check ("Please wait...", a WAF page with no data) is told apart from a page whose layout
+  // moved: the room data is looked for in SIGI_STATE and in __UNIVERSAL_DATA_FOR_REHYDRATION__. Throws why it failed
+  // (e.code = 'waf' | 'no_room_data'); the caller records it.
   async liveRoomFromPage() {
     const conn = this.conn;
+    if (!conn || !this.username) return null;
+    const wc = conn.webClient;
+    if (!wc || typeof wc.getHtmlFromTikTokWebsite !== 'function') {
+      const L = this.lib || loadConnector();
+      return L.fetchRoomInfoFromHtmlRoute ? L.fetchRoomInfoFromHtmlRoute({ webClient: wc, uniqueId: this.username }) : null;
+    }
+    return roomFromPageHtml(await wc.getHtmlFromTikTokWebsite(`@${this.username}/live`));
+  }
+
+  // For the recorder: TikTok's api-live answer for the account (data.liveRoom.streamData lists the video links).
+  async liveRoomFromApi() {
+    const conn = this.conn;
     const L = this.lib || loadConnector();
-    if (!conn || !L.fetchRoomInfoFromHtmlRoute || !this.username) return null;
-    try { return await L.fetchRoomInfoFromHtmlRoute({ webClient: conn.webClient, uniqueId: this.username }); }
-    catch (e) { this.log('info', `recording: the LIVE page was refused (${e && e.message})`); return null; }
+    if (!conn || !L.fetchRoomInfoFromApiLiveRoute || !this.username) return null;
+    return L.fetchRoomInfoFromApiLiveRoute({ webClient: conn.webClient, uniqueId: this.username });
   }
 
   // Finds the LIVE's room AND whether it is live, before any connection: TikTok's LIVE page (one request, what the
@@ -650,4 +699,4 @@ class TikTokLink extends EventEmitter {
   }
 }
 
-module.exports = { TikTokLink, classifyLookup, parseRoomInput, RETRY_BACKOFF_MS, RATE_LIMIT_MIN_MS, CONNECTING_TIMEOUT_MS, SILENT_SOCKET_MS, BLOCKED_BACKOFF_MS, NOT_FOUND_RETRY_MS, RESTART_HOLD_MS };
+module.exports = { TikTokLink, classifyLookup, parseRoomInput, roomFromPageHtml, RETRY_BACKOFF_MS, RATE_LIMIT_MIN_MS, CONNECTING_TIMEOUT_MS, SILENT_SOCKET_MS, BLOCKED_BACKOFF_MS, NOT_FOUND_RETRY_MS, RESTART_HOLD_MS };

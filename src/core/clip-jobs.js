@@ -167,6 +167,13 @@ class ClipJobs extends EventEmitter {
     const opts = { ...C.DEFAULTS, ...(this.getOptions() || {}) };
     const clips = () => (C.readSession(dir).clips || {});
     let sent = 0, skipped = 0, failed = 0;
+    // Nothing of the LIVE on disk (TikTok never sent the video): say so, instead of quietly marking every review
+    // "not recorded" (2.0.6 did that and the host never knew why there were no clips).
+    const notRecorded = !(session.runs || []).some((r) => (r.parts || []).length);
+    if (notRecorded && reviews.length) {
+      const f = (session.diag && session.diag.failure) || null;
+      this.log('error', `clips: nothing of ${path.basename(dir)} was recorded${f ? ` (${f.reason}: ${f.detail || f.text || ''})` : ''}; its ${reviews.length} review${reviews.length === 1 ? '' : 's'} can't be clipped`);
+    }
     // pass 1: files + highlight
     for (let i = 0; i < reviews.length; i++) {
       const r = reviews[i];
@@ -204,10 +211,10 @@ class ClipJobs extends EventEmitter {
     }
     const final = clips();
     const pending = reviews.some((r) => { const s = final[String(r.play_id)]; return !s || s.status === 'highlight_sent' || (s.status === 'failed' && (s.attempts || 0) < MAX_ATTEMPTS); });
-    this._markSession(dir, { clipsCheckedAt: new Date(this.now()).toISOString(), ...(pending ? {} : { clipsDoneAt: new Date(this.now()).toISOString() }) });
+    this._markSession(dir, { clipsCheckedAt: new Date(this.now()).toISOString(), ...(pending ? {} : { clipsDoneAt: new Date(this.now()).toISOString() }), ...(notRecorded ? { clipsNotRecorded: true } : {}) });
     sent = reviews.filter((r) => ['sent', 'highlight_sent'].includes((final[String(r.play_id)] || {}).status)).length;
-    this.emit('progress', { dir, phase: 'done', sent, skipped, failed, total: reviews.length, pending });
-    return { sent, skipped, failed, total: reviews.length, pending };
+    this.emit('progress', { dir, phase: 'done', sent, skipped, failed, total: reviews.length, pending, notRecorded });
+    return { sent, skipped, failed, total: reviews.length, pending, notRecorded };
   }
 
   // A site call or an upload that hits a network blip or a server error gets two more tries (5 s, then 20 s).

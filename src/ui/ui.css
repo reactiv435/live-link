@@ -225,4 +225,13 @@ button:focus:not(:focus-visible) { outline: none; }
 .rec.all-done { border-color: rgba(230,230,230,.35); }
 .rec.all-done .rec-dot { display: none; }
 .rec.all-done #rec-title::before { content: "\2713  "; color: #f2f2f2; }
+/* 2.0.7: the LIVE is on but isn't being recorded */
+.rec.failed { border-color: rgba(255,59,84,.85); background: linear-gradient(180deg, rgba(224,38,63,.16), rgba(224,38,63,.05)); box-shadow: 0 0 0 1px rgba(255,59,84,.35), 0 8px 24px rgba(224,38,63,.18); }
+.rec.failed #rec-title { color: #ff5a6e; letter-spacing: .02em; }
+.rec.failed .rec-note { color: #ffd9de; }
+.rec-dot.fail { background: #ff3b54; animation: none; box-shadow: 0 0 0 3px rgba(255,59,84,.25); }
+.rec-detail { margin: 0; padding: 7px 9px; border-radius: 8px; background: rgba(0,0,0,.35); border: 1px solid rgba(255,59,84,.35); color: #f0c4ca; font: 11.5px/1.45 var(--num); word-break: break-word; }
+.rec-retry { justify-self: start; padding: 8px 14px; font-size: 12.5px; }
+.rec-list li.failed { border-color: rgba(255,59,84,.6); background: rgba(224,38,63,.08); }
+.rl-fail { color: #ff5a6e; font-size: 12.5px; line-height: 1.4; }
 .banner button:disabled, .row button:disabled { opacity: .55; cursor: default; }

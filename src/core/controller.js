@@ -28,6 +28,18 @@ const STATUS_RETRY_MS = [5000, 15000, 30000, 60000];
 const POISON_5XX_TRIES = 3;
 const SITE_FINE_MS = 180000;          // the site answered this recently: a TikTok problem is not "check the internet"
 const PAUSED_REASON = 'Paused in the app';
+// The site keeps a status `reason` only if it is lowercase letters and underscores, at most 40 characters.
+const REASON_RE = /^[a-z_]{1,40}$/;
+// The checklist's "Recording" row while the LIVE is on but isn't being saved (the recording card has the details).
+const REC_SHORT = {
+  stream_restricted: "Not recording: TikTok won't share this LIVE's video (restricted, often 18+).",
+  stream_blocked: 'Not recording: TikTok is refusing the video from this network.',
+  stream_unavailable: "Not recording: TikTok hasn't sent the video.",
+  recording_failed: 'Not recording: the video TikTok gave sends nothing.',
+  recording_disk_full: 'Not recording: less than 2 GB free.',
+  recorder_missing: 'Not recording: the recorder is missing. Download LIVE Link again.',
+  recording_folder: "Not recording: can't write to the recordings folder.",
+};
 
 function semverLess(a, b) {
   const pa = String(a || '0').split('.').map(n => parseInt(n, 10) || 0);
@@ -101,6 +113,7 @@ class Controller extends EventEmitter {
       tapsPerMin: 0,                      // taps seen in the last 60 s
       lastSession: this.store.get('lastSession') || null,   // end-of-LIVE summary (kept across restarts)
       pushRejected: null,                 // { field, at } when the site turned a push down (400 validation)
+      recordingIssue: null,               // { reason, text, detail } while the TikTok LIVE is on but isn't being recorded
       gifts: freshGifts(),
       giftsEnabled: false,                // the site counts gifts for this channel (from live-link-config / pushes)
       tiktok: { ...this.link.state },
@@ -181,6 +194,20 @@ class Controller extends EventEmitter {
     this._statusBackoff = false;   // a backoff timer that was just cleared must not block status calls after a restart
     this.pushRetryStep = this.configRetryStep = this.statusRetryStep = this.refreshRetryStep = 0;
     this.link.stop();
+  }
+
+  // From the recorder (show-manager): the TikTok LIVE is on but isn't being recorded ({ reason, text, detail }), or null.
+  // While LIVE, the status reason (null otherwise) becomes that code and last_error says why, so the site's dashboard
+  // shows "LIVE but not recording" within a minute instead of a silent 0 MB show.
+  setRecordingIssue(issue) {
+    const next = issue && REASON_RE.test(String(issue.reason || '')) ? { reason: String(issue.reason), text: String(issue.text || issue.reason).slice(0, 300), detail: issue.detail ? String(issue.detail).slice(0, 300) : null } : null;
+    const cur = this.s.recordingIssue;
+    if ((cur && cur.reason) === (next && next.reason) && (cur && cur.text) === (next && next.text) && (cur && cur.detail) === (next && next.detail)) return;
+    this.s.recordingIssue = next;
+    if (next) this.log('warn', `status: LIVE but not recording (${next.reason})${next.detail ? `: ${next.detail}` : ''}`);
+    else if (cur) this.log('info', 'status: recording is fine again');
+    this._render();
+    this._statusSoon();
   }
 
   // The last word before quitting: tell the site this computer stopped watching, so the dashboard and the Go Live
@@ -837,7 +864,7 @@ class Controller extends EventEmitter {
       tiktok_live: tk.status === 'live',
       app_version: this.appVersion,
       // While paused the dashboard (and the Go Live check) show why this computer isn't watching.
-      last_error: this.s.paused ? PAUSED_REASON : (String(tk.error || this.s.siteError || '').slice(0, 500) || null),
+      last_error: this.s.paused ? PAUSED_REASON : (String(tk.error || this._recordingError() || this.s.siteError || '').slice(0, 500) || null),
       reason: this._statusReason(),
     };
     if (withTotal) {
@@ -848,12 +875,22 @@ class Controller extends EventEmitter {
   }
   _statusKey() { const b = this._statusBody(false); return `${b.connected}|${b.tiktok_live}|${this.s.tiktok.roomId}|${b.last_error || ''}|${b.reason || ''}`; }
 
+  // While LIVE and not recording: "<why> (<code>)", like the other last_error sentences.
+  _recordingError() {
+    const r = this.s.recordingIssue;
+    if (!r || this.s.tiktok.status !== 'live' || this.s.paused || !this.link.running) return null;
+    const detail = r.detail ? ` [${r.detail}]` : '';
+    return `${r.text}${detail}`.slice(0, 500 - r.reason.length - 3) + ` (${r.reason})`;
+  }
+
   // Why this computer isn't in the host's TikTok LIVE right now, as a code the site's dashboard can show (null = it is).
+  // In the LIVE but not recording it: the recording code (stream_restricted, stream_blocked, stream_unavailable,
+  // recording_failed, recording_disk_full, recorder_missing, recording_folder).
   _statusReason() {
     const tk = this.s.tiktok;
     if (this.s.paused) return 'paused';
     if (!this.link.running) return 'not_watching';
-    if (tk.status === 'live') return null;
+    if (tk.status === 'live') return this.s.recordingIssue && REASON_RE.test(this.s.recordingIssue.reason) ? this.s.recordingIssue.reason : null;
     if (tk.status === 'offline') return 'not_live';
     if (tk.status === 'connecting' || tk.status === 'reconnecting') return 'connecting';
     return { blocked: 'room_id_blocked', not_found: 'tiktok_user_not_found', 'rate-limit': 'rate_limited', wrong_room: 'manual_room_rejected' }[tk.errorKind] || 'tiktok_unreachable';
@@ -1056,6 +1093,9 @@ class Controller extends EventEmitter {
       action: ['blocked', 'wrong_room'].includes(tk.errorKind) ? 'manual' : tk.errorKind === 'not_found' ? 'dashboard' : 'check' };
     else live = { key: 'live', label: 'TikTok LIVE', state: 'wait', text: 'Getting ready...' };
     rows.push(live);
+    if (s.recordingIssue && tk.status === 'live' && running && !s.paused) {
+      rows.push({ key: 'rec', label: 'Recording', state: 'problem', text: REC_SHORT[s.recordingIssue.reason] || 'Not recording this LIVE.', action: 'check' });
+    }
     rows.push(s.siteError ? { key: 'site', label: 'reactivvibeai.com', state: 'problem', text: "Can't reach the site. Retrying by itself; taps still count." }
       : s.pushRejected && this.now() - s.pushRejected.at < 60000 ? { key: 'site', label: 'reactivvibeai.com', state: 'problem', text: 'The site turned down some tap data. Counting again from now.' }
       : s.siteOkAt ? { key: 'site', label: 'reactivvibeai.com', state: 'done', text: 'Connected.', at: s.siteOkAt }
@@ -1095,4 +1135,4 @@ class Controller extends EventEmitter {
   }
 }
 
-module.exports = { Controller, semverLess, DEFAULTS };
+module.exports = { Controller, semverLess, DEFAULTS, REASON_RE };

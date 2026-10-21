@@ -120,3 +120,23 @@ The `live-link` bucket is PRIVATE (the project blocks public buckets), files liv
     records locally either way; it uploads only when enabled, and the host can send a recording later.
     Recipe: highlight = the hottest `hot_sec` of taps + gift hype (10/coin) + the last `verdict_sec` before the host
     moved on; review start/end shift by `delay_ms` (the TikTok copy's delay) with padding; tap times are not shifted.
+
+## 2.0.7: "LIVE but not recording" (2026-10-21)
+26. **Recording reasons in the existing status fields (no new endpoint, no new field).** Until 2.0.6 `reason` was
+    always null while `tiktok_live: true`. From 2.0.7, while the app is in the host's TikTok LIVE but nothing of it has
+    been saved to disk for 60 s, `reason` (standalone status AND the status inside pushes) carries a recording code and
+    `last_error` a sentence ending in that code, e.g.
+    `"TikTok won't share this LIVE's video with LIVE Link (it answers 'restricted', code 4003110), which usually means
+    the LIVE is limited to adults (18+) or to signed-in viewers [room info: status 4003110 (restricted) · api-live: no
+    video links · LIVE page: TikTok's bot check (WAF page)] (stream_restricted)"` (<= 500 chars). Codes (all
+    `^[a-z_]{1,40}$`): `stream_restricted` (room info answers status_code 4003110 for a LIVE that is on: 18+ /
+    signed-in-only), `stream_blocked` (every TikTok request refused: HTTP 403/429, bot check, timeouts),
+    `stream_unavailable` (no answer had a video link), `recording_failed` (a link was given but ffmpeg wrote 0 bytes),
+    `recording_disk_full` (< 2 GB free), `recorder_missing` (no ffmpeg), `recording_folder` (folder not writable).
+    They clear (back to null) as soon as video is being written again or the LIVE ends. The host stopping the
+    recording, or switching it off, is not a failure (null). The site should show `tiktok_live: true` + one of these
+    codes as "LIVE, but NOT recording: <last_error>" on the dashboard / LIVE Link card (today it likely shows "connected").
+27. **session.json (local, sent by the host on request)** gains `app` (version), `streamErrors` (each distinct answer of
+    a video-link source once: `{ source, code, http, error, first, last, count }`, at most 40) and `diag`
+    (`{ tries, lastTryAt, firstVideoAt, failure, failures[], recordedBytes, result: ok|partial|failed }`); each run
+    gains `bytes`, `error`, `quality`, `kind`, `from`. A 0-byte recording is listed as "Recording failed" with the reason.

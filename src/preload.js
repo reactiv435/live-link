@@ -34,4 +34,6 @@ contextBridge.exposeInMainWorld('liveLink', {
   installUpdate: () => ipcRenderer.invoke('updater:install'),
   makeFullShow: (dir) => ipcRenderer.invoke('show:makeFullShow', String(dir || '')),
   openFullShow: (dir) => ipcRenderer.invoke('show:openFullShow', String(dir || '')),
+  // 2.0.7: "Not recording" -> ask TikTok for the video again now
+  retryRecording: () => ipcRenderer.invoke('show:retryStream'),
 });

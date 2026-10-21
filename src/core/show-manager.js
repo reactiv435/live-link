@@ -10,9 +10,9 @@
 const EventEmitter = require('events');
 const fs = require('fs');
 const path = require('path');
-const { Recorder } = require('./recorder');
+const { Recorder, FAILURE_TEXT, cleanErr } = require('./recorder');
 const { ClipJobs } = require('./clip-jobs');
-const { pickStream } = require('./stream-url');
+const { streamCandidates, whyNoStream } = require('./stream-url');
 
 const NUDGE_QUIET_MS = 120000;              // no taps for 2 min during a song...
 const NUDGE_GAP_MS = 10 * 60000;            // ...at most one nudge per 10 min
@@ -22,6 +22,72 @@ const REMIND_FREE_BYTES = 30 * 1024 ** 3;   // ...or the disk has less than 30 G
 const REMIND_EVERY_MS = 14 * 24 * 3600000;  // and not more than every 2 weeks
 const RETRY_LATER_MS = 30 * 60000;          // clips still owed after a run: try again in 30 min (3 times per app run)
 const RESUME_WINDOW_MS = 7 * 24 * 3600000;  // unfinished clips of recordings up to a week old are picked up after a restart
+const WAF_COOLDOWN_MS = 10 * 60000;         // TikTok sent its bot check instead of the LIVE page: leave the page alone 10 min
+const REFUSED_COOLDOWN_MS = 5 * 60000;      // a source answered 403/429: leave it alone 5 min (asking more extends a block)
+const ERROR_COOLDOWN_MS = 15000;            // any other failed request: not again for 15 s
+// The fewest ms between two asks of a source. Room info (webcast room/info) is the main one and may follow the recorder's
+// pace (every 4 s at the start of a LIVE); api-live and the LIVE page are TikTok's lookup pages, which it rate-limits per
+// network (the tap link needs them too), so they are asked at most every 30 s. In between, their last answer counts.
+const MIN_EVERY_MS = { room: 0, api: 30000, page: 30000, kept: 0 };
+// Answers that mean "TikTok is refusing this network", not "there is no video".
+const BLOCK_CODES = new Set(['waf', 'http_403', 'http_429', 'timeout', 'network']);
+// Why this computer isn't recording the LIVE, as status reason codes for the site (^[a-z_]{1,40}$).
+const ISSUE_TEXT = {
+  ...FAILURE_TEXT,
+  recording_disk_full: 'Not recording: less than 2 GB free on the recordings drive',
+  recorder_missing: 'Not recording: this copy of LIVE Link is missing its recorder (ffmpeg)',
+  recording_folder: "Not recording: LIVE Link can't write to the recordings folder",
+};
+
+// A failed TikTok request -> { code, http, message } for the log and session.json. got (the connector's HTTP client)
+// puts the status in response.statusCode; the connector may wrap the original error.
+function errInfo(e) {
+  const inner = (e && (e.exception || e.cause)) || null;
+  const http = Number((e && e.response && e.response.statusCode) || (inner && inner.response && inner.response.statusCode) || (e && e.statusCode) || 0) || null;
+  const message = cleanErr((e && e.message) || e) + (inner && inner.message && inner.message !== (e && e.message) ? ` (${cleanErr(inner.message, 120)})` : '');
+  const raw = String((e && e.code) || (inner && inner.code) || '');
+  let code = 'error';
+  if (raw === 'waf' || raw === 'no_room_data') code = raw;
+  else if (http) code = `http_${http}`;
+  else if (/ETIMEDOUT|ESOCKETTIMEDOUT|timed? ?out/i.test(raw + ' ' + message)) code = 'timeout';
+  else if (/ENOTFOUND|ECONNRESET|ECONNREFUSED|EAI_AGAIN|ENETUNREACH|socket hang up/i.test(raw + ' ' + message)) code = 'network';
+  else if (/blocked|captcha|SIGI_STATE/i.test(message)) code = 'waf';
+  return { code, http, message: message.slice(0, 200) };
+}
+
+// How one source's answer reads in the window and the status (short, no links).
+function tryText(t) {
+  const what = t.code === 'restricted' ? 'status 4003110 (restricted)'
+    : t.code === 'waf' ? "TikTok's bot check (WAF page)"
+    : t.code === 'ended' ? 'says the LIVE ended'
+    : t.code === 'no_stream_data' ? 'no video links'
+    : t.code === 'cooling_down' ? 'resting after a refusal'
+    : t.http ? `HTTP ${t.http}` : t.code === 'tiktok_error' ? cleanErr(t.error, 60) : t.code;
+  return `${t.source}: ${what}`;
+}
+
+// Bytes of the LIVE itself in a recording folder: the pieces, or the full-show file(s) they were joined into.
+function mediaBytes(dir, s) {
+  let n = 0;
+  const joined = new Set(((s && s.joined && s.joined.files) || []).map((f) => f && f.file).filter(Boolean));
+  try {
+    for (const f of fs.readdirSync(dir)) {
+      if (/^part-\d+-\d+\.mp4$/.test(f) || joined.has(f)) { try { n += fs.statSync(path.join(dir, f)).size; } catch {} }
+    }
+  } catch {}
+  return n;
+}
+
+// Why a recording has nothing in it: what the recorder wrote down (2.0.7+), or worked out from an older session.json
+// (2.0.6 saved no reason: no runs = TikTok never gave the video address).
+function recordingFailure(s) {
+  const d = (s && s.diag) || {};
+  const last = d.failure || (Array.isArray(d.failures) && d.failures[d.failures.length - 1]) || null;
+  if (last && last.reason) return { reason: last.reason, text: ISSUE_TEXT[last.reason] || last.text || last.reason, detail: last.detail || null };
+  const runs = Array.isArray(s && s.runs) ? s.runs : [];
+  if (!runs.length) return { reason: 'stream_unavailable', text: 'TikTok never gave LIVE Link the video for this LIVE (no video address)', detail: null };
+  return { reason: 'recording_failed', text: 'LIVE Link got a video address from TikTok, but no video arrived', detail: (runs.find((r) => r && r.error) || {}).error || null };
+}
 
 function dirBytes(dir) {
   let n = 0;
@@ -47,14 +113,16 @@ class ShowManager extends EventEmitter {
     this.lastTapAt = 0; this.songSince = 0; this.lastTarget = null; this.lastNudgeAt = -Infinity;
     this.clipTimers = new Set();
 
-    this.recorder.on('state', () => this._emit());
-    this.recorder.on('finished', ({ dir }) => this._recordingFinished(dir));
+    this._wireRecorder(this.recorder);
+    this.cooldown = new Map();      // stream source -> do not ask before (ms)
+    this.lastAnswer = new Map();    // stream source -> { at, entry }: its last answer (for paced sources)
+    this._issueKey = '';             // the recording issue last told to the controller ('' = none)
     this.retries = new Map();       // dir -> automatic re-runs this app session (uploads that didn't finish)
     this.waiting = new Set();       // recordings waiting out the short pause before their clips start
     this.lastClips = null;          // { dir, sent, failed, total, pending, at }: the last finished clip run, for "safe to close"
     this.jobs.on('progress', (p) => {
       this.clipState = ['done', 'error', 'moments_done', 'fullshow_done'].includes(p.phase) ? null : p;
-      if (p.phase === 'done') this.lastClips = { dir: p.dir, sent: p.sent, failed: p.failed, total: p.total, pending: !!p.pending, at: this.now() };
+      if (p.phase === 'done') this.lastClips = { dir: p.dir, sent: p.sent, failed: p.failed, total: p.total, pending: !!p.pending, notRecorded: !!p.notRecorded, at: this.now() };
       if (p.phase === 'fullshow_done' && p.ok && p.files) { this.lastFullShow = { dir: p.dir, files: p.files, at: this.now() }; this.emit('fullShowReady', { dir: p.dir, files: p.files }); }
       if (p.phase === 'moments_done' && p.made > 0) this.emit('momentsMade', { dir: p.dir, made: p.made, outDir: p.outDir });
       if (p.phase === 'done' && p.sent > 0) this.emit('clipsSent', { dir: p.dir, sent: p.sent, failed: p.failed });
@@ -77,9 +145,15 @@ class ShowManager extends EventEmitter {
     });
     // A gift is worth 10 taps per coin on the bar; it counts the same toward a song's hottest moment.
     link.on('gift', (g) => { if (g && g.coins > 0) this.recorder.noteActivity(g.coins * 10, this.serverNow()); });
-    this.nudgeTimer = setInterval(() => { this._checkNudge(); this._checkVideo(); }, 15000);
+    this.nudgeTimer = setInterval(() => { this._checkNudge(); }, 15000);
     if (this.nudgeTimer.unref) this.nudgeTimer.unref();
     this._checkStorage(false);
+  }
+
+  _wireRecorder(rec) {
+    rec.on('state', () => { this._syncIssue(); this._emit(); });
+    rec.on('failure', (f) => this.emit('recordingFailed', { ...f, text: ISSUE_TEXT[f.reason] || f.text }));
+    rec.on('finished', ({ dir }) => this._recordingFinished(dir));
   }
 
   root() { return this.store.get('recordRoot') || this.defaultRoot; }
@@ -125,6 +199,8 @@ class ShowManager extends EventEmitter {
     const target = s.target ? JSON.stringify(s.target) : null;
     if (target !== this.lastTarget) { this.lastTarget = target; this.songSince = this.now(); }
     this.lastS = s;
+    this.liveNow = live;
+    this._syncIssue();
     if (live !== this.prevLive) { this.prevLive = live; this._emit(); }
     // Once the app is connected (and the site has clips on), pick up any clips a restart interrupted. Not mid-LIVE.
     if (s.phase === 'ready' && !live && !this.recorder.active) this._resumePending();
@@ -134,33 +210,110 @@ class ShowManager extends EventEmitter {
     this.starting = true;
     try {
       this.room = roomId;
-      const dir = await this.recorder.start({ root: this.root(), handle: s.tiktokUsername, roomId, getStream: (fresh) => this._stream(fresh) });
+      this.cooldown.clear(); this.lastAnswer.clear();
+      const dir = await this.recorder.start({ root: this.root(), handle: s.tiktokUsername, roomId, app: this.ctl.appVersion || null, getStream: (fresh) => this._stream(fresh) });
       if (dir) this.log('info', `recording the LIVE to ${dir}`);
     } catch (e) { this.log('error', `recording: ${e && e.message}`); }
     finally { this.starting = false; this._emit(); }
   }
 
-  // The stream link. Every try asks all three places (a fresh try asks TikTok first, the kept copy last): the room info
-  // kept since connecting, a fresh room info, and the LIVE page. Which one answered goes in the log.
+  // The stream link. Every try asks every place TikTok lists the video (a fresh try asks TikTok first, the kept copy
+  // last): a fresh room info, TikTok's api-live answer, the LIVE page, and the room info kept since connecting. The first
+  // with links wins (all of its links go along, so the recorder can fall back to another quality or format). When none
+  // has one, what each answered (HTTP status, TikTok's status code, bot check...) goes to session.json and the log, and
+  // the verdict (restricted / blocked / unavailable) is what the host and the site are told if it lasts.
   async _stream(fresh) {
     const conn = this.link.conn;
-    if (!conn) return null;
-    const kept = async () => (conn.roomInfo ? pickStream(conn.roomInfo) : null);
-    const room = async () => {
-      if (typeof conn.fetchRoomInfo !== 'function') return null;
-      try { return pickStream(await conn.fetchRoomInfo()); } catch (e) { this.log('info', `recording: room info refused (${e && e.message})`); return null; }
+    if (!conn) { this.recorder.noteStreamErrors([{ source: 'tiktok', code: 'not_connected', error: 'not connected to the LIVE right now' }], { reason: 'stream_unavailable', detail: 'not connected to the LIVE right now' }); return null; }
+    const sources = {
+      room: ['room info', typeof conn.fetchRoomInfo === 'function' ? () => conn.fetchRoomInfo() : null],
+      api: ['api-live', typeof this.link.liveRoomFromApi === 'function' ? () => this.link.liveRoomFromApi() : null],
+      page: ['LIVE page', typeof this.link.liveRoomFromPage === 'function' ? () => this.link.liveRoomFromPage() : null],
+      kept: ['kept room info', conn.roomInfo ? async () => conn.roomInfo : null],
     };
-    const page = async () => {
-      if (typeof this.link.liveRoomFromPage !== 'function') return null;
-      try { return pickStream(await this.link.liveRoomFromPage()); } catch (e) { this.log('info', `recording: LIVE page refused (${e && e.message})`); return null; }
-    };
-    const order = fresh ? [['room info', room], ['LIVE page', page], ['kept room info', kept]] : [['kept room info', kept], ['room info', room], ['LIVE page', page]];
-    for (const [from, get] of order) {
-      const s = await get();
-      if (s) { this.log('info', `recording: stream ${s.quality} ${s.kind}${s.codec ? ` ${s.codec}` : ''}${s.width ? ` ${s.width}x${s.height}` : ''} (from the ${from})`); return s; }
+    const order = fresh ? ['room', 'api', 'page', 'kept'] : ['kept', 'room', 'api', 'page'];
+    const tries = [];        // what was asked this time (-> session.json)
+    const view = [];         // plus the last answer of a source not asked this time (-> the verdict)
+    const note = (key, entry) => { tries.push(entry); view.push(entry); this.lastAnswer.set(key, { at: this.now(), entry }); };
+    for (const key of order) {
+      const [source, get] = sources[key];
+      if (!get) continue;
+      const prev = this.lastAnswer.get(key);
+      if ((this.cooldown.get(key) || 0) > this.now()) { view.push(prev ? prev.entry : { source, code: 'cooling_down', error: 'refused recently: not asked this time' }); continue; }
+      if (prev && this.now() - prev.at < MIN_EVERY_MS[key]) { view.push(prev.entry); continue; }
+      try {
+        const answer = await get();
+        if (!answer) { note(key, { source, code: 'empty', error: 'no answer' }); continue; }
+        const all = streamCandidates(answer);
+        if (all.length) {
+          const s = { ...all[0], from: source, alternates: all.slice(1) };
+          if (this._lastStreamLog !== `${source}|${s.quality}|${s.kind}`) {
+            this._lastStreamLog = `${source}|${s.quality}|${s.kind}`;
+            this.log('info', `recording: stream ${s.quality} ${s.kind}${s.codec ? ` ${s.codec}` : ''}${s.width ? ` ${s.width}x${s.height}` : ''} (from the ${source}; ${all.length} link${all.length === 1 ? '' : 's'})`);
+          }
+          this.lastAnswer.delete(key);
+          if (tries.length) this.recorder.noteStreamErrors(tries);
+          return s;
+        }
+        const why = whyNoStream(answer);
+        note(key, { source, code: why.code, http: null, status: why.status || null, error: why.text });
+      } catch (e) {
+        const info = errInfo(e);
+        note(key, { source, code: info.code, http: info.http, error: info.message });
+        this.cooldown.set(key, this.now() + (info.code === 'waf' ? WAF_COOLDOWN_MS : (info.http === 403 || info.http === 429) ? REFUSED_COOLDOWN_MS : ERROR_COOLDOWN_MS));
+      }
     }
-    this.log('warn', 'recording: TikTok gave no stream link yet (room info, LIVE page and the kept copy all had none)');
+    const verdict = this._verdict(view);
+    this.recorder.noteStreamErrors(tries, verdict);
+    const summary = view.map(tryText).join(' · ') || 'no source to ask';
+    if (summary !== this._lastNoStreamLog || this.now() - (this._lastNoStreamLogAt || 0) > 600000) {
+      this._lastNoStreamLog = summary; this._lastNoStreamLogAt = this.now();
+      this.log('warn', `recording: no video link from TikTok (${verdict.reason}): ${summary}`);
+    }
+    this._lastStreamLog = null;
     return null;
+  }
+
+  // Why no source had a link. Room info answering 4003110 while TikTok's LIVE data says the LIVE is on = a LIVE TikTok
+  // won't show a signed-out viewer (18+). Every request refused (403/429, bot check, timeouts) = this network is blocked.
+  _verdict(tries) {
+    const detail = cleanErr(tries.map(tryText).join(' · '), 300) || 'no source to ask';
+    const asked = tries.filter((t) => !['kept room info', 'tiktok'].includes(t.source) && t.code !== 'cooling_down' && t.code !== 'empty');
+    const refusedAll = asked.length > 0 && asked.every((t) => BLOCK_CODES.has(t.code) || /^http_(4|5)\d\d$/.test(t.code));
+    let reason = 'stream_unavailable';
+    if (tries.some((t) => t.code === 'restricted') && this.liveNow !== false) reason = 'stream_restricted';
+    else if (refusedAll) reason = 'stream_blocked';
+    return { reason, detail };
+  }
+
+  // Ask TikTok for the video right away (the card's "Try again" and "Check TikTok now").
+  retryStream() {
+    this.cooldown.clear(); this.lastAnswer.clear();
+    return this.recorder.retryNow();
+  }
+
+  // What the host and the site are told about recording while the TikTok LIVE is on (null = recording fine, or the
+  // host chose not to record this one).
+  recordingIssue() {
+    const r = this.recorder.getState();
+    const live = !!this.liveNow;
+    if (!live) return null;
+    if (r.recording) return r.failure ? { reason: r.failure.reason, text: ISSUE_TEXT[r.failure.reason] || r.failure.text, detail: r.failure.detail || null, since: r.failure.since } : null;
+    const room = this.lastS && this.lastS.tiktok && this.lastS.tiktok.roomId ? String(this.lastS.tiktok.roomId) : null;
+    if (!this.enabled() || (this.hostStoppedRoom && (!room || room === this.hostStoppedRoom))) return null;   // the host chose not to record
+    if (!this.ffmpegOk) return { reason: 'recorder_missing', text: ISSUE_TEXT.recorder_missing, detail: null };
+    if (r.error === 'disk_full') return { reason: 'recording_disk_full', text: ISSUE_TEXT.recording_disk_full, detail: null };
+    if (r.error === 'folder') return { reason: 'recording_folder', text: ISSUE_TEXT.recording_folder, detail: null };
+    if (r.error === 'ffmpeg_missing') return { reason: 'recorder_missing', text: ISSUE_TEXT.recorder_missing, detail: null };
+    return null;
+  }
+
+  _syncIssue() {
+    const issue = this.recordingIssue();
+    const key = issue ? `${issue.reason}|${issue.detail || ''}` : '';
+    if (key === this._issueKey) return;
+    this._issueKey = key;
+    if (typeof this.ctl.setRecordingIssue === 'function') this.ctl.setRecordingIssue(issue);
   }
 
   async stopRecording(why) {
@@ -259,10 +412,16 @@ class ShowManager extends EventEmitter {
       let s;
       try { s = JSON.parse(fs.readFileSync(path.join(dir, 'session.json'), 'utf8')); } catch { continue; }
       const clips = Object.values(s.clips || {});
+      const recording = this.recorder.active && this.recorder.dir === dir;
+      const recordedBytes = mediaBytes(dir, s);
       out.push({
         dir, name, handle: s.handle, startedAt: s.startedAt, endedAt: s.endedAt,
-        recording: this.recorder.active && this.recorder.dir === dir,
+        recording,
         bytes: dirBytes(dir),
+        recordedBytes,
+        // Nothing of the LIVE on disk is never shown as a normal recording: "Recording failed" with the reason.
+        failed: recording ? (this.recorder.getState().failure ? { reason: this.recorder.getState().failure.reason, text: ISSUE_TEXT[this.recorder.getState().failure.reason] } : null)
+          : (recordedBytes > 0 ? null : recordingFailure(s)),
         clips: { sent: clips.filter((c) => c.status === 'sent').length, failed: clips.filter((c) => c.status === 'failed').length, skipped: clips.filter((c) => c.status === 'not_recorded').length },
         moments: { marked: (s.moments || []).length, made: Object.keys(s.momentClips || {}).length },
         fullShow: s.joined && Array.isArray(s.joined.files) ? s.joined.files.map((f) => f.file) : null,
@@ -341,15 +500,6 @@ class ShowManager extends EventEmitter {
     }
   }
 
-  // The LIVE is on but no video has come in for 45 s: tell the host once (the opening of the show isn't being saved).
-  _checkVideo() {
-    const r = this.recorder.getState();
-    if (!r.recording || r.video) { this.videoWarnedAt = null; return; }
-    if (!r.waitingSince || Date.now() - r.waitingSince < 45000 || this.videoWarnedAt === r.waitingSince) return;
-    this.videoWarnedAt = r.waitingSince;
-    this.emit('videoLate', { since: r.waitingSince });
-  }
-
   _checkNudge() {
     const s = this.lastS;
     if (!s || s.phase !== 'ready' || !s.connected || !s.siteLive || !s.target || s.paused || s.dryRun) return;
@@ -368,4 +518,4 @@ class ShowManager extends EventEmitter {
   }
 }
 
-module.exports = { ShowManager, NUDGE_QUIET_MS, CLIP_DELAY_MS };
+module.exports = { ShowManager, NUDGE_QUIET_MS, CLIP_DELAY_MS, ISSUE_TEXT, errInfo, recordingFailure };

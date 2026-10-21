@@ -959,6 +959,40 @@ test('status says WHY the computer is not in the LIVE: blocked lookups, unknown 
   await t.done();
 });
 
+// ---------------------------------------------------------------- 2.0.7: LIVE but not recording
+
+test('LIVE but not recording: the status reason is the recording code and last_error says why (only while LIVE)', async () => {
+  const t = await setup({ autoApprove: true });
+  await t.ctl.pair('TEST2345');
+  const body = () => t.ctl._statusBody(false);
+  t.link.goLive('R1');
+  assert.strictEqual(body().reason, null);
+  t.ctl.setRecordingIssue({ reason: 'stream_restricted', text: "TikTok won't share this LIVE's video with LIVE Link", detail: 'room info: status 4003110 (restricted)' });
+  assert.strictEqual(body().reason, 'stream_restricted');
+  assert.match(body().reason, /^[a-z_]{1,40}$/);
+  assert.match(body().last_error, /won't share.*4003110.*\(stream_restricted\)$/);
+  assert.strictEqual(body().tiktok_live, true, 'still in the LIVE: taps keep flowing');
+  assert.strictEqual(t.ctl.getState().recordingIssue.reason, 'stream_restricted', 'the window gets it too');
+  assert.ok(await until(() => t.mock.state.statuses.some((x) => x.reason === 'stream_restricted' && /\(stream_restricted\)$/.test(x.last_error) && x.tiktok_live === true)), 'sent to the site within seconds');
+  // a long detail never pushes last_error past 500 characters, and the code stays at the end
+  t.ctl.setRecordingIssue({ reason: 'recording_failed', text: 'x'.repeat(300), detail: 'y'.repeat(300) });
+  assert.ok(body().last_error.length <= 500);
+  assert.match(body().last_error, /\(recording_failed\)$/);
+  // a malformed code is never sent (the site drops anything but ^[a-z_]{1,40}$)
+  t.ctl.setRecordingIssue({ reason: 'Recording-Failed!', text: 'bad' });
+  assert.strictEqual(body().reason, null);
+  assert.strictEqual(body().last_error, null);
+  // not LIVE: the connection reason wins, the recording issue is not mentioned
+  t.ctl.setRecordingIssue({ reason: 'stream_unavailable', text: "TikTok hasn't given LIVE Link the video for this LIVE" });
+  t.link._set({ status: 'offline', errorKind: 'offline', error: null });
+  assert.strictEqual(body().reason, 'not_live');
+  assert.strictEqual(body().last_error, null);
+  t.link.goLive('R1');
+  t.ctl.setRecordingIssue(null);
+  assert.strictEqual(body().reason, null);
+  await t.done();
+});
+
 test('a blocked lookup tells the host what to do, and offers to paste the LIVE link', async () => {
   const t = await setup({ autoApprove: true });
   await t.ctl.pair('TEST2345');

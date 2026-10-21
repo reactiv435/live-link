@@ -210,7 +210,7 @@ function updateTray(s) {
     { type: 'separator' },
     { label: 'Open LIVE Link', click: showWindow },
     { label: paused ? 'Resume' : 'Pause', enabled: ready, click: () => ctl && ctl.setPaused(!(lastState && lastState.paused)) },
-    { label: 'Check TikTok now', click: () => ctl && ctl.retryNow() },
+    { label: 'Check TikTok now', click: () => { if (ctl) ctl.retryNow(); if (show) show.retryStream(); } },
     { type: 'separator' },
     { label: 'Quit (stops sending taps)', click: () => app.quit() },
   ]));
@@ -264,7 +264,8 @@ app.whenReady().then(async () => {
     if (win && !win.isDestroyed()) win.webContents.send('show', { ...st, momentKey: momentKey(), momentKeyOk });
   });
   show.on('momentsMade', (x) => notify('Moment clips ready', `${x.made} "Clip that" moment${x.made === 1 ? ' is' : 's are'} ready to post. Click to open the folder.`, () => { if (x.outDir) shell.openPath(x.outDir); }));
-  show.on('videoLate', () => notify('Recording hasn’t started yet', 'Your LIVE is on, but TikTok hasn’t sent the video yet. LIVE Link keeps asking every few seconds. If it lasts, open LIVE Link and press Check TikTok now.'));
+  // The LIVE is on but nothing has been recorded for a minute: one pop-up per failure, with the reason.
+  show.on('recordingFailed', (f) => notify('Not recording your LIVE', `${f.text}. LIVE Link keeps trying; open it for details.`, showWindow));
   show.on('nudge', () => notify('Remind chat to tap', 'Nobody has tapped for 2 minutes. Tell chat: tapping the screen fills the hype bar.'));
   // One pop-up when everything after the LIVE is done: the clips, the moments, the full-show file.
   show.on('safeToClose', (x) => {
@@ -366,6 +367,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('show:makeClips', (_e, dir) => show.makeClips(dir));
   ipcMain.handle('show:stop', async () => { await show.stopByHost(); return true; });
   ipcMain.handle('show:start', () => { show.resumeByHost(); return true; });
+  ipcMain.handle('show:retryStream', () => show.retryStream());
   ipcMain.handle('show:chooseFolder', async () => {
     const r = await dialog.showOpenDialog(win, { title: 'Where should LIVE Link save your LIVE recordings?', defaultPath: show.root(), properties: ['openDirectory', 'createDirectory'] });
     if (r.canceled || !r.filePaths || !r.filePaths[0]) return null;
@@ -380,7 +382,7 @@ app.whenReady().then(async () => {
     catch (e) { return { ok: false, code: e.code || 'error', message: e.message }; }
   });
   ipcMain.handle('unpair', () => { ctl.unpair(); return true; });
-  ipcMain.handle('retry', () => { ctl.retryNow(); return true; });
+  ipcMain.handle('retry', () => { ctl.retryNow(); if (show) show.retryStream(); return true; });
   ipcMain.handle('setManualRoom', async (_e, text) => {
     try { return await ctl.setManualRoom(String(text || '').slice(0, 500)); }
     catch (e) { log('warn', `pasted LIVE link: ${e && e.message}`); return { ok: false, error: 'error' }; }

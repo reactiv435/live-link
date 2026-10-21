@@ -40,6 +40,9 @@ test('records a LIVE and turns one review into a full review, a branded highligh
   // Wait for the 75 s stream to end (ffmpeg exits at the end of the file), then stop cleanly.
   for (let i = 0; i < 120; i++) { await sleep(1000); const s = JSON.parse(fs.readFileSync(path.join(dir, 'session.json'), 'utf8')); if (s.runs[0] && s.runs[0].endedAt) break; }
   clearInterval(burst); clearTimeout(mark);
+  // 2.0.7: the size shown while recording is read from the disk (ffmpeg reports total_size=N/A for pieces)
+  assert.ok(rec.getState().bytes > 100000, `recorded size ${rec.getState().bytes}`);
+  assert.equal(rec.getState().failure, null, 'a working recording never shows "Not recording"');
   await rec.stop();
 
   const session = C.readSession(dir);
@@ -122,6 +125,8 @@ test('records a LIVE and turns one review into a full review, a branded highligh
   assert.ok(hl2.duration > 27 && hl2.duration < 38, `remade highlight ${hl2.duration}`);
   server.close();
 
+  assert.equal(C.readSession(dir).diag.result, 'ok');
+
   // Stills for a human look: the title strip and the end card.
   if (process.env.E2E_OUT) {
     fs.mkdirSync(process.env.E2E_OUT, { recursive: true });
@@ -130,4 +135,28 @@ test('records a LIVE and turns one review into a full review, a branded highligh
     fs.copyFileSync(path.join(job, 'poster.jpg'), path.join(process.env.E2E_OUT, 'poster.jpg'));
     spawnSync(FF, ['-hide_banner', '-loglevel', 'error', '-y', '-ss', '1.5', '-i', momentFile, '-frames:v', '1', path.join(process.env.E2E_OUT, 'moment-title.png')]);
   }
+});
+
+test('a video address that gives nothing: real ffmpeg writes 0 bytes, the run is marked failed and "Not recording" follows', { skip: !RUN, timeout: 60000 }, async () => {
+  const root = fs.mkdtempSync(path.join(process.env.E2E_TMP || os.tmpdir(), 'll-e2e-fail-'));
+  // a local server that answers every request with 403, like an expired TikTok CDN link
+  const server = http.createServer((req, res) => { res.writeHead(403); res.end('Forbidden'); });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const url = `http://127.0.0.1:${server.address().port}/stage/stream-123_or4.flv?expire=1&sign=SECRET`;
+  const logs = [];
+  const rec = new Recorder({ ffmpegPath: FF, failAfterMs: 4000, healthEveryMs: 500, log: (l, m) => logs.push(`${l} ${m}`) });
+  const failures = [];
+  rec.on('failure', (f) => failures.push(f));
+  const dir = await rec.start({ root: path.join(root, 'rec'), handle: 'tester', roomId: '7', getStream: async () => ({ url, kind: 'flv', quality: 'origin', codec: 'h264' }) });
+  for (let i = 0; i < 40 && !failures.length; i++) await sleep(250);
+  await rec.stop();
+  server.close();
+  assert.equal(failures.length, 1, `no failure reported:\n${logs.join('\n')}`);
+  assert.equal(failures[0].reason, 'recording_failed');
+  const s = JSON.parse(fs.readFileSync(path.join(dir, 'session.json'), 'utf8'));
+  assert.ok(s.runs.length >= 1 && s.runs.every((r) => r.bytes === 0), JSON.stringify(s.runs));
+  assert.match(s.runs[0].error, /403|Forbidden|Server returned/i);
+  assert.doesNotMatch(JSON.stringify(s) + logs.join('\n'), /SECRET/, 'no signed link in session.json or the log');
+  assert.equal(s.diag.result, 'failed');
+  assert.ok(s.streamErrors.some((e) => e.source === 'ffmpeg' && e.code === 'no_video'));
 });

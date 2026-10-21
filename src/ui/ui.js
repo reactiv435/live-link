@@ -391,15 +391,25 @@
     const card = $('rec');
     card.classList.toggle('hidden', !current || current.phase !== 'ready');
     $('rec-dot').className = 'rec-dot' + (r.recording && r.video !== false ? ' on' : (r.recording || (st.enabled && st.ffmpegOk)) ? ' armed' : '');
-    let title, note;
-    if (!st.ffmpegOk) { title = 'Recording unavailable'; note = 'This copy of LIVE Link is missing its recorder. Download the latest version from your dashboard.'; }
+    let title, note, detail = null, failed = false, retry = false;
+    if (!st.ffmpegOk) { title = 'Recording unavailable'; note = 'This copy of LIVE Link is missing its recorder. Download the latest version from your dashboard.'; failed = !!st.live; }
+    else if (r.recording && r.failure) {
+      // LIVE, but nothing has been saved for a minute: red, with the reason, what to do, and what TikTok answered.
+      failed = true; retry = true;
+      const mins = Math.max(1, Math.round((Date.now() - (r.failure.since || Date.now())) / 60000));
+      title = 'Not recording';
+      note = `${r.failure.text}. ${FAIL_HELP[r.failure.reason] || ''} Nothing saved for ${mins} min${r.nextTryAt ? `; next try ${fmtIn(r.nextTryAt - Date.now())}` : ''}.`;
+      detail = r.failure.detail ? `What TikTok answered: ${r.failure.detail}` : null;
+    }
     else if (r.recording && !r.video) {
       const secs = r.waitingSince ? Math.round((Date.now() - r.waitingSince) / 1000) : 0;
       title = 'Starting the recording...';
-      note = `Your LIVE is on. Waiting for TikTok to send the video${secs > 5 ? ` (${secs} s)` : ''}; LIVE Link asks again every few seconds.${secs > 60 ? ' Still nothing? Press Check TikTok now.' : ''}`;
+      note = `Your LIVE is on. Waiting for TikTok to send the video${secs > 5 ? ` (${secs} s)` : ''}; LIVE Link asks again every few seconds. If nothing arrives within a minute, this card turns red with the reason.`;
+      retry = secs > 20;
     }
     else if (r.recording) { title = 'Recording your LIVE'; note = st.clipsOn ? 'When your LIVE ends, every song review becomes a clip for the artist.' : 'Saved on this computer. Review clips start once the site switches them on for your channel.'; }
-    else if (r.error === 'disk_full') { title = 'Not recording: disk almost full'; note = 'Less than 2 GB free. Delete old recordings (Recordings) or pick another folder in Settings.'; }
+    else if (r.error === 'disk_full') { title = 'Not recording: disk almost full'; note = 'Less than 2 GB free. Delete old recordings (Recordings) or pick another folder in Settings.'; failed = !!st.live; }
+    else if (r.error === 'folder' && st.live) { title = 'Not recording'; note = "LIVE Link can't write to your recordings folder. Pick another folder in Settings."; failed = true; }
     else if (!st.enabled) { title = 'Recording is off'; note = 'Switch it on in Settings to record your LIVEs and make review clips.'; }
     else if (st.live && st.hostStopped) { title = 'Recording stopped'; note = 'You stopped it for this LIVE. Press Record to start again.'; }
     else if (st.live) { title = 'Starting the recording...'; note = 'Getting your LIVE from TikTok.'; }
@@ -408,8 +418,14 @@
     const done = renderAfterShow(st, r);
     if (done) { title = done.title; note = done.note; }
     renderMoment(st, r);
+    card.classList.toggle('failed', failed && !done);
+    if (failed && !done) $('rec-dot').className = 'rec-dot fail';
     $('rec-title').textContent = title;
     $('rec-note').textContent = note;
+    const det = $('rec-detail');
+    det.classList.toggle('hidden', !detail || !!done);
+    det.textContent = detail || '';
+    $('rec-retry').classList.toggle('hidden', !retry || !!done || !bridge.retryRecording);
     const remind = $('rec-remind');
     remind.classList.toggle('hidden', !(st.storage && st.storage.remind));
     if (st.storage && st.storage.remind) remind.textContent = `Your recordings use ${fmtBytes(st.storage.totalBytes)}${st.storage.freeBytes != null ? ` and ${fmtBytes(st.storage.freeBytes)} is free` : ''}. Open Recordings to clear the ones you don't need.`;
@@ -424,6 +440,20 @@
     if (!r.recording) $('rec-preview').classList.add('hidden');
     if (!$('recordings').classList.contains('hidden')) loadRecordings();
   }
+  // What a host can do about each reason (the reason itself is in r.failure.text).
+  const FAIL_HELP = {
+    stream_restricted: 'If your LIVE is set to adults only (18+) or another audience limit, turn that off for your next LIVE. LIVE Link keeps trying.',
+    stream_blocked: 'Try another network (a phone hotspot) or restart your router. LIVE Link keeps trying.',
+    stream_unavailable: 'LIVE Link keeps asking. If it lasts, press Try again now, then send your recording folder (session.json) to support.',
+    recording_failed: 'LIVE Link keeps trying other video qualities. If it lasts, send your recording folder (session.json) and log folder to support.',
+  };
+  const fmtIn = (ms) => (ms <= 1500 ? 'now' : ms < 90000 ? `in ${Math.round(ms / 1000)} s` : `in ${Math.round(ms / 60000)} min`);
+  $('rec-retry').addEventListener('click', async () => {
+    const b = $('rec-retry');
+    b.disabled = true; b.textContent = 'Asking TikTok...';
+    try { if (bridge.retryRecording) await bridge.retryRecording(); } catch {}
+    setTimeout(() => { b.disabled = false; b.textContent = 'Try again now'; }, 2500);
+  });
   // The card after a LIVE. Busy: "Keep LIVE Link open" with what it's doing and a progress bar. Done: "safe to close".
   function renderAfterShow(st, r) {
     const bar = $('rec-progress');
@@ -442,6 +472,9 @@
       else if (c && c.phase === 'fullshow') note = 'Saving your full show as one file...';
       if (pct !== null) { bar.classList.remove('hidden'); $('rec-progress-bar').style.width = `${Math.round(pct * 100)}%`; bar.setAttribute('aria-valuenow', String(Math.round(pct * 100))); }
       return { title: 'Keep LIVE Link open: finishing your clips', note };
+    }
+    if (st.doneAt && st.lastClips && st.lastClips.notRecorded) {
+      return { title: "Done: this LIVE wasn't recorded", note: `No review clips: nothing of the LIVE was saved, so there was nothing to cut. Recordings shows why. It's safe to close LIVE Link.` };
     }
     if (st.doneAt && st.lastClips) {
       card.classList.add('all-done');
@@ -487,7 +520,7 @@
     $('rec-meta').textContent = r && r.recording ? `${fmtClock(Date.now() - r.startedAt)} · ${fmtBytes(r.bytes)}` : '';
   }
   // Once a second: the recording clock, and the "waiting for TikTok's video (N s)" count while it waits.
-  setInterval(() => { const r = show && show.recording; if (r && r.recording && r.video === false) renderShow(show); else tickRec(); }, 1000);
+  setInterval(() => { const r = show && show.recording; if (r && r.recording && (r.video === false || r.failure)) renderShow(show); else tickRec(); }, 1000);
   $('rec-toggle').addEventListener('click', () => (show && show.recording && show.recording.recording ? bridge.stopRecording() : bridge.startRecording()));
   $('rec-open').addEventListener('click', () => bridge.openRecording(show && show.recording && show.recording.recording ? show.recording.dir : ''));
   $('rec-manage').addEventListener('click', () => { $('recordings').classList.remove('hidden'); loadRecordings(); });
@@ -512,8 +545,18 @@
       const mo = x.moments || { marked: 0, made: 0 };
       const moments = mo.marked ? ` · ${mo.made} of ${mo.marked} moment clip${mo.marked === 1 ? '' : 's'}` : '';
       const full = x.fullShow ? ' · full show saved' : '';
-      meta.textContent = `@${x.handle || ''} · ${dur} · ${fmtBytes(x.bytes)} · ${clips}${moments}${full}`;
+      // Nothing of the LIVE saved: never listed like a normal recording.
+      const bad = x.failed;
+      meta.textContent = bad && !x.recording
+        ? `@${x.handle || ''} · ${dur} LIVE · nothing saved${clips === 'no clips yet' ? '' : ` · ${clips}`}`
+        : `@${x.handle || ''} · ${dur} · ${fmtBytes(x.recordedBytes != null ? x.recordedBytes : x.bytes)} · ${clips}${moments}${full}`;
       head.append(t, meta);
+      if (bad) {
+        li.classList.add('failed');
+        const why = document.createElement('span'); why.className = 'rl-fail';
+        why.textContent = `${x.recording ? 'Not recording' : 'Recording failed'}: ${bad.text}${bad.detail ? ` (${bad.detail})` : ''}`;
+        head.append(why);
+      }
       const acts = document.createElement('div'); acts.className = 'rl-acts';
       const btn = (label, cls, fn) => { const b = document.createElement('button'); b.type = 'button'; b.className = `ghost small ${cls || ''}`; b.textContent = label; b.addEventListener('click', fn); acts.append(b); return b; };
       btn('Open', '', () => bridge.openRecording(x.dir));
@@ -566,6 +609,8 @@
         steps: doneSteps.map((r) => (r.key === 'live' ? { ...r, state: 'off', text: 'Paused. Starts again when your next show starts, or press Resume.' } : r)) },
       waiting: { ...base, ...notLive, lastSession: { startedAt: Date.now() - 26 * 3600000, endedAt: Date.now() - 24.8 * 3600000, taps: 4821, accepted: 4790, peakViewers: 214, gifts: 64, giftCoins: 1186, giftTaps: 11860, topGifter: { who: 'maria', coins: 1000 }, dryRun: false }, tiktok: { status: 'offline' }, taps: { session: 0, accepted: 0 }, target: null, gifts: { units: 0, coins: 0, taps: 0, recent: [] }, message: { level: 'info', text: 'Ready. Waiting for @the_boneyard_ai to go LIVE on TikTok.' },
         steps: doneSteps.map((r) => (r.key === 'live' ? { key: 'live', label: 'TikTok LIVE', state: 'wait', text: "@the_boneyard_ai isn't LIVE yet.", retryAt: Date.now() + 24000, action: 'check' } : r)) },
+      notrec: { ...base, recordingIssue: { reason: 'stream_restricted' },
+        steps: [...doneSteps.slice(0, 4), { key: 'rec', label: 'Recording', state: 'problem', text: "Not recording: TikTok won't share this LIVE's video (restricted, often 18+).", action: 'check' }, doneSteps[4]] },
       error: { ...base, ...notLive, tiktok: { status: 'error', errorKind: 'timeout' }, message: { level: 'warn', text: "TikTok isn't answering right now (your internet works). LIVE Link keeps trying by itself." },
         steps: doneSteps.map((r) => (r.key === 'live' ? { key: 'live', label: 'TikTok LIVE', state: 'problem', text: "TikTok isn't answering (your internet works).", retryAt: Date.now() + 40000, action: 'check' } : r)) },
       blocked: { ...base, ...notLive, tiktok: { status: 'error', errorKind: 'blocked' }, message: { level: 'warn', text: 'TikTok is temporarily blocking lookups from this network. Wait a few minutes, try a phone hotspot, or paste your LIVE link in Settings.' },
@@ -598,9 +643,11 @@
       setManualRoom: async (t) => (/\d{15,}/.test(t) ? { ok: true } : { ok: false, error: 'no_room_id' }),
       onState: (f) => { listeners.push(f); return () => {}; },
       // recording demo: ?demo=live shows a recording in progress
-      getShow: async () => ({ ffmpegOk: true, enabled: true, clipsOn: true, live: pick === 'live' || pick === 'starting', hostStopped: false, root: 'C:\\Users\\host\\Videos\\LIVE Link Recordings',
+      getShow: async () => ({ ffmpegOk: true, enabled: true, clipsOn: true, live: pick === 'live' || pick === 'starting' || pick === 'notrec', hostStopped: false, root: 'C:\\Users\\host\\Videos\\LIVE Link Recordings',
         momentKey: 'F8', momentKeyOk: true,
-        recording: pick === 'starting' ? { recording: true, video: false, waitingSince: Date.now() - 22000, startedAt: Date.now() - 22000, bytes: 0, previewAt: 0, moments: 0 }
+        recording: pick === 'notrec' ? { recording: true, video: false, waitingSince: Date.now() - 95000, startedAt: Date.now() - 95000, bytes: 0, previewAt: 0, moments: 0, nextTryAt: Date.now() + 9000,
+            failure: { reason: 'stream_restricted', since: Date.now() - 95000, text: "TikTok won't share this LIVE's video with LIVE Link (it answers 'restricted', code 4003110), which usually means the LIVE is limited to adults (18+) or to signed-in viewers", detail: "room info: status 4003110 (restricted) · api-live: no video links · LIVE page: TikTok's bot check (WAF page) · kept room info: status 4003110 (restricted)" } }
+          : pick === 'starting' ? { recording: true, video: false, waitingSince: Date.now() - 22000, startedAt: Date.now() - 22000, bytes: 0, previewAt: 0, moments: 0 }
           : { recording: pick === 'live', video: true, startedAt: Date.now() - 42 * 60000, bytes: 3.1 * 1024 ** 3, previewAt: 0, moments: 2 },
         clips: pick === 'working' ? { phase: 'clip', index: 12, total: 31, title: 'Neon Override' } : null,
         busy: pick === 'working', doneAt: pick === 'done' ? Date.now() : null,
@@ -612,6 +659,8 @@
         { dir: 'a', handle: 'the_boneyard_ai', startedAt: Date.now() - 42 * 60000, endedAt: null, recording: true, bytes: 3.1 * 1024 ** 3, clips: { sent: 0, failed: 0 }, working: false },
         { dir: 'b', handle: 'the_boneyard_ai', startedAt: Date.now() - 3 * 86400000, endedAt: Date.now() - 3 * 86400000 + 2.4 * 3600000, recording: false, bytes: 8.7 * 1024 ** 3, clips: { sent: 11, failed: 1 }, moments: { marked: 4, made: 4 }, fullShow: ['b - full show.mp4'], working: false },
         { dir: 'c', handle: 'the_boneyard_ai', startedAt: Date.now() - 7 * 86400000, endedAt: Date.now() - 7 * 86400000 + 1.9 * 3600000, recording: false, bytes: 6.2 * 1024 ** 3, clips: { sent: 9, failed: 0 }, working: false },
+        { dir: 'd', handle: 'the_boneyard_ai', startedAt: Date.now() - 9 * 86400000, endedAt: Date.now() - 9 * 86400000 + 3.1 * 3600000, recording: false, bytes: 9000, recordedBytes: 0, clips: { sent: 0, failed: 0, skipped: 26 }, working: false,
+          failed: { reason: 'stream_unavailable', text: 'TikTok never gave LIVE Link the video for this LIVE (no video address)', detail: null } },
       ],
       openRecording: async () => true, deleteRecording: async () => ({ ok: true }), makeClips: async () => ({ ok: true }),
       stopRecording: async () => true, startRecording: async () => true, chooseRecordFolder: async () => null,
@@ -619,6 +668,7 @@
       getUpdater: async () => (pick === 'update' ? { status: 'ready', version: '2.0.5', progress: 1, blocked: null } : pick === 'downloading' ? { status: 'downloading', version: '2.0.5', progress: 0.42 } : { status: 'idle' }),
       onUpdater: () => () => {}, checkForUpdates: async () => ({ update: { available: false }, updater: { status: 'idle' } }),
       retryUpdate: async () => ({}), installUpdate: async () => ({ ok: true }), makeFullShow: async () => ({ ok: true }), openFullShow: async () => true,
+      retryRecording: async () => true,
     };
   }
 })();
