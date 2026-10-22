@@ -33,7 +33,18 @@
     </button>
   </header>
 
-  <div class="banner hidden" id="update-banner" role="status"><span id="update-text">A new version is ready.</span><button class="link" id="update-btn" type="button">Download</button></div>
+  <!-- 2.0.8: the update banner is big and stays until the update is installed (at most put off until the LIVE ends) -->
+  <div class="update-big hidden" id="update-banner" role="alert">
+    <div class="update-big-row">
+      <span class="update-big-kicker" aria-hidden="true">UPDATE</span>
+      <div class="update-big-body"><b class="update-big-title" id="update-text">Update LIVE Link</b><span class="update-big-note" id="update-note"></span></div>
+    </div>
+    <div class="update-big-actions">
+      <button class="update-big-btn" id="update-btn" type="button">Restart to update</button>
+      <button class="link update-alt hidden" id="update-alt" type="button">Download the installer instead</button>
+      <button class="link update-snooze hidden" id="update-snooze" type="button">Remind me after this LIVE</button>
+    </div>
+  </div>
   <div class="banner test hidden" id="test-banner" role="status">Test mode is on: taps are checked but nothing is added to the bar. Turn it off in Settings before your show.</div>
 
   <!-- PAIR -->
@@ -94,7 +105,12 @@
       <img class="rec-preview hidden" id="rec-preview" alt="What the recording is capturing right now">
       <p class="rec-note" id="rec-note"></p>
       <p class="rec-detail hidden" id="rec-detail"></p>
-      <button class="primary rec-retry hidden" id="rec-retry" type="button">Try again now</button>
+      <div class="rec-fix">
+        <button class="primary rec-retry hidden" id="rec-retry" type="button">Try again now</button>
+        <button class="primary rec-signin hidden" id="rec-signin" type="button">Sign in to TikTok</button>
+        <button class="ghost rec-capture hidden" id="rec-capture" type="button">Record my stream window instead</button>
+      </div>
+      <p class="rec-fixnote hidden" id="rec-fixnote"></p>
       <div class="rec-progress hidden" id="rec-progress" role="progressbar" aria-label="Clip progress" aria-valuemin="0" aria-valuemax="100"><span id="rec-progress-bar"></span></div>
       <p class="rec-remind hidden" id="rec-remind"></p>
       <div class="moment hidden" id="moment">
@@ -149,6 +165,12 @@
     <div class="row static"><span>Recordings folder<small id="s-recroot">-</small></span><button class="ghost small" id="s-recroot-btn" type="button">Change</button></div>
     <label class="row"><span>"Clip that" hotkey<small id="s-momentkey-note">Works while TikTok LIVE Studio is in front. Only held while LIVE Link is recording.</small></span>
       <select id="s-momentkey" aria-label="Clip that hotkey"><option value="F8">F8</option><option value="F9">F9</option><option value="F10">F10</option><option value="Ctrl+Shift+M">Ctrl+Shift+M</option><option value="off">Off (button only)</option></select></label>
+    <!-- 2.0.8: TikTok sign-in for the recorder -->
+    <div class="row static" id="s-tiktok-row"><span>TikTok sign-in for recording<small id="s-tiktok-note">Not signed in. Some LIVEs (18+, restricted) only show their video to signed-in viewers: sign in here and LIVE Link asks TikTok as you. Your password never touches LIVE Link; the sign-in stays on this computer.</small></span><button class="ghost small" id="s-tiktok-btn" type="button">Sign in</button></div>
+    <!-- 2.0.8: the back-up recording -->
+    <label class="row"><span>Back-up recording<small id="s-capture-note">If TikTok sends no video within 75 seconds (or it dies), record your stream window (TikTok LIVE Studio, OBS...) with your computer's audio instead. Review clips are made from it as usual.</small></span><input type="checkbox" id="s-capture"></label>
+    <div class="row static" id="s-capture-row"><span>Stream window to record<small id="s-capture-src">Automatic (TikTok LIVE Studio, then OBS)</small></span><button class="ghost small" id="s-capture-pick" type="button">Choose</button></div>
+    <div class="capture-pick hidden" id="capture-pick"><p class="capture-pick-title">Pick the window that shows your stream (open it first):</p><ol id="capture-pick-list"></ol></div>
     <div class="manual" id="manual">
       <span class="manual-title">Can't find your LIVE?<small>If TikTok blocks LIVE Link's lookup, paste your TikTok LIVE link (Share, then Copy link) or room ID while you're LIVE. It's used until that LIVE ends.</small></span>
       <form id="manual-form" class="manual-form" autocomplete="off"><input id="manual-input" spellcheck="false" placeholder="TikTok LIVE link or room ID" aria-label="TikTok LIVE link or room ID"><button class="ghost" id="manual-btn" type="submit">Use</button></form>
@@ -163,6 +185,17 @@
     </div>
     <p class="legal">LIVE Link is free software under the GNU AGPL-3.0. It uses the open-source <i>tiktok-live-connector</i> library and FFmpeg for recording. <button class="link" data-open="source">Source code</button> <button class="link" data-open="license">License</button></p>
   </aside>
+
+  <!-- 2.0.8: a version too old to work is blocked behind this until it updates -->
+  <div class="update-block hidden" id="update-block" role="alertdialog" aria-labelledby="update-block-title">
+    <div class="update-block-card">
+      <span class="update-big-kicker" aria-hidden="true">UPDATE REQUIRED</span>
+      <h2 id="update-block-title">Update LIVE Link</h2>
+      <p id="update-block-text">This version of LIVE Link is too old to send taps or record. Update it to keep going.</p>
+      <button class="update-big-btn" id="update-block-btn" type="button">Update now</button>
+      <button class="link" id="update-block-alt" type="button">Download the installer instead</button>
+    </div>
+  </div>
 
   <!-- RECORDINGS -->
   <aside id="recordings" class="drawer hidden" aria-label="Recordings">

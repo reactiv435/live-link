@@ -33,12 +33,18 @@ const REASON_RE = /^[a-z_]{1,40}$/;
 // The checklist's "Recording" row while the LIVE is on but isn't being saved (the recording card has the details).
 const REC_SHORT = {
   stream_restricted: "Not recording: TikTok won't share this LIVE's video (restricted, often 18+).",
+  tiktok_signin_needed: 'Not recording: TikTok shows this LIVE only to signed-in viewers. Sign in to TikTok in Settings.',
+  stream_sub_only: 'Not recording: TikTok says this LIVE is for subscribers only.',
   stream_blocked: 'Not recording: TikTok is refusing the video from this network.',
   stream_unavailable: "Not recording: TikTok hasn't sent the video.",
   recording_failed: 'Not recording: the video TikTok gave sends nothing.',
   recording_disk_full: 'Not recording: less than 2 GB free.',
   recorder_missing: 'Not recording: the recorder is missing. Download LIVE Link again.',
   recording_folder: "Not recording: can't write to the recordings folder.",
+  capture_no_window: 'Not recording: no stream window found for the back-up recording.',
+  capture_failed: 'Not recording: the back-up recording of your stream window stopped.',
+  // 2.0.8, not a failure: the back-up is recording the stream window.
+  recording_window_capture: 'Recording your stream window (TikTok sent no video).',
 };
 
 function semverLess(a, b) {
@@ -199,12 +205,14 @@ class Controller extends EventEmitter {
   // From the recorder (show-manager): the TikTok LIVE is on but isn't being recorded ({ reason, text, detail }), or null.
   // While LIVE, the status reason (null otherwise) becomes that code and last_error says why, so the site's dashboard
   // shows "LIVE but not recording" within a minute instead of a silent 0 MB show.
+  // `level` 'info' (2.0.8) = not a failure, just how it's being recorded (the back-up capture of the stream window).
   setRecordingIssue(issue) {
-    const next = issue && REASON_RE.test(String(issue.reason || '')) ? { reason: String(issue.reason), text: String(issue.text || issue.reason).slice(0, 300), detail: issue.detail ? String(issue.detail).slice(0, 300) : null } : null;
+    const next = issue && REASON_RE.test(String(issue.reason || '')) ? { reason: String(issue.reason), text: String(issue.text || issue.reason).slice(0, 300), detail: issue.detail ? String(issue.detail).slice(0, 300) : null, level: issue.level === 'info' ? 'info' : 'problem' } : null;
     const cur = this.s.recordingIssue;
-    if ((cur && cur.reason) === (next && next.reason) && (cur && cur.text) === (next && next.text) && (cur && cur.detail) === (next && next.detail)) return;
+    if ((cur && cur.reason) === (next && next.reason) && (cur && cur.text) === (next && next.text) && (cur && cur.detail) === (next && next.detail) && (cur && cur.level) === (next && next.level)) return;
     this.s.recordingIssue = next;
-    if (next) this.log('warn', `status: LIVE but not recording (${next.reason})${next.detail ? `: ${next.detail}` : ''}`);
+    if (next && next.level === 'info') this.log('info', `status: ${next.reason}${next.detail ? ` (${next.detail})` : ''}`);
+    else if (next) this.log('warn', `status: LIVE but not recording (${next.reason})${next.detail ? `: ${next.detail}` : ''}`);
     else if (cur) this.log('info', 'status: recording is fine again');
     this._render();
     this._statusSoon();
@@ -1094,7 +1102,8 @@ class Controller extends EventEmitter {
     else live = { key: 'live', label: 'TikTok LIVE', state: 'wait', text: 'Getting ready...' };
     rows.push(live);
     if (s.recordingIssue && tk.status === 'live' && running && !s.paused) {
-      rows.push({ key: 'rec', label: 'Recording', state: 'problem', text: REC_SHORT[s.recordingIssue.reason] || 'Not recording this LIVE.', action: 'check' });
+      const info = s.recordingIssue.level === 'info';
+      rows.push({ key: 'rec', label: 'Recording', state: info ? 'done' : 'problem', text: REC_SHORT[s.recordingIssue.reason] || (info ? 'Recording.' : 'Not recording this LIVE.'), ...(info ? {} : { action: 'check' }) });
     }
     rows.push(s.siteError ? { key: 'site', label: 'reactivvibeai.com', state: 'problem', text: "Can't reach the site. Retrying by itself; taps still count." }
       : s.pushRejected && this.now() - s.pushRejected.at < 60000 ? { key: 'site', label: 'reactivvibeai.com', state: 'problem', text: 'The site turned down some tap data. Counting again from now.' }

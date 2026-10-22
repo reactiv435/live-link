@@ -15,6 +15,16 @@ the hype bar on your reactivvibeai.com show.
 
 The app never asks for your TikTok password. It watches your LIVE the way a viewer would.
 
+### Recording (2.0+)
+LIVE Link records each TikTok LIVE on your computer and, after the LIVE, turns every song review into a clip for the
+artist. If TikTok won't hand LIVE Link your LIVE's video (the recording card turns red and says why), 2.0.8 gives you
+two ways to record anyway, both optional and both only on your computer:
+- **Sign in to TikTok inside LIVE Link** (Settings, or the red card's button): TikTok's own login page opens in a
+  LIVE Link window; LIVE Link then asks TikTok for your video as a signed-in viewer (some LIVEs, e.g. 18+, only show
+  their video to signed-in viewers). Your password never touches LIVE Link; "Sign out" clears it.
+- **Back-up recording** (Settings): if TikTok sends no video within 75 seconds, LIVE Link records your stream window
+  (TikTok LIVE Studio or OBS) with your computer's audio instead, and makes the clips from that.
+
 ## How it works
 - TikTok: `tiktok-live-connector` 2.4.4, the same library and reconnect rules the T.O.S CREW show program uses.
   It connects by username (no login), holds TikTok's live WebSocket open for the whole show, and reads like

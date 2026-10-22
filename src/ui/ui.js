@@ -51,36 +51,61 @@
   // ---------------------------------------------------------------- update banner
   // 2.0.5: the update downloads by itself (never during a LIVE, a recording or while clips are made) and installs on
   // "Restart to update". Without the in-app updater (demo), it falls back to the download link.
-  let upd = null;
+  // 2.0.8: the banner is BIG and stays until the update is installed. During a LIVE it can be put off ("Remind me after
+  // this LIVE"), never while idle. A version too old to work (update_required) blocks the whole window instead.
+  let upd = null, snoozed = null;   // snoozed = { version } while a LIVE is on and the host put the banner off
   const WAIT_FOR = { recording: 'your recording ends', clips: 'your clips are done', live: 'your LIVE ends' };
   function renderUpdate(s) {
     s = s || current || {};
     const need = s.phase === 'update_required', avail = !!(s.update && s.update.available);
     const u = upd && upd.status !== 'idle' ? upd : null;
-    const banner = $('update-banner'), btn = $('update-btn'), text = $('update-text');
-    banner.classList.toggle('hidden', !need && !avail && !u);
-    renderUpdateSetting();
-    if (banner.classList.contains('hidden')) return;
     const v = (u && u.version) || (s.update && s.update.version) || '';
-    const show = (label, action, disabled = false) => { btn.textContent = label; btn.dataset.action = action; btn.disabled = disabled; btn.classList.remove('hidden'); };
-    btn.classList.add('hidden');
-    if (u && u.status === 'ready') { text.textContent = u.blocked ? `LIVE Link ${v} is ready. It can install once ${WAIT_FOR[u.blocked] || 'you finish'}.` : `LIVE Link ${v} is ready to install.`; show('Restart to update', 'install', !!u.blocked); return; }
-    if (u && u.status === 'downloading') { text.textContent = `Downloading LIVE Link ${v}... ${Math.round((u.progress || 0) * 100)}%`; return; }
-    if (u && u.status === 'installing') { text.textContent = `Installing LIVE Link ${v}. It opens again by itself in a moment.`; return; }
-    if (u && u.status === 'waiting') { text.textContent = `LIVE Link ${v} is out. It downloads by itself once ${WAIT_FOR[u.blocked] || 'your LIVE ends'}.`; return; }
-    if (u && u.status === 'error') { text.textContent = `Couldn't download LIVE Link ${v}.`; show('Try again', 'retry'); return; }
-    text.textContent = need ? 'This version is too old to send taps. Get the new one.' : `LIVE Link ${v} is out.`;
-    show('Download', 'open');
+    const live = !!s.connected;
+    if (snoozed && (!live || snoozed.version !== v)) snoozed = null;   // the LIVE ended (or a newer version came): show it again
+    const banner = $('update-banner'), btn = $('update-btn'), text = $('update-text'), note = $('update-note');
+    const alt = $('update-alt'), snooze = $('update-snooze'), block = $('update-block');
+    renderUpdateSetting();
+    block.classList.toggle('hidden', !need);
+    if (need) {
+      // Blocked: the same update flow, full window. Installs the moment it is ready (nothing else can run anyway).
+      $('update-block-text').textContent = u && u.status === 'ready' ? `LIVE Link ${v} is downloaded and ready. Click Update now: it restarts by itself.`
+        : u && u.status === 'downloading' ? `Downloading LIVE Link ${v}... ${Math.round((u.progress || 0) * 100)}%. It installs when the download is done.`
+        : u && u.status === 'installing' ? `Installing LIVE Link ${v}. It opens again by itself in a moment.`
+        : u && u.status === 'error' ? `Couldn't download LIVE Link ${v} by itself. Download the installer and run it.`
+        : 'This version of LIVE Link is too old to send taps or record. Update it to keep going.';
+      const bb = $('update-block-btn');
+      bb.textContent = u && u.status === 'ready' ? 'Update now' : u && u.status === 'error' ? 'Try again' : u && (u.status === 'downloading' || u.status === 'installing') ? 'Updating...' : 'Update now';
+      bb.dataset.action = u && u.status === 'ready' ? 'install' : u && u.status === 'error' ? 'retry' : u && (u.status === 'downloading' || u.status === 'installing') ? 'none' : 'check';
+      bb.disabled = bb.dataset.action === 'none';
+    }
+    banner.classList.toggle('hidden', need || !avail && !u || !!snoozed);
+    if (banner.classList.contains('hidden')) return;
+    const show = (label, action, disabled = false) => { btn.textContent = label; btn.dataset.action = action; btn.disabled = disabled; };
+    alt.classList.toggle('hidden', !(s.update && s.update.url) && !need);
+    snooze.classList.toggle('hidden', !live);
+    text.textContent = `Update LIVE Link: ${v || 'a new version'} is ${u && u.status === 'ready' ? 'ready' : u && u.status === 'downloading' ? 'downloading' : u && u.status === 'installing' ? 'installing' : 'out'}`;
+    if (u && u.status === 'ready') { note.textContent = u.blocked ? `Downloaded and checked. It installs when ${WAIT_FOR[u.blocked] || 'you finish'} (never during a LIVE, a recording or your clips).` : 'Downloaded and checked. Click to install: LIVE Link restarts by itself in a few seconds.'; show('Restart to update', 'install', !!u.blocked); return; }
+    if (u && u.status === 'downloading') { note.textContent = `${Math.round((u.progress || 0) * 100)}% downloaded. It installs with one click when it's done.`; show('Downloading...', 'none', true); return; }
+    if (u && u.status === 'installing') { note.textContent = 'LIVE Link opens again by itself in a moment.'; show('Installing...', 'none', true); return; }
+    if (u && u.status === 'waiting') { note.textContent = `It downloads by itself once ${WAIT_FOR[u.blocked] || 'your LIVE ends'}, then installs with one click.`; show('Update when my LIVE ends', 'none', true); return; }
+    if (u && u.status === 'error') { note.textContent = "Couldn't download it by itself. Try again, or download the installer."; show('Try again', 'retry'); alt.classList.remove('hidden'); return; }
+    note.textContent = 'Click to download and install it now. It never installs during a LIVE, a recording or while clips are made.';
+    show('Update now', 'check');
   }
-  $('update-btn').addEventListener('click', async () => {
-    const a = $('update-btn').dataset.action;
+  async function updateAction(a, btn) {
     if (a === 'install' && bridge.installUpdate) {
-      $('update-btn').disabled = true;
+      btn.disabled = true;
       const r = await bridge.installUpdate();
-      if (!r || !r.ok) { $('update-text').textContent = r && WAIT_FOR[r.error] ? `It can install once ${WAIT_FOR[r.error]}.` : "Couldn't start the installer. Use Download instead."; $('update-btn').disabled = false; if (!(r && WAIT_FOR[r.error])) { $('update-btn').textContent = 'Download'; $('update-btn').dataset.action = 'open'; } }
+      if (!r || !r.ok) { $('update-note').textContent = r && WAIT_FOR[r.error] ? `It can install once ${WAIT_FOR[r.error]}.` : "Couldn't start the installer. Download it instead."; btn.disabled = false; if (!(r && WAIT_FOR[r.error])) $('update-alt').classList.remove('hidden'); }
     } else if (a === 'retry' && bridge.retryUpdate) bridge.retryUpdate();
-    else bridge.open('update');
-  });
+    else if (a === 'check' && bridge.checkForUpdates) { btn.disabled = true; try { const r = await bridge.checkForUpdates(); if (r && r.updater) upd = r.updater; } catch {} btn.disabled = false; renderUpdate(); }
+    else if (a !== 'none') bridge.open('update');
+  }
+  $('update-btn').addEventListener('click', () => updateAction($('update-btn').dataset.action, $('update-btn')));
+  $('update-block-btn').addEventListener('click', () => updateAction($('update-block-btn').dataset.action, $('update-block-btn')));
+  $('update-alt').addEventListener('click', () => bridge.open('update'));
+  $('update-block-alt').addEventListener('click', () => bridge.open('update'));
+  $('update-snooze').addEventListener('click', () => { const s = current || {}; if (!s.connected) return; snoozed = { version: (upd && upd.version) || (s.update && s.update.version) || '' }; renderUpdate(); });
   // Settings > Version: the status and one button (Check for updates / Restart to update).
   function renderUpdateSetting(note) {
     const b = $('s-update-btn'); if (!b) return;
@@ -314,6 +339,13 @@
     $('s-recroot').textContent = st.recordRoot || '-';
     $('s-momentkey').value = st.momentKey || 'F8';
     momentKeyNote(st.momentKeyOk !== false);
+    renderTikTokSetting(!!st.tiktokSignedIn);
+    $('s-capture').checked = !!st.captureEnabled;
+    $('s-capture').disabled = st.captureAvailable === false;
+    $('s-capture-note').textContent = st.captureAvailable === false ? 'Not available in this copy of LIVE Link.'
+      : `If TikTok sends no video within 75 seconds (or it dies), record your stream window (TikTok LIVE Studio, OBS...) ${st.captureAudio === 'microphone' ? 'with your microphone (a Mac can\'t capture its own audio this way)' : "with your computer's audio"} instead. Review clips are made from it as usual.`;
+    $('s-capture-src').textContent = st.captureSource ? st.captureSource : 'Automatic (TikTok LIVE Studio, then OBS)';
+    $('capture-pick').classList.add('hidden');
     const ts = $('s-testserver');
     ts.classList.toggle('hidden', !st.testServer);
     if (st.testServer) ts.textContent = `Connected to a TEST server: ${st.testServer}`;
@@ -371,6 +403,46 @@
     if (r && r.root) $('s-recroot').textContent = r.root;
     else if (r && r.error === 'recording') $('s-recroot').textContent += ' (change it after this LIVE ends)';
   });
+  // 2.0.8: TikTok sign-in for the recorder (Settings), and the back-up recording's window.
+  let ttSignedIn = false;
+  function renderTikTokSetting(signedIn, note) {
+    ttSignedIn = !!signedIn;
+    const b = $('s-tiktok-btn'), n = $('s-tiktok-note');
+    b.textContent = signedIn ? 'Sign out' : 'Sign in';
+    b.disabled = !bridge.tiktokSignIn;
+    n.textContent = note || (signedIn
+      ? 'Signed in. LIVE Link asks TikTok for your LIVE video as a signed-in viewer (needed for 18+ / restricted LIVEs). The sign-in stays on this computer; LIVE Link never sees your password.'
+      : 'Not signed in. Some LIVEs (18+, restricted) only show their video to signed-in viewers: sign in here and LIVE Link asks TikTok as you. Your password never touches LIVE Link; the sign-in stays on this computer.');
+    if (show) renderShow(show);
+  }
+  async function tiktokSignInClick() {
+    if (!bridge.tiktokSignIn) return;
+    if (ttSignedIn) { if (!confirm('Sign out of TikTok in LIVE Link? Restricted LIVEs may stop recording until you sign in again.')) return; await bridge.tiktokSignOut(); renderTikTokSetting(false, 'Signed out of TikTok.'); return; }
+    renderTikTokSetting(false, 'Opening TikTok\'s sign-in page in a LIVE Link window...');
+    await bridge.tiktokSignIn();
+  }
+  $('s-tiktok-btn').addEventListener('click', tiktokSignInClick);
+  if (bridge.onTikTok) bridge.onTikTok((s) => { renderTikTokSetting(!!(s && s.signedIn), s && s.note); });
+  $('s-capture').addEventListener('change', async (e) => { const r = await bridge.setSetting('captureEnabled', e.target.checked); if (r && r.ok === true) e.target.checked = !!r.enabled; });
+  $('s-capture-pick').addEventListener('click', async () => {
+    const box = $('capture-pick'), ol = $('capture-pick-list');
+    if (!box.classList.contains('hidden')) { box.classList.add('hidden'); return; }
+    ol.textContent = '';
+    const list = bridge.captureSources ? (await bridge.captureSources()) || [] : [];
+    const cur = $('s-capture-src').textContent;
+    const add = (label, value, sub) => {
+      const li = document.createElement('li'); const b = document.createElement('button'); b.type = 'button';
+      b.textContent = label; if (sub) { const s = document.createElement('small'); s.textContent = sub; b.append(s); }
+      if ((value || 'Automatic (TikTok LIVE Studio, then OBS)') === cur) b.classList.add('chosen');
+      b.addEventListener('click', async () => { await bridge.setSetting('captureSource', value); $('s-capture-src').textContent = value || 'Automatic (TikTok LIVE Studio, then OBS)'; box.classList.add('hidden'); });
+      li.append(b); ol.append(li);
+    };
+    add('Automatic (TikTok LIVE Studio, then OBS)', null, null);
+    for (const s of list.filter((x) => x.kind !== 'screen')) add(s.name, s.name, null);
+    for (const s of list.filter((x) => x.kind === 'screen')) add(s.name, s.name, 'whole screen');
+    if (!list.length) add('No windows found. Open your stream tool first.', null, null);
+    box.classList.remove('hidden');
+  });
   $('unpair').addEventListener('click', async () => {
     if (!confirm('Remove this computer from your account? It stops sending taps until you connect it again with a new code from your dashboard. (To stop for a while, use Pause instead.)')) return;
     await bridge.unpair();
@@ -391,7 +463,7 @@
     const card = $('rec');
     card.classList.toggle('hidden', !current || current.phase !== 'ready');
     $('rec-dot').className = 'rec-dot' + (r.recording && r.video !== false ? ' on' : (r.recording || (st.enabled && st.ffmpegOk)) ? ' armed' : '');
-    let title, note, detail = null, failed = false, retry = false;
+    let title, note, detail = null, failed = false, retry = false, backup = false, signin = false, capture = false, fixnote = null;
     if (!st.ffmpegOk) { title = 'Recording unavailable'; note = 'This copy of LIVE Link is missing its recorder. Download the latest version from your dashboard.'; failed = !!st.live; }
     else if (r.recording && r.failure) {
       // LIVE, but nothing has been saved for a minute: red, with the reason, what to do, and what TikTok answered.
@@ -400,6 +472,18 @@
       title = 'Not recording';
       note = `${r.failure.text}. ${FAIL_HELP[r.failure.reason] || ''} Nothing saved for ${mins} min${r.nextTryAt ? `; next try ${fmtIn(r.nextTryAt - Date.now())}` : ''}.`;
       detail = r.failure.detail ? `What TikTok answered: ${r.failure.detail}` : null;
+      // 2.0.8: what the host can do about it. Sign in to TikTok (restricted / blocked LIVEs), or record the stream window.
+      signin = SIGNIN_REASONS.includes(r.failure.reason) && !st.signedIn && st.signInAvailable !== false && !!bridge.tiktokSignIn;
+      capture = !!st.captureAvailable && !!bridge.captureNow;
+      if (signin) fixnote = 'Sign in to TikTok once (TikTok\'s own page, in a LIVE Link window): LIVE Link then asks for your LIVE video as a signed-in viewer.';
+      else if (st.signedIn && SIGNIN_REASONS.includes(r.failure.reason)) fixnote = 'You are signed in to TikTok, and it still shares no video. Record your stream window instead (below), and send session.json to support.';
+      if (capture) fixnote = `${fixnote ? fixnote + ' ' : ''}${st.captureEnabled ? 'The back-up recording is on: it starts by itself when it finds your stream window.' : 'Or record your stream window (TikTok LIVE Studio or OBS) with your computer\'s audio: one click, this LIVE only unless you switch it on in Settings.'}`;
+    }
+    else if (r.recording && r.capture) {
+      // 2.0.8: the back-up is recording the host's stream window.
+      backup = true;
+      title = 'Recording your stream window';
+      note = `TikTok isn't sending LIVE Link your LIVE video, so LIVE Link is recording "${r.capture.source || 'your stream window'}" ${st.captureAudio === 'microphone' ? 'with your microphone' : "with your computer's audio"} instead. Review clips are made from it after your LIVE as usual. Keep that window open (it may be behind others).`;
     }
     else if (r.recording && !r.video) {
       const secs = r.waitingSince ? Math.round((Date.now() - r.waitingSince) / 1000) : 0;
@@ -419,6 +503,7 @@
     if (done) { title = done.title; note = done.note; }
     renderMoment(st, r);
     card.classList.toggle('failed', failed && !done);
+    card.classList.toggle('backup', backup && !done);
     if (failed && !done) $('rec-dot').className = 'rec-dot fail';
     $('rec-title').textContent = title;
     $('rec-note').textContent = note;
@@ -426,6 +511,11 @@
     det.classList.toggle('hidden', !detail || !!done);
     det.textContent = detail || '';
     $('rec-retry').classList.toggle('hidden', !retry || !!done || !bridge.retryRecording);
+    $('rec-signin').classList.toggle('hidden', !signin || !!done);
+    $('rec-capture').classList.toggle('hidden', !capture || !!done);
+    const fn = $('rec-fixnote');
+    fn.classList.toggle('hidden', !fixnote || !!done);
+    fn.textContent = fixnote || '';
     const remind = $('rec-remind');
     remind.classList.toggle('hidden', !(st.storage && st.storage.remind));
     if (st.storage && st.storage.remind) remind.textContent = `Your recordings use ${fmtBytes(st.storage.totalBytes)}${st.storage.freeBytes != null ? ` and ${fmtBytes(st.storage.freeBytes)} is free` : ''}. Open Recordings to clear the ones you don't need.`;
@@ -442,17 +532,31 @@
   }
   // What a host can do about each reason (the reason itself is in r.failure.text).
   const FAIL_HELP = {
-    stream_restricted: 'If your LIVE is set to adults only (18+) or another audience limit, turn that off for your next LIVE. LIVE Link keeps trying.',
-    stream_blocked: 'Try another network (a phone hotspot) or restart your router. LIVE Link keeps trying.',
+    stream_restricted: 'Sign in to TikTok in LIVE Link (below) so it can ask as a signed-in viewer, or turn off the audience limit (18+) for your next LIVE. LIVE Link keeps trying.',
+    tiktok_signin_needed: 'Sign in to TikTok in LIVE Link (below): it then asks for your LIVE video as a signed-in viewer. LIVE Link keeps trying meanwhile.',
+    stream_sub_only: 'A subscribers-only or paid LIVE shares no video with viewers who are not in. Record your stream window instead (below).',
+    stream_blocked: 'Sign in to TikTok in LIVE Link (below), try another network (a phone hotspot) or restart your router. LIVE Link keeps trying.',
     stream_unavailable: 'LIVE Link keeps asking. If it lasts, press Try again now, then send your recording folder (session.json) to support.',
     recording_failed: 'LIVE Link keeps trying other video qualities. If it lasts, send your recording folder (session.json) and log folder to support.',
+    capture_no_window: 'Open TikTok LIVE Studio or OBS, or pick the window in Settings (Stream window to record). LIVE Link looks again every minute.',
+    capture_failed: 'Check that your stream window is still open, then press Record my stream window instead.',
   };
+  // Reasons the TikTok sign-in can fix (the red card offers the button for these while not signed in).
+  const SIGNIN_REASONS = ['tiktok_signin_needed', 'stream_restricted', 'stream_blocked'];
   const fmtIn = (ms) => (ms <= 1500 ? 'now' : ms < 90000 ? `in ${Math.round(ms / 1000)} s` : `in ${Math.round(ms / 60000)} min`);
   $('rec-retry').addEventListener('click', async () => {
     const b = $('rec-retry');
     b.disabled = true; b.textContent = 'Asking TikTok...';
     try { if (bridge.retryRecording) await bridge.retryRecording(); } catch {}
     setTimeout(() => { b.disabled = false; b.textContent = 'Try again now'; }, 2500);
+  });
+  $('rec-signin').addEventListener('click', () => { if (bridge.tiktokSignIn) bridge.tiktokSignIn(); });
+  $('rec-capture').addEventListener('click', async () => {
+    const b = $('rec-capture');
+    b.disabled = true; b.textContent = 'Starting the back-up...';
+    let r = null;
+    try { r = bridge.captureNow ? await bridge.captureNow() : null; } catch {}
+    setTimeout(() => { b.disabled = false; b.textContent = 'Record my stream window instead'; if (r && r.ok === false) $('rec-fixnote').textContent = r.error === 'unavailable' ? 'The back-up recording is not available in this copy of LIVE Link.' : "Couldn't start the back-up recording right now."; }, 2500);
   });
   // The card after a LIVE. Busy: "Keep LIVE Link open" with what it's doing and a progress bar. Done: "safe to close".
   function renderAfterShow(st, r) {
@@ -465,7 +569,8 @@
     if (st.busy) {
       card.classList.add('working');
       let note = 'Your LIVE ended. Your clips start in a moment.', pct = null;
-      if (c && c.phase === 'reviews') note = 'Finding the reviews from your LIVE...';
+      if (c && c.phase === 'capture') note = 'Preparing your back-up recording (cutting the stream window capture into pieces)...';
+      else if (c && c.phase === 'reviews') note = 'Finding the reviews from your LIVE...';
       else if (c && c.phase === 'clip') { note = `Making review clips: ${c.index} of ${c.total}${c.title ? ` · ${c.title}` : ''}. About ${Math.max(1, Math.round((c.total - c.index + 1) * 1.5))} min left.`; pct = (c.index - 1) / Math.max(1, c.total); }
       else if (c && c.phase === 'full') { note = `Every artist has their clip. Uploading the full reviews: ${c.index} of ${c.total}.`; pct = (c.index - 1) / Math.max(1, c.total); }
       else if (c && c.phase === 'moment') { note = `Making your "Clip that" moments: ${c.index} of ${c.total}.`; pct = (c.index - 1) / Math.max(1, c.total); }
@@ -545,11 +650,12 @@
       const mo = x.moments || { marked: 0, made: 0 };
       const moments = mo.marked ? ` · ${mo.made} of ${mo.marked} moment clip${mo.marked === 1 ? '' : 's'}` : '';
       const full = x.fullShow ? ' · full show saved' : '';
+      const backup = x.captured ? ' · back-up recording (stream window)' : '';
       // Nothing of the LIVE saved: never listed like a normal recording.
       const bad = x.failed;
       meta.textContent = bad && !x.recording
         ? `@${x.handle || ''} · ${dur} LIVE · nothing saved${clips === 'no clips yet' ? '' : ` · ${clips}`}`
-        : `@${x.handle || ''} · ${dur} · ${fmtBytes(x.recordedBytes != null ? x.recordedBytes : x.bytes)} · ${clips}${moments}${full}`;
+        : `@${x.handle || ''} · ${dur} · ${fmtBytes(x.recordedBytes != null ? x.recordedBytes : x.bytes)} · ${clips}${moments}${full}${backup}`;
       head.append(t, meta);
       if (bad) {
         li.classList.add('failed');
@@ -609,8 +715,11 @@
         steps: doneSteps.map((r) => (r.key === 'live' ? { ...r, state: 'off', text: 'Paused. Starts again when your next show starts, or press Resume.' } : r)) },
       waiting: { ...base, ...notLive, lastSession: { startedAt: Date.now() - 26 * 3600000, endedAt: Date.now() - 24.8 * 3600000, taps: 4821, accepted: 4790, peakViewers: 214, gifts: 64, giftCoins: 1186, giftTaps: 11860, topGifter: { who: 'maria', coins: 1000 }, dryRun: false }, tiktok: { status: 'offline' }, taps: { session: 0, accepted: 0 }, target: null, gifts: { units: 0, coins: 0, taps: 0, recent: [] }, message: { level: 'info', text: 'Ready. Waiting for @the_boneyard_ai to go LIVE on TikTok.' },
         steps: doneSteps.map((r) => (r.key === 'live' ? { key: 'live', label: 'TikTok LIVE', state: 'wait', text: "@the_boneyard_ai isn't LIVE yet.", retryAt: Date.now() + 24000, action: 'check' } : r)) },
-      notrec: { ...base, recordingIssue: { reason: 'stream_restricted' },
-        steps: [...doneSteps.slice(0, 4), { key: 'rec', label: 'Recording', state: 'problem', text: "Not recording: TikTok won't share this LIVE's video (restricted, often 18+).", action: 'check' }, doneSteps[4]] },
+      notrec: { ...base, recordingIssue: { reason: 'tiktok_signin_needed' },
+        steps: [...doneSteps.slice(0, 4), { key: 'rec', label: 'Recording', state: 'problem', text: 'Not recording: TikTok shows this LIVE only to signed-in viewers. Sign in to TikTok in Settings.', action: 'check' }, doneSteps[4]] },
+      backup: { ...base, recordingIssue: { reason: 'recording_window_capture', level: 'info' },
+        steps: [...doneSteps.slice(0, 4), { key: 'rec', label: 'Recording', state: 'done', text: 'Recording your stream window (TikTok sent no video).' }, doneSteps[4]] },
+      required: { ...base, phase: 'update_required', update: { available: true, version: '2.0.8', url: 'https://reactivvibeai.com/x' } },
       error: { ...base, ...notLive, tiktok: { status: 'error', errorKind: 'timeout' }, message: { level: 'warn', text: "TikTok isn't answering right now (your internet works). LIVE Link keeps trying by itself." },
         steps: doneSteps.map((r) => (r.key === 'live' ? { key: 'live', label: 'TikTok LIVE', state: 'problem', text: "TikTok isn't answering (your internet works).", retryAt: Date.now() + 40000, action: 'check' } : r)) },
       blocked: { ...base, ...notLive, tiktok: { status: 'error', errorKind: 'blocked' }, message: { level: 'warn', text: 'TikTok is temporarily blocking lookups from this network. Wait a few minutes, try a phone hotspot, or paste your LIVE link in Settings.' },
@@ -643,10 +752,11 @@
       setManualRoom: async (t) => (/\d{15,}/.test(t) ? { ok: true } : { ok: false, error: 'no_room_id' }),
       onState: (f) => { listeners.push(f); return () => {}; },
       // recording demo: ?demo=live shows a recording in progress
-      getShow: async () => ({ ffmpegOk: true, enabled: true, clipsOn: true, live: pick === 'live' || pick === 'starting' || pick === 'notrec', hostStopped: false, root: 'C:\\Users\\host\\Videos\\LIVE Link Recordings',
-        momentKey: 'F8', momentKeyOk: true,
+      getShow: async () => ({ ffmpegOk: true, enabled: true, clipsOn: true, live: pick === 'live' || pick === 'starting' || pick === 'notrec' || pick === 'backup', hostStopped: false, root: 'C:\\Users\\host\\Videos\\LIVE Link Recordings',
+        momentKey: 'F8', momentKeyOk: true, signedIn: false, signInAvailable: true, captureAvailable: true, captureEnabled: pick === 'backup', captureSource: null, captureAudio: 'system',
         recording: pick === 'notrec' ? { recording: true, video: false, waitingSince: Date.now() - 95000, startedAt: Date.now() - 95000, bytes: 0, previewAt: 0, moments: 0, nextTryAt: Date.now() + 9000,
-            failure: { reason: 'stream_restricted', since: Date.now() - 95000, text: "TikTok won't share this LIVE's video with LIVE Link (it answers 'restricted', code 4003110), which usually means the LIVE is limited to adults (18+) or to signed-in viewers", detail: "room info: status 4003110 (restricted) · api-live: no video links · LIVE page: TikTok's bot check (WAF page) · kept room info: status 4003110 (restricted)" } }
+            failure: { reason: 'tiktok_signin_needed', since: Date.now() - 95000, text: "TikTok only shows this LIVE's video to signed-in viewers (it answers 'restricted', code 4003110). Sign in to TikTok in LIVE Link so it can record", detail: "room info: status 4003110 (restricted) · api-live: no video links · LIVE page: TikTok's bot check (WAF page) · kept room info: status 4003110 (restricted)" } }
+          : pick === 'backup' ? { recording: true, video: true, startedAt: Date.now() - 6 * 60000, bytes: 410 * 1024 ** 2, previewAt: 0, moments: 0, capture: { source: 'TikTok LIVE Studio', since: Date.now() - 4.5 * 60000, bytes: 410 * 1024 ** 2 } }
           : pick === 'starting' ? { recording: true, video: false, waitingSince: Date.now() - 22000, startedAt: Date.now() - 22000, bytes: 0, previewAt: 0, moments: 0 }
           : { recording: pick === 'live', video: true, startedAt: Date.now() - 42 * 60000, bytes: 3.1 * 1024 ** 3, previewAt: 0, moments: 2 },
         clips: pick === 'working' ? { phase: 'clip', index: 12, total: 31, title: 'Neon Override' } : null,
@@ -665,10 +775,13 @@
       openRecording: async () => true, deleteRecording: async () => ({ ok: true }), makeClips: async () => ({ ok: true }),
       stopRecording: async () => true, startRecording: async () => true, chooseRecordFolder: async () => null,
       markMoment: async () => ({ ok: true, count: 3 }), openMoments: async () => true,
-      getUpdater: async () => (pick === 'update' ? { status: 'ready', version: '2.0.5', progress: 1, blocked: null } : pick === 'downloading' ? { status: 'downloading', version: '2.0.5', progress: 0.42 } : { status: 'idle' }),
+      getUpdater: async () => (pick === 'update' ? { status: 'ready', version: '2.0.8', progress: 1, blocked: 'live' } : pick === 'downloading' ? { status: 'downloading', version: '2.0.8', progress: 0.42 } : pick === 'required' ? { status: 'ready', version: '2.0.8', progress: 1, blocked: null } : { status: 'idle' }),
       onUpdater: () => () => {}, checkForUpdates: async () => ({ update: { available: false }, updater: { status: 'idle' } }),
       retryUpdate: async () => ({}), installUpdate: async () => ({ ok: true }), makeFullShow: async () => ({ ok: true }), openFullShow: async () => true,
       retryRecording: async () => true,
+      tiktokSignIn: async () => true, tiktokSignOut: async () => true, tiktokStatus: async () => ({ signedIn: false }), onTikTok: () => () => {},
+      captureSources: async () => [{ id: 'window:1', name: 'TikTok LIVE Studio', kind: 'window' }, { id: 'window:2', name: 'OBS 31.0.3 - Profile: Untitled - Scenes: Untitled', kind: 'window' }, { id: 'screen:0', name: 'Screen 1', kind: 'screen' }],
+      captureNow: async () => ({ ok: true }),
     };
   }
 })();

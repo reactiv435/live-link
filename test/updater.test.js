@@ -70,6 +70,19 @@ test('install on Windows runs the installer silently and relaunches; refused whi
   assert.equal(opts.detached, true);
 });
 
+test('2.0.8: "a new version is out" is announced once per version (the OS pop-up), whatever the download does', async () => {
+  const { u } = make({ busy: () => 'live' });
+  const seen = [];
+  u.on('newVersion', (x) => seen.push(x.version));
+  u.offer(offer());
+  u.offer(offer());                                   // every config refresh offers it again
+  u.offer(offer({ url: 'https://evil.example/x' }));  // even a bad link is still "a version is out"
+  assert.deepEqual(seen, ['2.0.9']);
+  u.offer(offer({ version: '2.1.0' }));
+  assert.deepEqual(seen, ['2.0.9', '2.1.0']);
+  assert.equal(u.state.status, 'waiting', 'during a LIVE it waits, but the banner (and pop-up) know');
+});
+
 test('only signed links from our own servers are used', async () => {
   const { u, fetches } = make();
   u.offer(offer({ url: 'https://evil.example/LIVE-Link.exe' }));

@@ -91,12 +91,17 @@ function wallToMedia(run, wallMs) {
 }
 
 // Every recorded piece with its server-time span.
-function timeline(session) {
+// delayMs: the TikTok copy's delay (the site's clips.delay_ms). The review and moment plans shift their server times by
+// it, because the recorded TikTok copy shows a moment that much later. A back-up run (the stream window, 2.0.8) shows
+// each moment as it happens, so its pieces are placed that much LATER on the server clock: the plan's shift and this
+// one cancel out and the cut lands on the right content.
+function timeline(session, delayMs = 0) {
   const out = [];
   for (const run of session.runs || []) {
+    const shift = run.capture ? Math.max(0, Number(delayMs) || 0) : 0;
     for (const p of run.parts || []) {
-      out.push({ file: p.file, run, mediaStart: p.start * 1000, mediaEnd: p.end * 1000, offset: Number(p.offset) || 0,
-        wallStart: mediaToWall(run, p.start * 1000), wallEnd: mediaToWall(run, p.end * 1000) });
+      out.push({ file: p.file, run, shift, mediaStart: p.start * 1000, mediaEnd: p.end * 1000, offset: Number(p.offset) || 0,
+        wallStart: mediaToWall(run, p.start * 1000) + shift, wallEnd: mediaToWall(run, p.end * 1000) + shift });
     }
   }
   return out.sort((a, b) => a.wallStart - b.wallStart);
@@ -108,8 +113,9 @@ function cutsFor(tl, fromWall, toWall) {
   for (const p of tl) {
     if (p.wallEnd <= fromWall || p.wallStart >= toWall) continue;
     const a = Math.max(fromWall, p.wallStart), b = Math.min(toWall, p.wallEnd);
-    const inSec = Math.max(0, (wallToMedia(p.run, a) - p.mediaStart) / 1000);
-    const outSec = Math.min((p.mediaEnd - p.mediaStart) / 1000, (wallToMedia(p.run, b) - p.mediaStart) / 1000);
+    const shift = p.shift || 0;
+    const inSec = Math.max(0, (wallToMedia(p.run, a - shift) - p.mediaStart) / 1000);
+    const outSec = Math.min((p.mediaEnd - p.mediaStart) / 1000, (wallToMedia(p.run, b - shift) - p.mediaStart) / 1000);
     // In the joined full-show file a piece sits `offset` seconds in; neighbouring pieces of one file merge into one cut.
     if (outSec - inSec < 0.5) continue;
     const cut = { file: p.file, inSec: round3(inSec + p.offset), outSec: round3(outSec + p.offset) };

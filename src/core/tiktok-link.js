@@ -579,6 +579,20 @@ class TikTokLink extends EventEmitter {
     return L.fetchRoomInfoFromApiLiveRoute({ webClient: conn.webClient, uniqueId: this.username });
   }
 
+  // For the recorder (2.0.8): the LIVE's room info as the Euler sign server sees it, fetched from ITS network (not this
+  // computer's), with plain flv/hls links when the LIVE is on. A last resort and a tell-tale: when this one has links
+  // while every request from this network is refused or answered 4003110, the network is the problem, not the LIVE.
+  // Throws when the sign server says no (its code and message, no links).
+  async liveRoomFromEuler() {
+    const conn = this.conn;
+    const L = this.lib || loadConnector();
+    if (!conn || !L.fetchRoomInfoFromEulerRoute || !this.username) return null;
+    const r = await L.fetchRoomInfoFromEulerRoute({ apiClient: conn.apiClient, webClient: conn.webClient, uniqueId: this.username });
+    if (!r) return null;
+    if (r.ok === false) { const e = new Error(`[euler] ${r.message || `code ${r.code}`}`); e.code = 'euler'; e.statusCode = Number(r.code) || undefined; throw e; }
+    return r;
+  }
+
   // Finds the LIVE's room AND whether it is live, before any connection: TikTok's LIVE page (one request, what the
   // connector itself asks first), then TikTok's API. The connector's own check can't be trusted: for an ended room
   // TikTok's room-info call now answers an error with no status (4003110), so the connector "connects" to a LIVE that

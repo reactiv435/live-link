@@ -38,6 +38,8 @@ class Updater extends EventEmitter {
     }
     // A new signed link comes with every config refresh; keep the newest one for the download.
     this.offerInfo = update;
+    // 2.0.8: one "a new version is out" per version per app run (main.js shows an OS notification, once per version ever).
+    if (this.announced !== update.version) { this.announced = update.version; this.emit('newVersion', { version: String(update.version) }); }
     if (this.state.version === update.version && ['downloading', 'ready', 'installing', 'error'].includes(this.state.status)) return;
     this.tryDownload();
   }

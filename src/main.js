@@ -1,6 +1,6 @@
 'use strict';
 // ReactivVibe LIVE Link: Electron main process. Owns the TikTok link, the site client, the tray and one window.
-const { app, BrowserWindow, Tray, Menu, ipcMain, shell, safeStorage, nativeImage, Notification, powerMonitor, dialog, globalShortcut } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, shell, safeStorage, nativeImage, Notification, powerMonitor, dialog, globalShortcut, session, desktopCapturer } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -10,6 +10,8 @@ const { Controller } = require('./core/controller');
 const { Store } = require('./core/store');
 const { ShowManager } = require('./core/show-manager');
 const { Updater } = require('./core/updater');
+const { TikTokSignIn, USER_AGENT: CHROME_UA, LOGIN_URL, SESSION_COOKIES, SIGNIN_HOSTS } = require('./core/tiktok-signin');
+const { pickCaptureSource, extFor, CHUNK_MS } = require('./core/capture');
 const SITE = require('./site-config.json');
 
 // The bundled ffmpeg (records the LIVE, cuts the review clips) and the clip font. Packaged: resources/ffmpeg/<os>-<cpu>/
@@ -154,6 +156,137 @@ function iconPath(name) { return path.join(__dirname, '..', 'build', name); }
 // The menu bar wants ~18 pt icons (with an @2x twin next to it); the Windows tray uses the 32 px ones.
 const trayIcon = (kind) => iconPath(IS_MAC ? `trayMac-${kind}.png` : `tray-${kind}.png`);
 
+// ---------------------------------------------------------------- 2.0.8: TikTok sign-in for the recorder
+// A separate, persistent browser session ("partition") on this computer holds the host's TikTok sign-in. The sign-in
+// window shows TikTok's own login page in it; the recorder's lookups are made with its cookies (session.fetch). The app
+// never reads the password or the cookie values: it only checks that a sign-in cookie EXISTS. Sign out clears it all.
+const TT_PARTITION = 'persist:tiktok-signin';
+let ttSession = null, signInWin = null, signInPoll = null;
+function tiktokSession() {
+  if (!ttSession) { ttSession = session.fromPartition(TT_PARTITION); ttSession.setUserAgent(CHROME_UA); }
+  return ttSession;
+}
+async function hasTikTokSession() {
+  try {
+    const cookies = await tiktokSession().cookies.get({ domain: 'tiktok.com' });
+    return cookies.some((c) => SESSION_COOKIES.includes(c.name) && c.value);
+  } catch { return false; }
+}
+const signInNote = (text) => { if (win && !win.isDestroyed()) win.webContents.send('tiktok', { signedIn: !!(show && show.signedInNow), note: text || null }); };
+function openTikTokSignIn() {
+  if (signInWin && !signInWin.isDestroyed()) { signInWin.show(); signInWin.focus(); return true; }
+  signInWin = new BrowserWindow({
+    width: 520, height: 820, minWidth: 420, minHeight: 600, title: 'Sign in to TikTok (for LIVE Link recording)', parent: win || undefined, autoHideMenuBar: true,
+    backgroundColor: '#0a0a0a', icon: iconPath(IS_MAC ? 'icon.png' : 'icon.ico'),
+    webPreferences: { partition: TT_PARTITION, contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: false },
+  });
+  const w = signInWin;
+  w.removeMenu();
+  w.webContents.setUserAgent(CHROME_UA);
+  // Only TikTok (and its sign-in helpers) may load in this window; anything else goes to the normal browser.
+  const okUrl = (u) => { try { return SIGNIN_HOSTS.test(new URL(u).hostname); } catch { return false; } };
+  w.webContents.setWindowOpenHandler(({ url }) => (okUrl(url) ? { action: 'allow', overrideBrowserWindowOptions: { parent: w, autoHideMenuBar: true, webPreferences: { partition: TT_PARTITION, contextIsolation: true, nodeIntegration: false, sandbox: true } } } : (shell.openExternal(url), { action: 'deny' })));
+  w.webContents.on('will-navigate', (e, url) => { if (!okUrl(url)) { e.preventDefault(); shell.openExternal(url); } });
+  w.loadURL(LOGIN_URL);
+  log('info', 'TikTok sign-in window opened');
+  signInNote('Sign in to TikTok in the window that opened. LIVE Link closes it by itself once you are signed in.');
+  clearInterval(signInPoll);
+  signInPoll = setInterval(async () => {
+    if (!signInWin || signInWin.isDestroyed()) { clearInterval(signInPoll); signInPoll = null; return; }
+    if (await hasTikTokSession()) {
+      clearInterval(signInPoll); signInPoll = null;
+      log('info', 'TikTok sign-in: a session cookie is present');
+      store.set('tiktokSignedInAt', Date.now());
+      try { signInWin.close(); } catch {}
+      signInWin = null;
+      if (show) { await show.refreshSignIn(); show.retryStream(); }
+      signInNote('Signed in. LIVE Link now asks TikTok for your LIVE video as a signed-in viewer.');
+      notify('Signed in to TikTok', 'LIVE Link can now ask TikTok for your LIVE video as a signed-in viewer.');
+    }
+  }, 1500);
+  w.on('closed', () => { if (signInWin === w) signInWin = null; clearInterval(signInPoll); signInPoll = null; if (show) show.refreshSignIn().then(() => signInNote(null)); });
+  return true;
+}
+async function signOutTikTok() {
+  if (signInWin && !signInWin.isDestroyed()) { try { signInWin.close(); } catch {} }
+  try { await tiktokSession().clearStorageData(); } catch (e) { log('warn', `TikTok sign-out: ${e && e.message}`); }
+  try { await tiktokSession().clearCache(); } catch {}
+  store.set('tiktokSignedInAt', null);
+  if (show) await show.refreshSignIn();
+  log('info', 'TikTok sign-in: signed out (session cleared)');
+  signInNote('Signed out of TikTok.');
+  return true;
+}
+
+// ---------------------------------------------------------------- 2.0.8: the back-up recording (the stream window)
+// A hidden window runs the browser's screen recorder (ui/capture.html). Its screen-share request is answered here with
+// the window the host chose (or the best match: TikTok LIVE Studio, OBS...), plus the system's audio on Windows
+// (on a Mac the page adds the microphone instead: the system's audio can't be captured this way). The pieces it hands
+// over are appended to capture-<run>.<webm|mp4> in the recording folder; recorder.js owns the run.
+const CAPTURE_PARTITION = 'capture-recorder';
+function captureDriver() {
+  let cwin = null, out = null, cur = null;
+  const sources = async () => {
+    const list = await desktopCapturer.getSources({ types: ['window', 'screen'], thumbnailSize: { width: 0, height: 0 }, fetchWindowIcons: false });
+    return list.map((s) => ({ id: s.id, name: s.name, kind: /^screen:/.test(s.id) ? 'screen' : 'window', _src: s }));
+  };
+  const closeWin = () => { if (cwin && !cwin.isDestroyed()) { try { cwin.destroy(); } catch {} } cwin = null; };
+  const finishFile = () => new Promise((resolve) => { const o = out; out = null; if (!o) return resolve(); o.end(() => resolve()); });
+  const endCurrent = async (info) => {
+    const c = cur; if (!c) return;
+    cur = null;
+    clearTimeout(c.startTimer);
+    // Late pieces can still arrive right after "ended" (they are handed over asynchronously): give them a moment.
+    await new Promise((r) => setTimeout(r, 800));
+    await finishFile();
+    closeWin();
+    try { c.onEnd(info || {}); } catch (e) { log('warn', `capture: onEnd failed (${e && e.message})`); }
+  };
+  ipcMain.on('capture:chunk', (_e, buf, meta) => {
+    const b = Buffer.from(buf);
+    // The last piece can land just after "ended" (it is handed over asynchronously): the file stays open for it.
+    if (out) { try { out.write(b); } catch (e) { log('warn', `capture: write failed (${e && e.message})`); } }
+    else if (cur) { cur.pending.push(b); return; }        // before the file exists (its name needs the recorder's format)
+    else return;
+    if (cur) { try { cur.onProgress({ mediaMs: meta && meta.mediaMs, bytes: meta && meta.bytes }); } catch {} }
+  });
+  ipcMain.on('capture:started', (_e, info) => { if (cur && cur.resolveStart) { const r = cur.resolveStart; cur.resolveStart = null; r(info || {}); } });
+  ipcMain.on('capture:ended', (_e, info) => { if (!cur) return; if (cur.resolveStart) { const rj = cur.rejectStart; cur.resolveStart = null; cur.rejectStart = null; endCurrent(info); rj(new Error((info && info.error) || 'the screen recorder stopped before it started')); return; } endCurrent(info); });
+  ipcMain.on('capture:log', (_e, text) => log('info', `capture: ${String(text || '').slice(0, 300)}`));
+  return {
+    sources: async () => (await sources()).map(({ id, name, kind }) => ({ id, name, kind })),
+    pick: async (preferred) => { const s = pickCaptureSource(await sources(), preferred); return s ? { id: s.id, name: s.name, kind: s.kind, _src: s._src } : null; },
+    start: async ({ dir, base, source, onProgress, onEnd }) => {
+      if (cur) throw new Error('a capture is already running');
+      if (!source || !source._src) throw new Error('no window to record');
+      const ses = session.fromPartition(CAPTURE_PARTITION);
+      ses.setDisplayMediaRequestHandler((_req, cb) => { cb({ video: source._src, ...(IS_MAC ? {} : { audio: 'loopback' }) }); }, { useSystemPicker: false });
+      cwin = new BrowserWindow({ show: false, width: 320, height: 200, webPreferences: { partition: CAPTURE_PARTITION, preload: path.join(__dirname, 'capture-preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false, spellcheck: false } });
+      cwin.on('closed', () => { if (cur) endCurrent({ error: 'the recorder window closed' }); });
+      const c = { onProgress, onEnd, resolveStart: null, rejectStart: null, startTimer: null, file: null, pending: [] };
+      cur = c;
+      const started = new Promise((resolve, reject) => { c.resolveStart = resolve; c.rejectStart = reject; c.startTimer = setTimeout(() => { if (c.resolveStart) { c.resolveStart = null; c.rejectStart = null; endCurrent({ error: 'timed out' }); reject(new Error('the screen recorder did not start within 25 s')); } }, 25000); });
+      await cwin.loadFile(path.join(__dirname, 'ui', 'capture.html'));
+      if (cur !== c) throw new Error('capture cancelled');
+      cwin.webContents.send('capture:start', { timesliceMs: CHUNK_MS, audio: IS_MAC ? 'microphone' : 'system' });
+      const info = await started;
+      clearTimeout(c.startTimer);
+      const file = path.join(dir, `${base}.${extFor(info.mime)}`);
+      c.file = file;
+      out = fs.createWriteStream(file, { flags: 'a' });
+      out.on('error', (e) => log('warn', `capture: file error (${e && e.message})`));
+      for (const b of c.pending.splice(0)) out.write(b);
+      log('info', `capture: ${path.basename(file)} (${info.mime || 'browser format'}${info.width ? `, ${info.width}x${info.height}` : ''}, audio: ${info.audio || 'unknown'})`);
+      return { file, mime: info.mime || null, width: info.width || null, height: info.height || null, audio: info.audio || null };
+    },
+    stop: async () => {
+      if (!cur) return;
+      if (cwin && !cwin.isDestroyed()) { try { cwin.webContents.send('capture:stop'); } catch {} }
+      // endCurrent runs when the page says it ended (recorder.js waits a few seconds, then closes the run itself).
+    },
+  };
+}
+
 function createWindow() {
   win = new BrowserWindow({
     width: 460, height: 780, resizable: true, minWidth: 420, minHeight: 600, maximizable: false, fullscreenable: false,
@@ -256,9 +389,17 @@ app.whenReady().then(async () => {
   const api = new LiveLinkApi({ baseUrl: API_BASE, apiKey: SITE.publishableKey, getToken: () => store.getToken(), userAgent: `ReactivVibe-LIVE-Link/${VERSION}` });
   ctl = new Controller({ api, link, store, log, appVersion: VERSION, deviceName: store.get('deviceName') });
 
-  // Recording + review clips + the "remind chat" nudge.
-  show = new ShowManager({ ctl, link, api, store, log, ffmpegPath: ffmpegPath(), fontFile: fontPath(), defaultRoot: path.join(app.getPath('videos'), 'LIVE Link Recordings') });
+  // Recording + review clips + the "remind chat" nudge. 2.0.8: the recorder's lookups can use the host's TikTok sign-in
+  // (a separate browser session on this PC), and the back-up recording can capture the stream window.
+  const signIn = new TikTokSignIn({ fetch: (url, init) => tiktokSession().fetch(url, init), hasSession: hasTikTokSession, log });
+  show = new ShowManager({ ctl, link, api, store, log, ffmpegPath: ffmpegPath(), fontFile: fontPath(), defaultRoot: path.join(app.getPath('videos'), 'LIVE Link Recordings'), signIn, capture: captureDriver(), captureAudio: IS_MAC ? 'microphone' : 'system' });
   if (!show.ffmpegOk) log('warn', `recording unavailable: ffmpeg not found (${ffmpegPath()})`);
+  show.refreshSignIn().then((on) => { if (on) log('info', 'TikTok sign-in: a saved sign-in is present'); });
+  ipcMain.handle('tiktok:signin', () => openTikTokSignIn());
+  ipcMain.handle('tiktok:signout', () => signOutTikTok());
+  ipcMain.handle('tiktok:get', async () => ({ signedIn: await show.refreshSignIn(), available: true }));
+  ipcMain.handle('capture:sources', () => show.captureSources());
+  ipcMain.handle('show:captureNow', () => show.captureNow());
   show.on('state', (st) => {
     syncMomentKey(!!(st.recording && st.recording.recording));
     if (win && !win.isDestroyed()) win.webContents.send('show', { ...st, momentKey: momentKey(), momentKeyOk });
@@ -282,6 +423,13 @@ app.whenReady().then(async () => {
   // In-app updates: downloaded in the background when no LIVE/recording/clips are running, installed on "Restart to update".
   updater = new Updater({ dir: path.join(app.getPath('userData'), 'updates'), appVersion: VERSION, appPath: process.execPath, log, busy: updateBusy });
   updater.on('state', (u) => { if (win && !win.isDestroyed()) win.webContents.send('updater', u); });
+  // 2.0.8: one pop-up per new version (ever, not per app run), on top of the big banner in the window.
+  updater.on('newVersion', ({ version }) => {
+    if (store.get('updateNotifiedVersion') === version) return;
+    store.set('updateNotifiedVersion', version);
+    log('info', `update ${version} is out`);
+    notify(`Update LIVE Link: ${version} is ready`, 'Open LIVE Link and click "Restart to update". It never installs during a LIVE, a recording or while clips are made.', showWindow);
+  });
   ipcMain.handle('updater:get', () => updater.getState());
   ipcMain.handle('updater:check', async () => { const u = await ctl.checkForUpdate(); updater.offer(u); if (updater.state.status === 'error') updater.tryDownload(); return { update: u, updater: updater.getState() }; });
   ipcMain.handle('updater:retry', () => { updater.tryDownload(); return updater.getState(); });
@@ -342,6 +490,12 @@ app.whenReady().then(async () => {
     recordAvailable: !!(show && show.ffmpegOk),
     momentKey: momentKey(),
     momentKeyOk,
+    // 2.0.8
+    tiktokSignedIn: !!(show && show.signedInNow),
+    captureAvailable: !!(show && show.captureAvailable()),
+    captureEnabled: !!(show && show.captureEnabled()),
+    captureSource: show ? show.captureSource() : null,
+    captureAudio: IS_MAC ? 'microphone' : 'system',
   }));
   ipcMain.handle('show:get', () => showState());
   ipcMain.handle('show:mark', () => markMoment('button'));
@@ -405,6 +559,8 @@ app.whenReady().then(async () => {
       show._emit();
       return { ok: momentKeyOk };
     }
+    else if (key === 'captureEnabled') return { ok: true, enabled: show.setCaptureEnabled(!!value) };
+    else if (key === 'captureSource') return { ok: true, source: show.setCaptureSource(value == null ? null : String(value)) };
     else return false;
     return true;
   });

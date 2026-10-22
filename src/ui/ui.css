@@ -235,3 +235,45 @@ button:focus:not(:focus-visible) { outline: none; }
 .rec-list li.failed { border-color: rgba(255,59,84,.6); background: rgba(224,38,63,.08); }
 .rl-fail { color: #ff5a6e; font-size: 12.5px; line-height: 1.4; }
 .banner button:disabled, .row button:disabled { opacity: .55; cursor: default; }
+
+/* ---------------------------------------------------------------- 2.0.8: the BIG update banner (stays until updated) */
+.update-big { margin: 0 0 12px; padding: 14px 16px 12px; border-radius: 14px; display: grid; gap: 10px; position: relative; overflow: hidden;
+  background: linear-gradient(180deg, #2a0a10 0%, #150507 100%); border: 1px solid rgba(255,90,110,.75);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.14), 0 0 0 1px rgba(224,38,63,.35), 0 10px 30px rgba(224,38,63,.28); }
+.update-big::before { content: ""; position: absolute; inset: 0 0 auto 0; height: 3px; background: linear-gradient(90deg, #ffffff, #bdbdbd 35%, #e0263f 60%, #ffffff); opacity: .9; }
+.update-big-row { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.update-big-kicker { flex: none; font: 900 11px/1 var(--font); letter-spacing: .22em; color: #0a0a0a; background: linear-gradient(180deg, #ffffff, #c9c9c9); padding: 7px 9px; border-radius: 7px; box-shadow: 0 1px 0 rgba(255,255,255,.4) inset, 0 2px 8px rgba(0,0,0,.4); }
+.update-big-body { min-width: 0; display: grid; gap: 3px; }
+.update-big-title { display: block; font: 800 19px/1.15 var(--font); letter-spacing: .01em; color: #fff; text-wrap: balance; }
+.update-big-note { display: block; font-size: 12.5px; line-height: 1.4; color: #ffd9de; }
+.update-big-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
+.update-big-btn { border: 0; border-radius: 12px; padding: 14px 22px; font: 900 16px/1 var(--font); letter-spacing: .03em; color: #fff; flex: 1 1 auto; min-width: 220px;
+  background: linear-gradient(180deg, #ff4560, #b3122b); box-shadow: inset 0 1px 0 rgba(255,255,255,.3), 0 6px 18px rgba(224,38,63,.4); cursor: pointer; transition: transform .08s, box-shadow .15s; }
+.update-big-btn:hover { box-shadow: inset 0 1px 0 rgba(255,255,255,.35), 0 8px 24px rgba(224,38,63,.55); }
+.update-big-btn:active { transform: scale(.985); }
+.update-big-btn:disabled { opacity: .55; cursor: default; transform: none; }
+.update-big .link { color: #ffb3bd; }
+.update-snooze { margin-left: auto; }
+.update-block { position: absolute; inset: 0; z-index: 20; background: rgba(10,10,10,.98); display: grid; place-items: center; padding: 24px; }
+.update-block-card { width: 100%; max-width: 380px; display: grid; gap: 14px; justify-items: center; text-align: center; padding: 26px 22px 22px; border-radius: 18px;
+  background: linear-gradient(180deg, #2a0a10 0%, #150507 100%); border: 1px solid rgba(255,90,110,.75); box-shadow: 0 0 0 1px rgba(224,38,63,.35), 0 16px 48px rgba(224,38,63,.3); }
+.update-block-card h2 { margin: 0; font: 900 26px/1.1 var(--font); color: #fff; }
+.update-block-card p { margin: 0; font-size: 14px; line-height: 1.5; color: #ffd9de; }
+.update-block-card .update-big-btn { width: 100%; }
+.update-block-card .link { color: #ffb3bd; }
+
+/* 2.0.8: what the host can do about "Not recording" (sign in to TikTok, record the stream window) */
+.rec-fix { display: flex; flex-wrap: wrap; gap: 8px; }
+.rec-fix:empty { display: none; }
+.rec-fix .primary, .rec-fix .ghost { padding: 8px 14px; font-size: 12.5px; }
+.rec-fixnote { margin: 0; font-size: 12px; color: #ffd9de; line-height: 1.4; }
+.rec.backup { border-color: rgba(230,230,230,.4); background: linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.02)); }
+.rec.backup #rec-title::after { content: "BACKUP"; display: inline-block; white-space: nowrap; font: 800 10px/1 var(--font); letter-spacing: .18em; color: #0a0a0a; background: linear-gradient(180deg, #ffffff, #c9c9c9); padding: 4px 6px; border-radius: 6px; margin-left: 8px; vertical-align: 2px; }
+.rec.backup .rec-head { flex-wrap: wrap; }
+.capture-pick { padding: 10px 0 12px; border-bottom: 1px solid var(--line); }
+.capture-pick-title { margin: 0 0 6px; font-size: 12.5px; color: var(--muted); }
+.capture-pick ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; max-height: 240px; overflow-y: auto; }
+.capture-pick li button { width: 100%; text-align: left; border: 1px solid var(--line2); background: var(--bg2); border-radius: 9px; padding: 8px 10px; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.capture-pick li button:hover { border-color: var(--crimson); }
+.capture-pick li button.chosen { border-color: var(--crimson); box-shadow: 0 0 0 1px rgba(224,38,63,.35); }
+.capture-pick li small { color: var(--muted); margin-left: 6px; }

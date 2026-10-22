@@ -140,3 +140,42 @@ The `live-link` bucket is PRIVATE (the project blocks public buckets), files liv
     a video-link source once: `{ source, code, http, error, first, last, count }`, at most 40) and `diag`
     (`{ tries, lastTryAt, firstVideoAt, failure, failures[], recordedBytes, result: ok|partial|failed }`); each run
     gains `bytes`, `error`, `quality`, `kind`, `from`. A 0-byte recording is listed as "Recording failed" with the reason.
+
+## 2.0.8: recording no matter what (2026-10-22)
+28. **New status reasons** (same fields as item 26, same `^[a-z_]{1,40}$` rule). Problems, shown like the 2.0.7 ones
+    ("LIVE, but NOT recording: <last_error>"):
+    - `tiktok_signin_needed`: room info answers 4003110 for a LIVE that is on and the host has NOT signed in to TikTok
+      inside LIVE Link (2.0.7 called this `stream_restricted`; that code is now only used when the host IS signed in and
+      TikTok still refuses). The fix is in the app (Settings > TikTok sign-in for recording, or the red card's button).
+    - `stream_sub_only`: TikTok says the LIVE is subscribers-only, a paid event or gated (no video for other viewers).
+    - `capture_no_window`: the back-up recording is on but no stream window (TikTok LIVE Studio, OBS...) was found.
+    - `capture_failed`: the back-up recording stopped writing.
+    One INFORMATIONAL reason, which is NOT a failure and should read as "Recording (back-up)", not red:
+    - `recording_window_capture`: TikTok sent no video, so LIVE Link is recording the host's own stream window (with the
+      PC's audio) and will cut the review clips from that. `tiktok_live: true`, `last_error` ends in the code like the
+      others (e.g. `"Recording the host's stream window instead of TikTok's video (back-up recording) [window: TikTok
+      LIVE Studio] (recording_window_capture)"`). Please don't count it as an error in the dashboard's health view.
+29. **session.json** gains, per `streamErrors` entry, `status` (TikTok's own `status_code` inside a 200 answer, e.g.
+    4003110; `http` stays the HTTP status of a refused request), new source names `"room info (signed in)"`,
+    `"api-live (signed in)"`, `"LIVE page (signed in)"` (asked with the host's TikTok sign-in) and `"sign server"` (the
+    Euler sign server's room info, fetched from ITS network: when it has links while every source from the host's
+    network is refused or answers 4003110, the host's network is the problem, not the LIVE), `diag.flags` /
+    `diag.flagsBySource` (`{ ageRestricted, subOnly, paidEvent, gated, regionBlocked, thirdParty (LIVE Studio/OBS),
+    audioOnly, multiGuest, multiStream, mode, status }` as each source last described the LIVE), `diag.captured` (true
+    when some of the recording is the back-up), and per back-up run `capture: true, source (window title), file,
+    mime, width, height`. Nothing in it is a link, a cookie or a token.
+30. **TikTok sign-in (host-initiated, optional).** The host signs in on TikTok's own login page inside a LIVE Link
+    window (a separate persistent browser session on their PC). LIVE Link only checks that a sign-in cookie exists and
+    makes the three lookups through that session; the password and cookies never reach the app's code, the log,
+    session.json or the site. Sign out clears the session. No site change.
+31. **Back-up recording (host-enabled).** Off by default. Settings toggle + window picker (default: TikTok LIVE Studio,
+    then OBS), or one click on the red card ("Record my stream window instead", which also switches it on). Starts 75 s
+    after the LIVE began without TikTok video (or after the video died and stayed dead); system audio on Windows, the
+    microphone on a Mac (macOS can't loop back its own audio this way). After the LIVE the capture is cut into the
+    usual 10-minute pieces (H.264 copied, audio to AAC), so review clips, moments and the full show come out as always;
+    clip timing accounts for the capture having no TikTok delay. No site change.
+32. **The update banner** in the app is now big, full-width, crimson/black/chrome, "Update LIVE Link: <v> is ready", with
+    "Restart to update" / "Update now"; it stays until updated (during a LIVE it can be put off until the LIVE ends),
+    and one OS pop-up per new version. `min_app_version` (`update_required`) blocks the whole window behind the same
+    flow. The site-side "update your LIVE Link" banner for outdated devices (asked of Lovable) still makes sense: hosts
+    on <= 2.0.7 only see the small one-line banner until they install 2.0.8.

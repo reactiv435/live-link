@@ -36,4 +36,11 @@ contextBridge.exposeInMainWorld('liveLink', {
   openFullShow: (dir) => ipcRenderer.invoke('show:openFullShow', String(dir || '')),
   // 2.0.7: "Not recording" -> ask TikTok for the video again now
   retryRecording: () => ipcRenderer.invoke('show:retryStream'),
+  // 2.0.8: TikTok sign-in for the recorder, and the back-up recording of the stream window
+  tiktokSignIn: () => ipcRenderer.invoke('tiktok:signin'),
+  tiktokSignOut: () => ipcRenderer.invoke('tiktok:signout'),
+  tiktokStatus: () => ipcRenderer.invoke('tiktok:get'),
+  onTikTok: (cb) => { const f = (_e, s) => cb(s); ipcRenderer.on('tiktok', f); return () => ipcRenderer.removeListener('tiktok', f); },
+  captureSources: () => ipcRenderer.invoke('capture:sources'),
+  captureNow: () => ipcRenderer.invoke('show:captureNow'),
 });

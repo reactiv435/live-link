@@ -137,6 +137,65 @@ test('records a LIVE and turns one review into a full review, a branded highligh
   }
 });
 
+test('2.0.8 back-up recording: a browser-recorder file (H.264 + Opus in WebM) is cut into the usual pieces and a review clip and a moment come out of it, timed for the stream delay', { skip: !RUN, timeout: 300000 }, async () => {
+  const root = fs.mkdtempSync(path.join(process.env.E2E_TMP || os.tmpdir(), 'll-e2e-cap-'));
+  const dir = path.join(root, 'rec'); fs.mkdirSync(dir);
+  // What the hidden recorder page writes: Matroska/WebM with H.264 video and Opus audio, 70 s, a burnt-in clock so the cut can be checked.
+  const cap = path.join(dir, 'capture-0.webm');
+  const gen = spawnSync(FF, ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=size=720x1280:rate=30', '-f', 'lavfi', '-i', 'sine=frequency=330:sample_rate=48000',
+    '-t', '70', '-c:v', 'libx264', '-preset', 'veryfast', '-g', '30', '-pix_fmt', 'yuv420p', '-c:a', 'libopus', '-b:a', '64k', '-f', 'matroska', cap]);
+  assert.equal(gen.status, 0, String(gen.stderr));
+  const t0 = 1_792_600_000_000;
+  // The run as the recorder writes it: media 0 = server t0 (the capture shows each moment as it happens).
+  fs.writeFileSync(path.join(dir, 'session.json'), JSON.stringify({ v: 1, app: '2.0.8', handle: 'tester', roomId: '7', startedAt: t0 - 80000, endedAt: t0 + 75000, stream: { quality: 'window', kind: 'capture', codec: 'h264' }, clips: {},
+    moments: [{ at: t0 + 50000, by: 'hotkey' }],
+    runs: [{ index: 0, startedAt: t0, endedAt: t0 + 70000, capture: true, source: 'TikTok LIVE Studio', file: 'capture-0.webm', mime: 'video/webm;codecs=h264,opus', samples: [[0, t0], [30000, t0 + 30000], [60000, t0 + 60000]], lastMediaMs: 70000 }],
+    diag: { captured: true } }));
+  fs.writeFileSync(path.join(dir, 'taps.json'), JSON.stringify(Object.fromEntries(Array.from({ length: 70 }, (_, i) => [Math.floor(t0 / 1000) + i, i >= 24 && i < 31 ? 40 : 1]))));
+  const logs = [];
+  const got = {};
+  const server = http.createServer((req, res) => { const chunks = []; req.on('data', (d) => chunks.push(d)); req.on('end', () => { got[req.url] = Buffer.concat(chunks).length; res.writeHead(200); res.end('{}'); }); });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const port = server.address().port;
+  const completes = [];
+  // The review: on air at t0+5 s, moved on at t0+70 s, with the usual 8 s TikTok delay in the plan (the capture has none).
+  const api = {
+    reviews: async () => ({ reviews: [{ play_id: 'play-cap', started_at: new Date(t0 + 5000).toISOString(), ended_at: new Date(t0 + 70000).toISOString(), title: 'Backup Signal', artist: 'Sample Artist', host_name: 'ReactivVibeAI' }] }),
+    clipUpload: async (m) => ({ upload_url: `http://127.0.0.1:${port}/up/${m.kind}`, path: `host/play-cap/${m.kind}` }),
+    clipComplete: async (b) => { completes.push(b); return { ok: true }; },
+  };
+  const jobs = new ClipJobs({ api, ffmpegPath: FF, fontFile: FONT, log: (l, m) => logs.push(`${l} ${m}`), getOptions: () => ({ delayMs: 8000, padStartMs: 1000, padEndMs: 1000, hotSec: 8, verdictSec: 20 }) });
+  const phases = [];
+  jobs.on('progress', (p) => phases.push(p.phase));
+  assert.equal(await jobs.processCaptures(dir), 1, logs.join('\n'));
+  assert.ok(!fs.existsSync(cap), 'the capture file is gone once its pieces exist');
+  const parts = fs.readdirSync(dir).filter((f) => /^part-0-\d+\.mp4$/.test(f)).sort();
+  assert.ok(parts.length >= 1, `pieces: ${parts.join(', ')}`);
+  const p0 = probe(path.join(dir, parts[0]));
+  assert.equal(p0.codec, 'h264', 'H.264 copied');
+  assert.ok(p0.hasAudio, 'audio kept (as AAC)');
+  const total = C.readSession(dir).runs[0].parts.reduce((n, p) => n + (p.end - p.start), 0);
+  assert.ok(Math.abs(total - 70) < 2, `pieces cover the capture (${total} s)`);
+  const result = await jobs.processSession(dir);
+  assert.equal(result.sent, 1, `clip not sent: ${JSON.stringify(result)}\n${logs.join('\n')}`);
+  assert.ok(got['/up/highlight'] > 50000 && got['/up/full'] > 50000 && got['/up/vertical'] > 20000 && got['/up/poster'] > 2000, `uploads: ${JSON.stringify(got)}`);
+  const hl = probe(path.join(dir, 'clips', 'play-cap', 'highlight.mp4'));
+  assert.equal(hl.codec, 'h264');
+  assert.equal(hl.width, 720); assert.equal(hl.height, 1280);
+  // The full review: 5 s -> 70 s on air, +8 s delay in the plan, 1 s pad each side, clamped to what was captured: on a
+  // back-up run the 8 s is cancelled out, so the cut starts ~4 s in and runs to the end of the capture (~66 s of 70).
+  assert.ok(got['/up/full'] > got['/up/highlight'], 'the full review is the long one');
+  const hotFrom = Date.parse(completes[0].recipe.hot.from);
+  assert.ok(Math.abs(hotFrom - (t0 + 24000)) < 8000, `hottest moment ${((hotFrom - t0) / 1000).toFixed(1)} s in (burst at 24 s)`);
+  const mo = await jobs.processMoments(dir);
+  assert.deepEqual(mo, { made: 1, failed: 0, total: 1 });
+  const mp = probe(path.join(dir, 'moments', Object.values(JSON.parse(fs.readFileSync(path.join(dir, 'session.json'), 'utf8')).momentClips)[0]));
+  assert.ok(mp.duration > 20 && mp.duration < 52, `moment clip duration ${mp.duration}`);
+  assert.equal((await jobs.processFullShow(dir)).ok, true);
+  assert.ok(phases.includes('capture') && phases.includes('capture_done'));
+  server.close();
+});
+
 test('a video address that gives nothing: real ffmpeg writes 0 bytes, the run is marked failed and "Not recording" follows', { skip: !RUN, timeout: 60000 }, async () => {
   const root = fs.mkdtempSync(path.join(process.env.E2E_TMP || os.tmpdir(), 'll-e2e-fail-'));
   // a local server that answers every request with 403, like an expired TikTok CDN link

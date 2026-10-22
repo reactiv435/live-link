@@ -13,6 +13,7 @@ const os = require('os');
 const path = require('path');
 const { Readable } = require('stream');
 const C = require('./clipper');
+const { finalizeArgs } = require('./capture');
 
 const CONTENT_TYPE = { full: 'video/mp4', highlight: 'video/mp4', vertical: 'video/mp4', poster: 'image/jpeg' };
 const MIN_COVERAGE = 0.6;   // a review the recording covers less than this is skipped (recording started late, gap)
@@ -49,6 +50,9 @@ class ClipJobs extends EventEmitter {
     const { dir, force, reviews } = this.queue.shift();
     this.running = dir;
     try {
+      // A back-up recording (the stream window, 2.0.8) is cut into the usual pieces first, so everything below reads it.
+      try { await this.processCaptures(dir); }
+      catch (e) { this.log('error', `capture: ${path.basename(dir)}: ${e && e.message}`); }
       try { if (reviews) await this.processSession(dir, { force }); }
       catch (e) { this.log('error', `clips: ${path.basename(dir)}: ${e && e.message}`); this.emit('progress', { dir, phase: 'error', error: e && e.message }); }
       try { await this.processMoments(dir); }
@@ -100,6 +104,35 @@ class ClipJobs extends EventEmitter {
 
   freeBytes(dir) { try { const s = fs.statfsSync(dir); return Number(s.bavail) * Number(s.bsize); } catch { return Infinity; } }
 
+  // The back-up recording's file(s) (capture-<run>.webm|mp4, the stream window) -> the same part-<run>-NNN.mp4 pieces and
+  // parts-<run>.csv the stream recorder writes (H.264 copied when the browser recorder gave H.264, else encoded; AAC
+  // audio). The file goes once its pieces are there; a file that can't be cut is kept and said so. Runs again after a
+  // crash (a run with `capture` and its file but no pieces), so nothing is lost.
+  async processCaptures(dir) {
+    const session = C.readSession(dir);
+    let done = 0;
+    for (const run of session.runs || []) {
+      if (!run.capture || !run.file || (run.parts || []).length) continue;
+      const file = path.join(dir, String(run.file));
+      let size = 0;
+      try { size = fs.statSync(file).size; } catch { continue; }
+      if (!size) { this.log('warn', `capture: run ${run.index} (${run.source || 'window'}) wrote nothing`); continue; }
+      this.emit('progress', { dir, phase: 'capture', index: run.index });
+      try {
+        await this._ff(finalizeArgs(String(run.file), run.index, run.mime), dir);
+        const parts = C.readParts(dir, run.index, run);
+        if (!parts.length) throw new Error('no pieces came out of it');
+        try { fs.unlinkSync(file); } catch {}
+        done++;
+        this.log('info', `capture: run ${run.index} ("${run.source || 'window'}", ${(size / 1024 ** 2).toFixed(0)} MB) cut into ${parts.length} piece${parts.length === 1 ? '' : 's'}`);
+      } catch (e) {
+        this.log('error', `capture: run ${run.index} could not be cut into pieces (${e && e.message}); ${run.file} is kept`);
+      }
+    }
+    if (done) this.emit('progress', { dir, phase: 'capture_done', done });
+    return done;
+  }
+
   // The host's "Clip that" marks become ~45 s phone clips in <recording>/moments/, kept on this computer for the host to
   // post. Status per moment lives in session.json under `momentClips[key]` = the file's name.
   async processMoments(dir) {
@@ -107,7 +140,7 @@ class ClipJobs extends EventEmitter {
     const plan = C.planMoments(session.moments, { ...C.DEFAULTS, ...(this.getOptions() || {}) });
     if (!session.endedAt || !plan.length) return { made: 0, failed: 0, total: 0 };
     const done = { ...(session.momentClips || {}) };
-    const tl = C.timeline(session);
+    const tl = C.timeline(session, ({ ...C.DEFAULTS, ...(this.getOptions() || {}) }).delayMs);
     const outDir = path.join(dir, 'moments');
     fs.mkdirSync(outDir, { recursive: true });
     let made = 0, failed = 0;
@@ -163,8 +196,8 @@ class ClipJobs extends EventEmitter {
     const reviews = (res && Array.isArray(res.reviews)) ? res.reviews : [];
     let taps = {};
     try { taps = JSON.parse(fs.readFileSync(path.join(dir, 'taps.json'), 'utf8')); } catch {}
-    const tl = C.timeline(session);
     const opts = { ...C.DEFAULTS, ...(this.getOptions() || {}) };
+    const tl = C.timeline(session, opts.delayMs);
     const clips = () => (C.readSession(dir).clips || {});
     let sent = 0, skipped = 0, failed = 0;
     // Nothing of the LIVE on disk (TikTok never sent the video): say so, instead of quietly marking every review
