@@ -187,10 +187,11 @@ class ShowManager extends EventEmitter {
   root() { return this.store.get('recordRoot') || this.defaultRoot; }
   enabled() { return this.store.get('recordEnabled') !== false; }   // on unless the host switched it off
   clipsOn() { return !!(this.ctl.cfg && this.ctl.cfg.clips && this.ctl.cfg.clips.enabled); }
-  // The back-up recording (2.0.8): off unless the host switched it on; `captureSource` = the window title the host chose
+  // The back-up recording (2.0.8): on unless the host switched it off (the owner's call: a LIVE must never go unrecorded);
+  // `captureSource` = the window title the host chose
   // in Settings (null = automatic: TikTok LIVE Studio, OBS...).
   captureAvailable() { return !!this.captureDriver && this.ffmpegOk; }
-  captureEnabled() { return this.captureAvailable() && this.store.get('captureEnabled') === true; }
+  captureEnabled() { return this.captureAvailable() && this.store.get('captureEnabled') !== false; }
   captureSource() { const s = this.store.get('captureSource'); return typeof s === 'string' && s.trim() ? s.trim().slice(0, 120) : null; }
 
   _clipOptions() {
@@ -364,7 +365,7 @@ class ShowManager extends EventEmitter {
   // ---------------------------------------------------------------- the back-up recording (2.0.8)
   // Settings > back-up recording on/off (kept across restarts).
   setCaptureEnabled(on) {
-    this.store.set('captureEnabled', on ? true : null);
+    this.store.set('captureEnabled', on ? true : false);
     this.recorder.setCaptureEnabled(this.captureEnabled());
     this.log('info', `back-up recording ${on ? 'on' : 'off'}`);
     this._emit();

@@ -168,7 +168,7 @@ The `live-link` bucket is PRIVATE (the project blocks public buckets), files liv
     window (a separate persistent browser session on their PC). LIVE Link only checks that a sign-in cookie exists and
     makes the three lookups through that session; the password and cookies never reach the app's code, the log,
     session.json or the site. Sign out clears the session. No site change.
-31. **Back-up recording (host-enabled).** Off by default. Settings toggle + window picker (default: TikTok LIVE Studio,
+31. **Back-up recording (on by default, owner decision 2026-10-22).** The host can switch it off in Settings. Settings toggle + window picker (default: TikTok LIVE Studio,
     then OBS), or one click on the red card ("Record my stream window instead", which also switches it on). Starts 75 s
     after the LIVE began without TikTok video (or after the video died and stayed dead); system audio on Windows, the
     microphone on a Mac (macOS can't loop back its own audio this way). After the LIVE the capture is cut into the

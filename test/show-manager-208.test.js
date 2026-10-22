@@ -20,7 +20,7 @@ function setup({ signedIn = false, signIn = true, capture = true, captureEnabled
   link.liveRoomFromApi = async () => ({ data: { user: { roomId: '777', status: 2 }, liveRoom: { status: 2 } } });
   link.liveRoomFromPage = async () => { throw Object.assign(new Error("TikTok sent its bot check"), { code: 'waf' }); };
   link.liveRoomFromEuler = async () => ({ ok: true, code: 200, data: { room_info: { status: 2, is_live: true } } });
-  const store = new Map(); if (captureEnabled) store.set('captureEnabled', true);
+  const store = new Map(); if (captureEnabled !== null) store.set('captureEnabled', !!captureEnabled);
   const st = { get: (k) => store.get(k), set: (k, v) => (v === null || v === undefined ? store.delete(k) : store.set(k, v)) };
   let t = 1_000_000; const timers = [];
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'll-show8-'));
@@ -137,7 +137,18 @@ test('subscribers-only / paid LIVE = stream_sub_only; the sign server\'s links a
   assert.equal(eulerAsks, 1);
 });
 
-test('the back-up recording: off by default, kept in the settings, handed to the recorder; "Record my stream window instead" switches it on and starts it; the window the host chose is what gets picked', async () => {
+test('the back-up recording: ON for a host who never touched the setting, off when switched off', async () => {
+  const fresh = setup({ captureEnabled: null });
+  assert.equal(fresh.store.has('captureEnabled'), false);
+  assert.equal(fresh.show.getState().captureEnabled, true, 'on by default');
+  fresh.show.setCaptureEnabled(false);
+  assert.equal(fresh.store.get('captureEnabled'), false, 'switching it off is remembered');
+  assert.equal(fresh.show.getState().captureEnabled, false);
+  fresh.show.setCaptureEnabled(true);
+  assert.equal(fresh.show.getState().captureEnabled, true);
+});
+
+test('the back-up recording: off when the host switched it off, kept in the settings, handed to the recorder; "Record my stream window instead" switches it on and starts it; the window the host chose is what gets picked', async () => {
   const { show, rec, cap, store, ctl, live } = setup();
   assert.equal(show.getState().captureAvailable, true);
   assert.equal(show.getState().captureEnabled, false);
@@ -150,7 +161,7 @@ test('the back-up recording: off by default, kept in the settings, handed to the
   await show.recorder.capture;   // (the real recorder gets a wrapper; here the fake recorder has none)
   assert.equal(show.setCaptureSource(''), null);
   show.setCaptureEnabled(false);
-  assert.equal(store.has('captureEnabled'), false);
+  assert.equal(store.get('captureEnabled'), false);
   assert.deepEqual(show.captureNow(), { ok: false, error: 'not_recording' });
   ctl.emit('state', live()); await settle();
   assert.deepEqual(show.captureNow(), { ok: true });

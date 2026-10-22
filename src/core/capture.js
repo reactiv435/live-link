@@ -1,8 +1,10 @@
 'use strict';
 // 2.0.8: the back-up recording. When TikTok sends LIVE Link no video for a while (or the video dies and stays dead), the
 // recorder can record the host's own stream window instead: TikTok LIVE Studio, OBS, Streamlabs... (the window the host
-// picked in Settings, or the best match by its title), with the computer's audio. The host must have switched it on
-// (Settings, or "Record my stream window instead" on the red card): nothing is captured silently.
+// picked in Settings, or the best match by its title), with the computer's audio.
+// It is ON by default (owner's decision, 2026-10-22: a LIVE must never go unrecorded); the host can switch it off in
+// Settings. It only ever records the stream tool's window (never a whole screen unless the host picked one), and the
+// recording card says plainly when the back-up is running.
 //
 // The capture itself runs in a hidden window of the app (the browser's screen recorder, main.js); it writes one file
 // per capture run next to the recording pieces (capture-<run>.webm or .mp4). After the LIVE the file is cut into the
