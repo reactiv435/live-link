@@ -20,7 +20,7 @@ function createMock(opts = {}) {
     giftStreaks: new Map(),   // gift key -> highest count credited (or consumed)
     giftTaps: 0,              // hype credited for gifts
     giftAlerts: [],           // what the overlay would show
-    pushes: [], statuses: [], calls: [],
+    pushes: [], statuses: [], viewerSamples: [], calls: [],
     failNext: [],             // e.g. [{ path: 'live-link-push', status: 503 }]
   };
 
@@ -78,6 +78,7 @@ function createMock(opts = {}) {
         });
       }
       if (path === 'live-link-status') { st.statuses.push(body); return send(res, 200, { ok: true, server_time: new Date().toISOString() }); }
+      if (path === 'live-link-viewers') { st.viewerSamples.push(body); return send(res, 200, { ok: true }); }
 
       if (path === 'live-link-push') {
         if (!st.host.enabled && !body.dry_run) return err(res, 403, 'live_link_disabled');

@@ -179,3 +179,9 @@ The `live-link` bucket is PRIVATE (the project blocks public buckets), files liv
     and one OS pop-up per new version. `min_app_version` (`update_required`) blocks the whole window behind the same
     flow. The site-side "update your LIVE Link" banner for outdated devices (asked of Lovable) still makes sense: hosts
     on <= 2.0.7 only see the small one-line banner until they install 2.0.8.
+33. **Viewer samples (2.0.9).** While a LIVE runs the app posts `{ tiktok_room_id, viewers }` to `live-link-viewers` every
+    `viewers_interval_ms` from the config (default 180 s). It is its own endpoint on purpose: nothing about taps, gifts or
+    `live-link-push` changes. A sample is sent only while TikTok status is `live`, with a room ID and a count above 0
+    (TikTok's 0 means "no number"), and never in test mode. A failed sample is logged and the next one tries again; it
+    never goes through the app's error handling, so the host sees nothing. A 404 (a site without the endpoint) ends the
+    samples until the next LIVE. Answer `{ ok: true }`.

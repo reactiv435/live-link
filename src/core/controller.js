@@ -11,6 +11,7 @@ const DEFAULTS = {
   push_interval_ms: 2000,
   idle_push_interval_ms: 10000,
   status_interval_ms: 60000,
+  viewers_interval_ms: 180000,
   max_likes_per_push: 500,
   max_events_per_push: 200,
 };
@@ -343,10 +344,12 @@ class Controller extends EventEmitter {
         this.session = { roomId: st.roomId || null, startedAt: this.now(), taps: 0, peakViewers: 0,
           acceptedAtStart: this.s.taps.accepted, username: this.s.tiktokUsername, dryRun: !!this.s.dryRun,
           giftUnits: 0, giftCoins: 0, giftTaps: 0, giftBy: {} };
+        this._viewersOff = false;
       }
       this.session.droppedAt = null;
       if (st.roomId && !this.session.roomId) this.session.roomId = st.roomId;
       this.session.peakViewers = Math.max(this.session.peakViewers, Number(st.viewers) || 0);
+      this._viewersSoon();
     } else if (this.session && st.status === 'reconnecting' && !this.session.droppedAt) {
       this.session.droppedAt = this.now();
     } else if (st.status === 'offline' && this.session) {
@@ -944,6 +947,34 @@ class Controller extends EventEmitter {
     }
     this._render();
     this._statusSoon();
+  }
+
+  // ---------------------------------------------------------------- viewer samples (contract item 33)
+  // One small call every few minutes while a LIVE runs. A failed sample is only logged and the next one tries again:
+  // nothing else waits on it, and it never goes through _handleApiError, so it can't change what the host sees.
+  // A site without the endpoint (404) ends the samples until the next LIVE.
+  _viewersSoon() {
+    if (this.timers.viewers || this._viewersOff || this.stopped) return;
+    const every = (this.cfg && this.cfg.viewers_interval_ms) || DEFAULTS.viewers_interval_ms;
+    this.timers.viewers = this.setTimeout(() => { this.timers.viewers = null; this._sendViewers(); }, every);
+  }
+
+  async _sendViewers() {
+    const st = this.link.state;
+    if (this.stopped || this.s.phase !== 'ready' || st.status !== 'live') return;   // _trackSession restarts it on the next 'live'
+    const viewers = Math.floor(Number(st.viewers) || 0);
+    if (!this.s.dryRun && st.roomId && viewers > 0) {                               // TikTok's 0 means "no number", not an empty room
+      const ep = this.epoch;
+      try {
+        await this.api.viewers({ tiktok_room_id: st.roomId, viewers });
+      } catch (e) {
+        if (ep !== this.epoch) return;
+        this.log('info', `viewers: ${e.status} ${e.code} ${e.message}`);
+        if (e.status === 404) { this._viewersOff = true; return; }
+      }
+      if (ep !== this.epoch) return;
+    }
+    this._viewersSoon();
   }
 
   // ---------------------------------------------------------------- errors
