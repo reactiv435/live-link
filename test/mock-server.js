@@ -22,6 +22,7 @@ function createMock(opts = {}) {
     giftAlerts: [],           // what the overlay would show
     pushes: [], statuses: [], viewerSamples: [], calls: [],
     failNext: [],             // e.g. [{ path: 'live-link-push', status: 503 }]
+    nextShowAt: opts.nextShowAt,   // 2.1.0: live-link-config next_show_at (left out when undefined)
   };
 
   const send = (res, code, obj) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(obj)); };
@@ -74,6 +75,7 @@ function createMock(opts = {}) {
           push_interval_ms: opts.pushIntervalMs || 2000, idle_push_interval_ms: opts.idlePushIntervalMs || 10000,
           status_interval_ms: 60000, status_stale_after_ms: 180000, max_likes_per_push: 500, max_events_per_push: 200,
           dashboard_url: opts.dashboardUrl || 'https://reactivvibeai.com/dashboard?tab=live-link', ...(opts.latest ? { latest: opts.latest } : {}),
+          ...(st.nextShowAt !== undefined ? { next_show_at: st.nextShowAt } : {}),
           min_app_version: opts.minAppVersion || '1.0.0', server_time: new Date(Date.now() + (opts.serverSkewMs || 0)).toISOString(),
         });
       }

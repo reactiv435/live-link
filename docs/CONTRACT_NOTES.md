@@ -185,3 +185,23 @@ The `live-link` bucket is PRIVATE (the project blocks public buckets), files liv
     (TikTok's 0 means "no number"), and never in test mode. A failed sample is logged and the next one tries again; it
     never goes through the app's error handling, so the host sees nothing. A 404 (a site without the endpoint) ends the
     samples until the next LIVE. Answer `{ ok: true }`.
+
+## 2.1.0: easy TikTok sign-in, one status light, pre-show check, quiet updates (2026-11-02)
+34. **`tiktok_signed_in` in `live-link-status` (new, optional).** `true`/`false` once the app knows whether the host is
+    signed in to TikTok inside LIVE Link (the recorder's sign-in: 18+ and restricted LIVEs only record with it). Left out
+    while unknown and by older apps, so `null` = unknown. `ll_status` ignores unknown fields today, so nothing breaks
+    before the site stores it: please add a nullable `tiktok_signed_in boolean` to `live_link_status` and show it on the
+    host's LIVE Link tab and the admin view ("TikTok sign-in: yes / no / unknown").
+35. **`next_show_at` in `live-link-config` (new, optional).** ISO time of the host's next scheduled show (the earliest
+    upcoming slot for this host; a show that started up to 6 h ago may still be sent while it runs). The app ignores
+    anything that isn't a real time, older than 6 h or more than 8 days ahead. It uses it for two things: the pre-show
+    check (10 minutes before, the window comes up with sign-in / recording / update checks and one pop-up) and to never
+    install an update by itself within 2 hours of a show. Without it the app simply skips both.
+36. **Quiet updates.** A downloaded, checked update now also installs by itself when the host quits LIVE Link (no
+    relaunch), or when the computer has been idle for 15 minutes with no LIVE, recording or clips, no LIVE in the last
+    30 minutes and no show within 2 hours (it opens again by itself). Never during a LIVE; Settings > "Install updates
+    by themselves" switches it off. No site change: the same `latest` manifest.
+37. **Alerts.** When the LIVE drops or stops recording the window flashes, the taskbar flashes and a short alert sound
+    plays (Settings > Alert sound, on by default). No site change.
+38. **Status timing fix.** A change that happened while a status call was in flight (the LIVE dropping, a sign-in) was
+    marked as sent and could wait up to a minute; it now goes out about 1.5 s later.

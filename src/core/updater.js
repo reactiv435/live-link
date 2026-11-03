@@ -2,6 +2,9 @@
 // In-app updates: when the site says a newer LIVE Link is out, the installer is downloaded in the background (never during
 // a LIVE, a recording, or while clips are being made), checked against the site's SHA-256, and kept ready. The host
 // installs it with one click ("Restart to update"); it is never installed by itself mid-show.
+// 2.1.0: quiet auto-update (on unless the host switches it off). A ready update also installs by itself when LIVE Link
+// quits (no restart), and when this computer has sat idle with no LIVE, no recording, no clips and no show coming up
+// (it restarts by itself). shouldAutoInstall() decides the idle case; main.js asks it every few minutes.
 //   Windows: the per-user installer runs silently (/S) and starts the new version (--force-run).
 //   Mac: the .dmg is mounted, the new app copied out, and a small script swaps it in after LIVE Link quits, then opens it.
 // Electron-free: main.js passes the folders, the busy check, and quits the app after install() says so.
@@ -61,7 +64,7 @@ class Updater extends EventEmitter {
     if (why && !force) { this._set({ status: 'waiting', version: u.version, error: null, blocked: why }); return; }
     const file = this.fileFor(u.version);
     // Already downloaded and checked (a restart before installing): ready at once.
-    if (fs.existsSync(file) && await sha256(file) === u.sha256.toLowerCase()) { this._set({ status: 'ready', version: u.version, progress: 1, file, error: null }); return; }
+    if (fs.existsSync(file) && await sha256(file) === u.sha256.toLowerCase()) { this._set({ status: 'ready', version: u.version, progress: 1, file, error: null, readyAt: this.state.readyAt || Date.now() }); return; }
     this._set({ status: 'downloading', version: u.version, progress: 0, error: null, file: null });
     const part = `${file}.part`;
     try {
@@ -83,7 +86,7 @@ class Updater extends EventEmitter {
       fs.renameSync(part, file);
       this._cleanOld(file);
       this.log('info', `update ${u.version} downloaded and checked`);
-      this._set({ status: 'ready', version: u.version, progress: 1, file, error: null });
+      this._set({ status: 'ready', version: u.version, progress: 1, file, error: null, readyAt: Date.now() });
     } catch (e) {
       try { fs.unlinkSync(part); } catch {}
       this.log('warn', `update download: ${e && e.message}`);
@@ -96,7 +99,8 @@ class Updater extends EventEmitter {
   }
 
   // Returns { ok: true } when the app should quit now (the installer / swap script takes over), else { ok: false, error }.
-  async install() {
+  // relaunch: false (2.1.0, installing on quit) installs without opening LIVE Link again afterwards.
+  async install({ relaunch = true } = {}) {
     if (this.state.status !== 'ready' || !this.state.file) return { ok: false, error: 'not_ready' };
     const why = this.busy('install');
     if (why) return { ok: false, error: why };
@@ -106,11 +110,11 @@ class Updater extends EventEmitter {
     this._set({ status: 'installing' });
     try {
       if (this.platform === 'win32') {
-        const p = this.spawn(this.state.file, ['/S', '--updated', '--force-run'], { detached: true, stdio: 'ignore', windowsHide: true });
+        const p = this.spawn(this.state.file, relaunch ? ['/S', '--updated', '--force-run'] : ['/S', '--updated'], { detached: true, stdio: 'ignore', windowsHide: true });
         p.unref();
         return { ok: true };
       }
-      if (this.platform === 'darwin') return await this._installMac();
+      if (this.platform === 'darwin') return await this._installMac(relaunch);
       return { ok: false, error: 'platform' };
     } catch (e) {
       this.log('warn', `update install: ${e && e.message}`);
@@ -125,7 +129,7 @@ class Updater extends EventEmitter {
     return i > 0 ? this.appPath.slice(0, i + 4) : null;
   }
 
-  async _installMac() {
+  async _installMac(relaunch = true) {
     const target = this.macBundle();
     if (!target) return { ok: false, error: 'no_bundle' };
     try { fs.accessSync(path.dirname(target), fs.constants.W_OK); fs.accessSync(target, fs.constants.W_OK); } catch { return { ok: false, error: 'not_writable' }; }
@@ -140,24 +144,41 @@ class Updater extends EventEmitter {
       await run(this.spawn, 'ditto', [path.join(mnt, app), path.join(work, app)]);
     } finally { await run(this.spawn, 'hdiutil', ['detach', mnt, '-force']).catch(() => {}); }
     const script = path.join(work, 'swap.sh');
-    fs.writeFileSync(script, macSwapScript(process.pid, path.join(work, app), target), { mode: 0o755 });
+    fs.writeFileSync(script, macSwapScript(process.pid, path.join(work, app), target, relaunch), { mode: 0o755 });
     const p = this.spawn('/bin/sh', [script], { detached: true, stdio: 'ignore' });
     p.unref();
     return { ok: true };
   }
 }
 
-// Waits for LIVE Link to quit, swaps the new app in (the old one comes back if the copy fails), and opens it.
-function macSwapScript(pid, newApp, target) {
+// Waits for LIVE Link to quit, swaps the new app in (the old one comes back if the copy fails), and opens it
+// (unless relaunch is false: installing on quit leaves it closed).
+function macSwapScript(pid, newApp, target, relaunch = true) {
   const q = (s) => `'${String(s).replace(/'/g, "'\\''")}'`;
   return [
     '#!/bin/sh',
     `while kill -0 ${Number(pid)} 2>/dev/null; do sleep 0.5; done`,
     `rm -rf ${q(`${target}.old`)}`,
     `if mv ${q(target)} ${q(`${target}.old`)} && ditto ${q(newApp)} ${q(target)}; then rm -rf ${q(`${target}.old`)}; else rm -rf ${q(target)}; mv ${q(`${target}.old`)} ${q(target)}; fi`,
-    `open ${q(target)}`,
+    ...(relaunch ? [`open ${q(target)}`] : []),
     '',
   ].join('\n');
+}
+
+// 2.1.0: install a ready update by itself now? Only on an idle computer: the update has waited a while, nothing is busy
+// (no LIVE, recording or clips), no LIVE ended recently, the host's next show (when the site says) is not close, and
+// nobody has touched the computer for a while. Pure, so tests can drive it.
+const AUTO = { readyFor: 10 * 60000, idleFor: 15 * 60, afterLive: 30 * 60000, beforeShow: 2 * 3600000 };
+function shouldAutoInstall({ enabled = true, status, readyAt, busy, live, lastLiveEndedAt, nextShowAt, idleSeconds, now = Date.now() } = {}) {
+  if (!enabled) return { ok: false, why: 'off' };
+  if (status !== 'ready') return { ok: false, why: 'not_ready' };
+  if (busy) return { ok: false, why: busy };
+  if (live) return { ok: false, why: 'live' };
+  if (!readyAt || now - readyAt < AUTO.readyFor) return { ok: false, why: 'too_soon' };
+  if (lastLiveEndedAt && now - lastLiveEndedAt < AUTO.afterLive) return { ok: false, why: 'just_live' };
+  if (nextShowAt && nextShowAt - now < AUTO.beforeShow && nextShowAt - now > -6 * 3600000) return { ok: false, why: 'show_soon' };
+  if (!(Number(idleSeconds) >= AUTO.idleFor)) return { ok: false, why: 'in_use' };
+  return { ok: true, why: null };
 }
 
 function run(spawn, cmd, args) {
@@ -175,4 +196,4 @@ function sha256(file) {
   });
 }
 
-module.exports = { Updater, macSwapScript, sha256, SAFE_URL };
+module.exports = { Updater, macSwapScript, sha256, SAFE_URL, shouldAutoInstall, AUTO };

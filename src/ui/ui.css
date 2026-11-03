@@ -277,3 +277,54 @@ button:focus:not(:focus-visible) { outline: none; }
 .capture-pick li button:hover { border-color: var(--crimson); }
 .capture-pick li button.chosen { border-color: var(--crimson); box-shadow: 0 0 0 1px rgba(224,38,63,.35); }
 .capture-pick li small { color: var(--muted); margin-left: 6px; }
+
+/* ---------------------------------------------------------------- 2.1.0: status light, TikTok card, setup guide, pre-show check */
+.light { order: -9; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; padding: 12px 14px; border-radius: 14px; border: 1px solid var(--glass-line); background: var(--glass); --lc: #e6e6e6; --lg: rgba(230,230,230,.22); }
+.light.good { --lc: #22e07a; --lg: rgba(34,224,122,.3); border-color: rgba(34,224,122,.45); background: linear-gradient(180deg, rgba(34,224,122,.1), rgba(34,224,122,.02)); }
+.light.setup { --lc: #ffc94d; --lg: rgba(255,201,77,.28); border-color: rgba(255,201,77,.45); }
+.light.bad { --lc: #ff3b54; --lg: rgba(255,59,84,.38); border-color: rgba(255,59,84,.85); background: linear-gradient(180deg, rgba(224,38,63,.18), rgba(224,38,63,.05)); }
+.light.paused { --lc: #8a8a8a; --lg: rgba(138,138,138,.22); }
+.light-dot { width: 18px; height: 18px; border-radius: 50%; flex: none; background: radial-gradient(circle at 35% 30%, rgba(255,255,255,.85), var(--lc) 55%); box-shadow: 0 0 0 4px var(--lg), 0 0 16px var(--lc); }
+.light.good .light-dot, .light.bad .light-dot { animation: glow 1.8s ease-in-out infinite; }
+@keyframes glow { 50% { box-shadow: 0 0 0 7px var(--lg), 0 0 24px var(--lc); } }
+.light-body { flex: 1 1 200px; min-width: 0; }
+.light-word { display: block; font: 900 15px/1.1 var(--font); letter-spacing: .16em; color: var(--lc); }
+.light-text { display: block; margin-top: 3px; font-size: 13px; line-height: 1.38; color: #e8e8e8; user-select: text; text-wrap: pretty; }
+.light-btn { flex: none; margin-left: auto; border: 0; border-radius: 10px; padding: 11px 16px; font: 800 13px/1 var(--font); letter-spacing: .02em; color: #fff; white-space: nowrap;
+  background: linear-gradient(180deg, #ee3550, var(--crimson-deep)); box-shadow: inset 0 1px 0 rgba(255,255,255,.25), 0 4px 14px rgba(224,38,63,.3); }
+.light.paused .light-btn { background: linear-gradient(180deg, #2ee88a, #13a457); box-shadow: none; }
+.light.alarm { animation: alarm .5s ease-in-out 6; }
+@keyframes alarm { 50% { box-shadow: 0 0 0 3px rgba(255,59,84,.85), 0 0 30px rgba(255,59,84,.6); } }
+
+.ttcard { padding: 14px 16px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; border-color: rgba(255,90,110,.6); background: linear-gradient(180deg, rgba(224,38,63,.13), rgba(224,38,63,.03)); }
+.ttcard-head { display: flex; }
+.ttcard h2 { margin: 0; font: 800 18px/1.2 var(--font); color: #fff; text-wrap: balance; }
+.ttcard-steps { margin: 0; padding-left: 20px; display: grid; gap: 7px; font-size: 13px; line-height: 1.45; color: #d6d6d6; }
+.ttcard-steps b { color: #fff; }
+.ttcard .ttcard-btn { width: 100%; min-width: 0; }
+.ttcard-note { margin: 0; font-size: 12px; line-height: 1.45; color: #c9c9c9; user-select: text; }
+.ttcard.done { border-color: rgba(34,224,122,.55); background: linear-gradient(180deg, rgba(34,224,122,.13), rgba(34,224,122,.03)); }
+.ttcard.done .update-big-kicker { display: none; }
+.ttcard.done h2::before { content: "\2713  "; color: #4dffa0; }
+#status.setup .ttcard { order: 0; }
+
+.guide-ov { position: absolute; inset: 0; z-index: 15; background: rgba(10,10,10,.96); display: grid; place-items: center; padding: 20px; overflow-y: auto; }
+.guide-card { width: 100%; max-width: 430px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; padding: 22px 20px 18px; border-radius: 18px; background: linear-gradient(180deg, #1c1c1c, #101010); border: 1px solid rgba(255,255,255,.16); box-shadow: 0 16px 48px rgba(0,0,0,.6); }
+.guide-card .update-big-kicker { justify-self: start; }
+.guide-card h2 { margin: 0; font: 900 22px/1.15 var(--font); color: #fff; text-wrap: balance; }
+.guide-card p { margin: 0; color: #d6d6d6; font-size: 13.5px; line-height: 1.45; }
+.guide-card .update-big-btn { width: 100%; min-width: 0; }
+.guide-card .link { justify-self: center; color: var(--muted); }
+.guide-steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.guide-steps li { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; gap: 10px; align-items: start; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--line); background: rgba(255,255,255,.03); }
+.guide-steps li.cur { border-color: rgba(255,90,110,.75); background: rgba(224,38,63,.09); }
+.guide-steps .ico { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font: 800 12px/1 var(--font); border: 2px solid #555; color: #bbb; box-sizing: border-box; }
+.guide-steps .done .ico { background: #16c46a; border-color: #16c46a; color: #04130a; }
+.guide-steps .cur .ico { border-color: #ff8b9a; color: #fff; }
+.guide-steps .problem .ico { background: #3a0a12; border-color: var(--crimson); color: #ffb3bd; }
+.guide-steps .wait .ico { border-color: #cfcfcf; border-top-color: transparent; color: transparent; animation: spin 1s linear infinite; }
+.guide-steps b { display: block; font-size: 14px; }
+.guide-steps .t { display: block; margin-top: 2px; font-size: 12.5px; color: var(--muted); line-height: 1.4; user-select: text; }
+.guide-steps .done .t { color: #9fdcb8; }
+.guide-steps .act { border: 1px solid var(--line2); background: transparent; border-radius: 9px; padding: 6px 10px; font-size: 12px; font-weight: 600; white-space: nowrap; align-self: center; }
+.guide-steps .act:hover { background: rgba(255,255,255,.05); }

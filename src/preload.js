@@ -43,4 +43,7 @@ contextBridge.exposeInMainWorld('liveLink', {
   onTikTok: (cb) => { const f = (_e, s) => cb(s); ipcRenderer.on('tiktok', f); return () => ipcRenderer.removeListener('tiktok', f); },
   captureSources: () => ipcRenderer.invoke('capture:sources'),
   captureNow: () => ipcRenderer.invoke('show:captureNow'),
+  // 2.1.0: an alert when something breaks during a LIVE, and the pre-show check before a scheduled show
+  onAlert: (cb) => { const f = (_e, a) => cb(a); ipcRenderer.on('alert', f); return () => ipcRenderer.removeListener('alert', f); },
+  onPreshow: (cb) => { const f = (_e, a) => cb(a); ipcRenderer.on('preshow', f); return () => ipcRenderer.removeListener('preshow', f); },
 });

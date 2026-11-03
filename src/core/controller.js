@@ -121,6 +121,9 @@ class Controller extends EventEmitter {
       lastSession: this.store.get('lastSession') || null,   // end-of-LIVE summary (kept across restarts)
       pushRejected: null,                 // { field, at } when the site turned a push down (400 validation)
       recordingIssue: null,               // { reason, text, detail } while the TikTok LIVE is on but isn't being recorded
+      // 2.1.0: the host's TikTok sign-in in LIVE Link (from show-manager): null = not known yet / not available.
+      signedIn: null,
+      nextShowAt: null,                   // 2.1.0: the host's next scheduled show (ms), when live-link-config says
       gifts: freshGifts(),
       giftsEnabled: false,                // the site counts gifts for this channel (from live-link-config / pushes)
       tiktok: { ...this.link.state },
@@ -215,6 +218,16 @@ class Controller extends EventEmitter {
     if (next && next.level === 'info') this.log('info', `status: ${next.reason}${next.detail ? ` (${next.detail})` : ''}`);
     else if (next) this.log('warn', `status: LIVE but not recording (${next.reason})${next.detail ? `: ${next.detail}` : ''}`);
     else if (cur) this.log('info', 'status: recording is fine again');
+    this._render();
+    this._statusSoon();
+  }
+
+  // 2.1.0: is the host signed in to TikTok inside LIVE Link (the recorder's optional sign-in)? null = can't tell.
+  // It becomes a checklist row (with a Sign in button) and tiktok_signed_in in the status the dashboard sees.
+  setSignedIn(on) {
+    const next = on == null ? null : !!on;
+    if (next === this.s.signedIn) return;
+    this.s.signedIn = next;
     this._render();
     this._statusSoon();
   }
@@ -550,6 +563,11 @@ class Controller extends EventEmitter {
     this.s.siteLive = !!c.site_live;
     this.s.giftsEnabled = !!c.gifts_enabled;
     this.s.target = c.target || null;
+    // 2.1.0: the next scheduled show (the pre-show check pops up 10 minutes before). Ignored unless it's a real time
+    // between 6 hours ago and 8 days ahead.
+    const ns = Date.parse(c.next_show_at || '');
+    const nowSite = Date.now() + (this.clockOffset || 0);
+    this.s.nextShowAt = Number.isFinite(ns) && ns > nowSite - 6 * 3600000 && ns < nowSite + 8 * 86400000 ? ns - (this.clockOffset || 0) : null;
     const du = String(c.dashboard_url || '');
     this.s.dashboardUrl = /^https:\/\/(www\.)?reactivvibeai\.com\//.test(du) ? du : null;
     const L = c.latest;
@@ -878,13 +896,14 @@ class Controller extends EventEmitter {
       last_error: this.s.paused ? PAUSED_REASON : (String(tk.error || this._recordingError() || this.s.siteError || '').slice(0, 500) || null),
       reason: this._statusReason(),
     };
+    if (this.s.signedIn !== null) body.tiktok_signed_in = this.s.signedIn;   // 2.1.0 (older sites ignore it)
     if (withTotal) {
       body.tiktok_room_id = tk.roomId ? String(tk.roomId) : (this.batcher.roomId || null);
       body.session_total = this.batcher.sessionTotal;
     }
     return body;
   }
-  _statusKey() { const b = this._statusBody(false); return `${b.connected}|${b.tiktok_live}|${this.s.tiktok.roomId}|${b.last_error || ''}|${b.reason || ''}`; }
+  _statusKey() { const b = this._statusBody(false); return `${b.connected}|${b.tiktok_live}|${this.s.tiktok.roomId}|${b.last_error || ''}|${b.reason || ''}|${b.tiktok_signed_in}`; }
 
   // While LIVE and not recording: "<why> (<code>)", like the other last_error sentences.
   _recordingError() {
@@ -925,18 +944,21 @@ class Controller extends EventEmitter {
     const every = (this.cfg && this.cfg.status_interval_ms) || DEFAULTS.status_interval_ms;
     if (this._statusKey() === this.lastStatusKey && this.mono() - this.lastStatusAt < every - 500) { this._statusSoon(); return; }
     const ep = this.epoch;
+    // 2.1.0: remember what THIS call says. A change while it is in flight (the LIVE drops, the host signs in) must
+    // still go out 1.5 s later, not wait for the next minute's status.
+    const sentKey = this._statusKey();
     try {
       await this.api.status(this._statusBody(true));
       if (ep !== this.epoch) return;
       this._siteOk();
       this.statusRetryStep = 0;
       this.lastStatusAt = this.mono();
-      this.lastStatusKey = this._statusKey();
+      this.lastStatusKey = sentKey;
     } catch (e) {
       if (ep !== this.epoch) return;
       this._handleApiError(e, 'status');
       this.lastStatusAt = this.mono();
-      if (!e.isNetwork && e.code !== 'rate_limited') this.lastStatusKey = this._statusKey();
+      if (!e.isNetwork && e.code !== 'rate_limited') this.lastStatusKey = sentKey;
       if (!this.stopped && this.s.phase === 'ready') {
         const wait = Math.max(e.retryAfterMs || 0, STATUS_RETRY_MS[Math.min(this.statusRetryStep++, STATUS_RETRY_MS.length - 1)]);
         this._statusBackoff = true;
@@ -1116,6 +1138,11 @@ class Controller extends EventEmitter {
       : s.verified && s.tiktokUsername ? { key: 'tt', label: 'TikTok account', state: 'done', text: `Verified as @${s.tiktokUsername}.` }
       : s.verified ? { key: 'tt', label: 'TikTok account', state: 'todo', text: 'Add your TikTok username on your dashboard.', action: 'dashboard' }
       : { key: 'tt', label: 'TikTok account', state: 'todo', text: 'Not verified yet. Dashboard: LIVE Link tab, TikTok verification.', action: 'dashboard' });
+    // 2.1.0: the TikTok sign-in inside LIVE Link, out of Settings and into the checklist.
+    if (paired && s.signedIn !== null) {
+      rows.push(s.signedIn ? { key: 'signin', label: 'TikTok sign-in', state: 'done', text: 'Signed in. 18+ and restricted LIVEs record too.' }
+        : { key: 'signin', label: 'TikTok sign-in', state: 'todo', text: 'Sign in with the TikTok account you go LIVE on, so every LIVE records.', action: 'signin' });
+    }
     rows.push(!paired ? { key: 'send', label: 'Sending taps', state: 'off', text: 'After this computer is approved.' }
       : s.enabled ? (s.dryRun ? { key: 'send', label: 'Sending taps', state: 'test', text: 'Test mode is on: taps are checked, nothing is added.' } : { key: 'send', label: 'Sending taps', state: 'done', text: 'On: taps fill your hype bar.' })
       : s.dryRun ? { key: 'send', label: 'Sending taps', state: 'test', text: 'Test mode: taps are checked, nothing is added.' }

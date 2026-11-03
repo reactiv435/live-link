@@ -41,11 +41,12 @@
     $('t-song').parentElement.classList.toggle('hidden', showSong);   // the hero already shows it
     // While setting up, the checklist is what matters: it goes above the (empty) tiles.
     const steps = s.steps || [];
-    $('status').classList.toggle('setup', s.phase !== 'ready' || steps.some((st) => st.state === 'todo' || st.state === 'problem' || (st.key === 'send' && st.state === 'off')));
+    $('status').classList.toggle('setup', s.phase !== 'ready' || steps.some((st) => st.key !== 'signin' && (st.state === 'todo' || st.state === 'problem' || (st.key === 'send' && st.state === 'off'))));
     renderGifts(s);
     renderSteps(s.steps || []);
     renderManual(s);
     if (show) renderShow(show);   // the recording card follows the connection (shown once this computer is ready)
+    else render210();
   }
 
   // ---------------------------------------------------------------- update banner
@@ -127,7 +128,7 @@
     renderUpdate();
     if (r && r.update && !r.update.available) renderUpdateSetting('up to date');
   });
-  if (bridge.onUpdater) { bridge.onUpdater((u) => { upd = u; renderUpdate(); }); bridge.getUpdater().then((u) => { upd = u; renderUpdate(); }); }
+  if (bridge.onUpdater) { bridge.onUpdater((u) => { upd = u; renderUpdate(); renderPreshow(); }); bridge.getUpdater().then((u) => { upd = u; renderUpdate(); }); }
 
   // ---------------------------------------------------------------- atom + hero button
   // Atom: green = taps are filling the bar, gold = connected to the LIVE but nothing is added yet, grey = paused,
@@ -243,7 +244,7 @@
   let stepsOpen = false;
   function renderSteps(steps) {
     const ol = $('steps');
-    const allSet = steps.length > 0 && steps.every((st) => st.state === 'done' || st.state === 'test' || (st.key === 'live' && st.state === 'wait'));
+    const allSet = steps.length > 0 && steps.every((st) => st.key === 'signin' || st.state === 'done' || st.state === 'test' || (st.key === 'live' && st.state === 'wait'));
     const sum = $('steps-summary');
     sum.classList.toggle('hidden', !allSet);
     $('steps').parentElement.classList.toggle('collapsed', allSet && !stepsOpen);
@@ -251,7 +252,8 @@
     sum.querySelector('.more').textContent = stepsOpen ? 'Hide checklist' : 'Show checklist';
     if (allSet) {
       const tt = steps.find((st) => st.key === 'tt'), send = steps.find((st) => st.key === 'send');
-      $('steps-summary-text').textContent = `All set${tt && tt.text.startsWith('Verified as ') ? ' \u00b7 ' + tt.text.slice(12).replace(/\.$/, '') : ''}${send && send.state === 'test' ? ' \u00b7 Test mode' : ''}`;
+      const si = steps.find((st) => st.key === 'signin');
+      $('steps-summary-text').textContent = `All set${tt && tt.text.startsWith('Verified as ') ? ' \u00b7 ' + tt.text.slice(12).replace(/\.$/, '') : ''}${send && send.state === 'test' ? ' \u00b7 Test mode' : ''}${si && si.state !== 'done' ? ' \u00b7 TikTok sign-in needed' : ''}`;
     }
     ol.textContent = '';
     for (const st of steps) {
@@ -270,8 +272,8 @@
       li.append(ico, body);
       if (st.action) {
         const btn = document.createElement('button'); btn.className = 'act';
-        btn.textContent = st.action === 'check' ? 'Check now' : st.action === 'retry' ? 'Retry' : st.action === 'manual' ? 'Paste LIVE link' : 'Open dashboard';
-        btn.addEventListener('click', () => (st.action === 'check' || st.action === 'retry' ? bridge.retry() : st.action === 'manual' ? openManual() : bridge.open('dashboard')));
+        btn.textContent = ACT_LABEL[st.action] || 'Open dashboard';
+        btn.addEventListener('click', () => doAction(st.action));
         li.append(btn);
       } else li.append(document.createElement('span'));
       ol.append(li);
@@ -331,6 +333,8 @@
     }
     $('s-dry').checked = !!st.dryRun;
     $('s-notify').checked = st.notify !== false;
+    $('s-alertsound').checked = st.alertSound !== false;
+    $('s-autoupdate').checked = st.autoUpdate !== false;
     $('s-device').textContent = st.deviceName || '-';
     settingsVersion = st.version || '-';
     renderUpdateSetting();
@@ -388,6 +392,9 @@
   $('s-autostart').addEventListener('change', (e) => bridge.setSetting('startWithWindows', e.target.checked));
   $('s-dry').addEventListener('change', (e) => bridge.setSetting('dryRun', e.target.checked));
   $('s-notify').addEventListener('change', (e) => bridge.setSetting('notify', e.target.checked));
+  $('s-alertsound').addEventListener('change', (e) => { bridge.setSetting('alertSound', e.target.checked); if (e.target.checked) alertSound(); });   // a sample, so the host knows it
+  $('s-autoupdate').addEventListener('change', (e) => bridge.setSetting('autoUpdate', e.target.checked));
+  $('open-guide').addEventListener('click', () => openGuide());
   $('s-record').addEventListener('change', (e) => bridge.setSetting('recordEnabled', e.target.checked));
   function momentKeyNote(ok) {
     const n = $('s-momentkey-note');
@@ -422,7 +429,7 @@
     await bridge.tiktokSignIn();
   }
   $('s-tiktok-btn').addEventListener('click', tiktokSignInClick);
-  if (bridge.onTikTok) bridge.onTikTok((s) => { renderTikTokSetting(!!(s && s.signedIn), s && s.note); });
+  if (bridge.onTikTok) bridge.onTikTok((s) => { noteSignedIn(!!(s && s.signedIn)); ttNote = (s && s.note) || null; renderTikTokSetting(!!(s && s.signedIn), s && s.note); });
   $('s-capture').addEventListener('change', async (e) => { const r = await bridge.setSetting('captureEnabled', e.target.checked); if (r && r.ok === true) e.target.checked = !!r.enabled; });
   $('s-capture-pick').addEventListener('click', async () => {
     const box = $('capture-pick'), ol = $('capture-pick-list');
@@ -459,6 +466,7 @@
   function renderShow(st) {
     if (!st) return;
     show = st;
+    if (st.signInAvailable !== false) noteSignedIn(st.signedIn);
     const r = st.recording || {};
     const card = $('rec');
     card.classList.toggle('hidden', !current || current.phase !== 'ready');
@@ -502,6 +510,7 @@
     const done = renderAfterShow(st, r);
     if (done) { title = done.title; note = done.note; }
     renderMoment(st, r);
+    recIssue = failed && !done ? { text: r.recording && r.failure ? `${r.failure.text}.` : note, signin, capture, retry: retry && !!bridge.retryRecording } : null;
     card.classList.toggle('failed', failed && !done);
     card.classList.toggle('backup', backup && !done);
     if (failed && !done) $('rec-dot').className = 'rec-dot fail';
@@ -529,6 +538,7 @@
     }
     if (!r.recording) $('rec-preview').classList.add('hidden');
     if (!$('recordings').classList.contains('hidden')) loadRecordings();
+    render210();
   }
   // What a host can do about each reason (the reason itself is in r.failure.text).
   const FAIL_HELP = {
@@ -683,6 +693,227 @@
     }
   }
 
+  // ------------------------------------------------------------ 2.1.0: status light, TikTok card, setup guide, pre-show check, alerts
+  const ACT_LABEL = { check: 'Check now', retry: 'Retry', manual: 'Paste LIVE link', signin: 'Sign in to TikTok', dashboard: 'Open dashboard', record: 'Turn on recording', install: 'Install now', update: 'Download update' };
+  function doAction(a) {
+    if (a === 'check' || a === 'retry') return bridge.retry();
+    if (a === 'manual') return openManual();
+    if (a === 'signin') return signIn();
+    if (a === 'record') return Promise.resolve(bridge.setSetting('recordEnabled', true)).then(() => (bridge.getShow ? bridge.getShow().then(renderShow) : null));
+    if (a === 'install') return updateAction('install', $('update-btn'));
+    if (a === 'update') return bridge.open('update');
+    return bridge.open('dashboard');
+  }
+  function render210() { renderLight(); renderTtCard(); renderGuide(); renderPreshow(); maybeAutoGuide(); }
+
+  // The TikTok sign-in inside LIVE Link (the recorder's), from the show state and the sign-in window's events.
+  let signedInNow = null, ttNote = null, ttDoneUntil = 0, ttTimer = null;
+  function noteSignedIn(on) {
+    if (on == null) return;
+    if (on && signedInNow === false) ttDoneUntil = Date.now() + 10000;   // the card turns green for a moment
+    signedInNow = !!on;
+  }
+  function signIn() {
+    if (!bridge.tiktokSignIn) return;
+    ttNote = "Opening TikTok's sign-in page in a LIVE Link window...";
+    render210();
+    bridge.tiktokSignIn();
+  }
+  const TT_WHY = "Why: TikTok shows 18+ and some other LIVEs only to signed-in viewers, so LIVE Link can't record them without it. LIVE Link never sees your password (you type it on TikTok's own page), and the sign-in stays on this computer.";
+  function renderTtCard() {
+    const card = $('ttcard'), s = current, st = show;
+    const can = !!(s && s.phase === 'ready' && st && st.ffmpegOk !== false && st.signInAvailable !== false && bridge.tiktokSignIn) && signedInNow !== null;
+    const done = signedInNow === true, flash = done && Date.now() < ttDoneUntil;
+    card.classList.toggle('hidden', !can || (done && !flash));
+    if (!can) return;
+    card.classList.toggle('done', done);
+    $('ttcard-title').textContent = done ? 'TikTok connected: every LIVE can record' : 'Connect your TikTok so every LIVE records';
+    $('ttcard-steps').classList.toggle('hidden', done);
+    $('ttcard-btn').classList.toggle('hidden', done);
+    $('ttcard-note').textContent = done ? 'Signed in. LIVE Link now asks TikTok for your LIVE video as a signed-in viewer, so 18+ and restricted LIVEs record too.' : ttNote || TT_WHY;
+    clearTimeout(ttTimer);
+    if (flash) ttTimer = setTimeout(renderTtCard, ttDoneUntil - Date.now() + 50);
+  }
+  $('ttcard-btn').addEventListener('click', signIn);
+
+  // The light: one verdict for the whole app (connection, setup, recording) and the one fix.
+  let recIssue = null, lightAct = null;
+  function renderLight() {
+    const el = $('light'), s = current;
+    if (!s || s.phase === 'unpaired' || s.phase === 'revoked') { el.classList.add('hidden'); return; }
+    el.classList.remove('hidden');
+    const steps = (s.steps || []).filter((x) => x.key !== 'signin');   // the TikTok card covers the sign-in
+    const st = show || {}, r = st.recording || {};
+    // a recording row in trouble is shown as NOT RECORDING (with its own fix), not as a generic problem
+    const problem = steps.find((x) => x.state === 'problem' && !(x.key === 'rec' && recIssue)), todo = steps.find((x) => x.state === 'todo');
+    let kind, word, text, act = null;
+    if (s.phase === 'update_required') { kind = 'bad'; word = 'UPDATE NEEDED'; text = 'This version of LIVE Link is too old to work. Update it to keep going.'; act = 'update'; }
+    else if (problem || s.phase === 'locked') { kind = 'bad'; word = 'PROBLEM'; text = problem ? `${problem.label}: ${problem.text}` : (s.message && s.message.text) || ''; act = problem && problem.action; }
+    else if (recIssue) { kind = 'bad'; word = 'NOT RECORDING'; text = recIssue.text; act = recIssue.signin ? 'signin' : recIssue.capture ? 'capture' : recIssue.retry ? 'recretry' : null; }
+    else if (s.lost) { kind = 'bad'; word = 'LOST YOUR LIVE'; text = 'Reconnecting to TikTok by itself. If it lasts, check your internet.'; act = 'check'; }
+    else if (s.phase !== 'ready' || todo) { kind = 'setup'; word = 'SETUP STEP'; text = todo ? `${todo.label}: ${todo.text}` : (s.message && s.message.text) || ''; act = todo && todo.action; }
+    else if (s.paused) { kind = 'paused'; word = 'PAUSED'; text = "LIVE Link isn't watching your TikTok. It starts again with your next show, or press Resume."; act = 'resume'; }
+    else if (s.connected) {
+      kind = 'good'; word = 'ALL GOOD';
+      text = st.ffmpegOk === false || st.enabled === false ? 'Connected to your LIVE. Recording is off (Settings).'
+        : r.recording && r.video === false ? 'Connected to your LIVE. The recording is starting.'
+        : r.recording ? 'Connected to your LIVE and recording it.' : 'Connected to your LIVE.';
+    }
+    else if (s.atom === 'connecting') { kind = 'setup'; word = 'CONNECTING'; text = 'Connecting to your LIVE...'; }
+    else { kind = 'ready'; word = 'READY'; text = 'Waiting for your LIVE. Go LIVE on TikTok and this light turns green.'; }
+    ['good', 'ready', 'setup', 'bad', 'paused'].forEach((k) => el.classList.toggle(k, k === kind));
+    $('light-word').textContent = word;
+    $('light-text').textContent = text;
+    const LABEL = { ...ACT_LABEL, capture: 'Record my stream window', recretry: 'Try again now', resume: 'Resume' };
+    const b = $('light-btn');
+    // only fixes the big hero button doesn't already offer (it does the dashboard, retry, paste-link and Resume)
+    lightAct = act && LABEL[act] && !['dashboard', 'retry', 'manual', 'resume'].includes(act) ? act : null;
+    b.classList.toggle('hidden', !lightAct);
+    if (lightAct) b.textContent = LABEL[lightAct];
+  }
+  $('light-btn').addEventListener('click', () => {
+    const a = lightAct;
+    if (a === 'capture') $('rec-capture').click();
+    else if (a === 'recretry') $('rec-retry').click();
+    else if (a === 'resume') bridge.setSetting('paused', false);
+    else if (a) doAction(a);
+  });
+
+  // A list of steps with a state each (the setup guide and the pre-show check).
+  function renderItems(ol, items) {
+    ol.textContent = '';
+    items.forEach((x, i) => {
+      const li = document.createElement('li');
+      li.className = x.state + (x.now ? ' cur' : '');   // not 'now': .now is the song card
+      const ico = document.createElement('span'); ico.className = 'ico'; ico.textContent = x.state === 'done' ? '\u2713' : x.state === 'problem' ? '!' : String(i + 1);
+      const body = document.createElement('div');
+      const b = document.createElement('b'); b.textContent = x.title;
+      const t = document.createElement('span'); t.className = 't'; t.textContent = x.text;
+      body.append(b, t);
+      li.append(ico, body);
+      if (x.action && x.state !== 'done' && x.action !== 'finish' && !x.now) {
+        const a = document.createElement('button'); a.type = 'button'; a.className = 'act'; a.textContent = ACT_LABEL[x.action] || 'Open';
+        a.addEventListener('click', () => doAction(x.action));
+        li.append(a);
+      } else li.append(document.createElement('span'));
+      ol.append(li);
+    });
+  }
+
+  // The setup guide: each step with one big button for the next one. Opens by itself once per version while a step is
+  // left; Settings > Open the setup guide brings it back.
+  let appVersion = null, guideOpen = false, guideAuto = false;
+  function guideItems() {
+    const s = current || {}, st = show || {};
+    const tt = (s.steps || []).find((x) => x.key === 'tt');
+    const paired = s.phase === 'ready';
+    const items = [];
+    items.push(paired ? { state: 'done', title: 'Connect this computer', text: 'Connected to ReactivVibeAI.' }
+      : { state: 'todo', title: 'Connect this computer', text: s.phase === 'pending_approval' ? 'Click Approve on your host dashboard.' : (s.message && s.message.text) || 'Finish connecting this computer.', action: 'dashboard' });
+    items.push(paired && tt && tt.state === 'done' ? { state: 'done', title: 'Verify your TikTok', text: tt.text }
+      : { state: 'todo', title: 'Verify your TikTok', text: 'On your host dashboard: LIVE Link tab, TikTok verification. Then LIVE Link knows which LIVE is yours.', action: 'dashboard' });
+    if (st.signInAvailable !== false && bridge.tiktokSignIn && signedInNow !== null) {
+      items.push(signedInNow ? { state: 'done', title: 'Sign in to TikTok in LIVE Link', text: 'Signed in: 18+ and restricted LIVEs record too.' }
+        : { state: 'todo', title: 'Sign in to TikTok in LIVE Link', text: ttNote || 'Use the TikTok account you go LIVE on. The QR code with your phone is easiest. LIVE Link never sees your password.', action: 'signin' });
+    }
+    items.push(s.connected ? { state: 'done', title: 'Go LIVE on TikTok', text: 'Your LIVE is connected: the light at the top is green.' }
+      : { state: 'todo', title: 'Go LIVE on TikTok', text: 'Leave LIVE Link open. When you go LIVE it connects by itself, and the light at the top turns green.', action: 'finish' });
+    const cur = items.find((x) => x.state !== 'done');
+    if (cur) cur.now = true;
+    return items;
+  }
+  function renderGuide() {
+    if (!guideOpen) return;
+    const items = guideItems();
+    renderItems($('guide-steps'), items);
+    const cur = items.find((x) => x.now), b = $('guide-btn');
+    $('guide-title').textContent = cur ? 'Get LIVE Link ready' : "You're all set";
+    b.dataset.action = !cur || cur.action === 'finish' ? 'close' : cur.action;
+    b.textContent = !cur ? 'Close' : cur.action === 'finish' ? 'Got it' : ACT_LABEL[cur.action] || 'Next';
+  }
+  function openGuide() { guideOpen = true; $('settings').classList.add('hidden'); $('guide').classList.remove('hidden'); renderGuide(); }
+  function closeGuide() {
+    guideOpen = false; $('guide').classList.add('hidden');
+    try { if (appVersion) localStorage.setItem('ll-guide-seen', appVersion); } catch {}
+  }
+  $('guide-btn').addEventListener('click', () => { const a = $('guide-btn').dataset.action; if (a === 'close') closeGuide(); else doAction(a); });
+  $('guide-close').addEventListener('click', closeGuide);
+  function maybeAutoGuide() {
+    if (guideAuto || guideOpen || !appVersion || !current || !show) return;
+    if (current.phase !== 'ready' && current.phase !== 'pending_approval') return;
+    if (show.signInAvailable !== false && bridge.tiktokSignIn && signedInNow === null) return;   // not known yet
+    guideAuto = true;
+    let seen = null; try { seen = localStorage.getItem('ll-guide-seen'); } catch {}
+    if (seen === appVersion) return;
+    if (guideItems().slice(0, -1).every((x) => x.state === 'done')) return;   // "go LIVE" alone is no reason to open it
+    openGuide();
+  }
+  bridge.getSettings().then((st) => { appVersion = (st && st.version) || null; maybeAutoGuide(); }).catch(() => {});
+
+  // The pre-show check: 10 minutes before a scheduled show (main.js sends 'preshow').
+  let preshowAt = null;
+  function preshowItems() {
+    const st = show || {}, u = upd || {};
+    const items = [];
+    if (st.signInAvailable !== false && bridge.tiktokSignIn) {
+      items.push(signedInNow ? { state: 'done', title: 'TikTok sign-in', text: 'Signed in.' }
+        : { state: 'todo', title: 'TikTok sign-in', text: 'Not signed in: an 18+ or restricted LIVE would not record.', action: 'signin' });
+    }
+    items.push(st.ffmpegOk === false ? { state: 'problem', title: 'Recording', text: "This copy of LIVE Link can't record. Download the latest version.", action: 'update' }
+      : st.enabled === false ? { state: 'todo', title: 'Recording', text: 'Off: this LIVE would not be recorded, and no review clips would be made.', action: 'record' }
+      : { state: 'done', title: 'Recording', text: 'On: your LIVE records by itself.' });
+    items.push(u.status === 'ready' && !u.blocked ? { state: 'todo', title: 'Update', text: `LIVE Link ${u.version} is ready. Install it now: it takes a few seconds and LIVE Link opens again.`, action: 'install' }
+      : u.status === 'downloading' ? { state: 'wait', title: 'Update', text: `Downloading ${u.version || 'the update'} (${Math.round((u.progress || 0) * 100)}%)...` }
+      : { state: 'done', title: 'Up to date', text: u.status === 'ready' ? `LIVE Link ${u.version} installs after your LIVE.` : `You have the latest LIVE Link${appVersion ? ` (${appVersion})` : ''}.` });
+    return items;
+  }
+  function renderPreshow() {
+    if (preshowAt == null) return;
+    const items = preshowItems();
+    const cur = items.find((x) => x.state === 'todo' || x.state === 'problem');   // the big button fixes it
+    if (cur) cur.now = true;
+    renderItems($('preshow-steps'), items);
+    const left = preshowAt - Date.now();
+    $('preshow-title').textContent = left > 60000 ? `Your show starts in ${Math.round(left / 60000)} min` : 'Your show is starting';
+    $('preshow-when').textContent = `Scheduled for ${new Date(preshowAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}. A quick check so this LIVE records and fills the hype bar:`;
+    const b = $('preshow-btn');
+    b.dataset.action = cur ? cur.action : 'close';
+    b.textContent = cur ? ACT_LABEL[cur.action] || 'Fix it' : "All good: I'm ready";
+    $('preshow-close').classList.toggle('hidden', !cur);
+  }
+  function closePreshow() { preshowAt = null; $('preshow').classList.add('hidden'); }
+  function openPreshow(at) { preshowAt = Number(at) || Date.now(); $('preshow').classList.remove('hidden'); renderPreshow(); }
+  $('preshow-btn').addEventListener('click', () => { const a = $('preshow-btn').dataset.action; if (a === 'close') closePreshow(); else doAction(a); });
+  $('preshow-close').addEventListener('click', closePreshow);
+  if (bridge.onPreshow) bridge.onPreshow((p) => openPreshow(p && p.at));
+  setInterval(renderPreshow, 15000);
+
+  // The alert (main.js sends 'alert' when the LIVE drops or stops recording): the light flashes, plus a short sound
+  // unless Settings > Alert sound is off.
+  let audioCtx = null, alarmTimer = null;
+  function alertSound() {
+    try {
+      audioCtx = audioCtx || new window.AudioContext();
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+      const t0 = audioCtx.currentTime + 0.02;
+      [[880, 0], [587, 0.2]].forEach(([f, d]) => {
+        const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+        o.type = 'triangle'; o.frequency.value = f;
+        g.gain.setValueAtTime(0.0001, t0 + d);
+        g.gain.exponentialRampToValueAtTime(0.22, t0 + d + 0.02);
+        g.gain.exponentialRampToValueAtTime(0.0001, t0 + d + 0.18);
+        o.connect(g); g.connect(audioCtx.destination);
+        o.start(t0 + d); o.stop(t0 + d + 0.2);
+      });
+    } catch {}
+  }
+  if (bridge.onAlert) bridge.onAlert((a) => {
+    if (a && a.sound) alertSound();
+    const l = $('light');
+    l.classList.remove('alarm'); void l.offsetWidth; l.classList.add('alarm');
+    clearTimeout(alarmTimer); alarmTimer = setTimeout(() => l.classList.remove('alarm'), 6000);
+  });
+
   if (bridge.onShow) { bridge.onShow(renderShow); bridge.getShow().then(renderShow); }
 
   // ------------------------------------------------------------ demo (browser only)
@@ -704,7 +935,13 @@
       message: { level: 'ok', text: 'Taps from @the_boneyard_ai are filling the hype bar.' },
       steps: doneSteps };
     const notLive = { atom: 'off', connected: false, liveSince: null, tapsPerMin: 0 };
+    // 2.1.0 demo: ready, waiting for the LIVE, not signed in to TikTok in LIVE Link (?demo=signin, guide, preshow)
+    const signinWait = { ...base, ...notLive, tiktok: { status: 'offline' }, taps: { session: 0, accepted: 0 }, target: null, gifts: { units: 0, coins: 0, taps: 0, recent: [] },
+      message: { level: 'info', text: 'Ready. Waiting for @the_boneyard_ai to go LIVE on TikTok.' },
+      steps: [doneSteps[0], doneSteps[1], { key: 'signin', label: 'TikTok sign-in', state: 'todo', text: 'Sign in with the TikTok account you go LIVE on, so every LIVE records.', action: 'signin' }, doneSteps[2],
+        { key: 'live', label: 'TikTok LIVE', state: 'wait', text: "@the_boneyard_ai isn't LIVE yet.", retryAt: Date.now() + 24000, action: 'check' }, doneSteps[4]] };
     const states = {
+      signin: signinWait, guide: signinWait, preshow: signinWait,
       live: base,
       update: { ...base, update: { available: true, version: '1.0.6' } },
       hold: { ...base, atom: 'hold', hold: 'song', target: null, message: { level: 'ok', text: 'Connected to @the_boneyard_ai. Put a song on air and taps will fill its hype bar.' } },
@@ -743,17 +980,23 @@
         steps: doneSteps.map((r) => (r.key === 'send' ? { ...r, state: 'test', text: 'Test mode is on: taps are checked, nothing is added.' } : r)) },
     };
     const pick = new URLSearchParams(location.search).get('demo') || 'live';
+    states.alert = states.lost;
+    if (pick === 'guide') { try { localStorage.removeItem('ll-guide-seen'); } catch {} }
+    const signedOut = ['signin', 'guide', 'preshow', 'notrec', 'verify'].includes(pick);
     setTimeout(() => listeners.forEach((f) => f(states[pick] || base)), 0);
     return {
       getState: async () => states[pick] || base,
-      getSettings: async () => ({ notify: true, startWithWindows: true, dryRun: pick === 'test', deviceName: 'STREAM-PC', version: '1.0.5', testServer: null, platform: pick === 'locked' ? 'darwin' : 'win32' }),
+      getSettings: async () => ({ notify: true, startWithWindows: true, dryRun: pick === 'test', deviceName: 'STREAM-PC', version: '2.1.0', testServer: null, platform: pick === 'locked' ? 'darwin' : 'win32', alertSound: true, autoUpdate: true }),
+      // 2.1.0 (the demo never plays the sound)
+      onAlert: (f) => { if (pick === 'alert') setTimeout(() => f({ kind: 'lost', text: 'Lost your LIVE.', sound: false }), 600); return () => {}; },
+      onPreshow: (f) => { if (pick === 'preshow') setTimeout(() => f({ at: Date.now() + 9 * 60000 }), 500); return () => {}; },
       pair: async (c) => (c === 'TEST2345' ? { ok: true } : { ok: false, code: 'invalid_code' }),
       unpair: async () => true, retry: async () => true, setSetting: async () => true, open: async () => true,
       setManualRoom: async (t) => (/\d{15,}/.test(t) ? { ok: true } : { ok: false, error: 'no_room_id' }),
       onState: (f) => { listeners.push(f); return () => {}; },
       // recording demo: ?demo=live shows a recording in progress
       getShow: async () => ({ ffmpegOk: true, enabled: true, clipsOn: true, live: pick === 'live' || pick === 'starting' || pick === 'notrec' || pick === 'backup', hostStopped: false, root: 'C:\\Users\\host\\Videos\\LIVE Link Recordings',
-        momentKey: 'F8', momentKeyOk: true, signedIn: false, signInAvailable: true, captureAvailable: true, captureEnabled: pick === 'backup', captureSource: null, captureAudio: 'system',
+        momentKey: 'F8', momentKeyOk: true, signedIn: !signedOut, signInAvailable: true, captureAvailable: true, captureEnabled: pick === 'backup', captureSource: null, captureAudio: 'system',
         recording: pick === 'notrec' ? { recording: true, video: false, waitingSince: Date.now() - 95000, startedAt: Date.now() - 95000, bytes: 0, previewAt: 0, moments: 0, nextTryAt: Date.now() + 9000,
             failure: { reason: 'tiktok_signin_needed', since: Date.now() - 95000, text: "TikTok only shows this LIVE's video to signed-in viewers (it answers 'restricted', code 4003110). Sign in to TikTok in LIVE Link so it can record", detail: "room info: status 4003110 (restricted) · api-live: no video links · LIVE page: TikTok's bot check (WAF page) · kept room info: status 4003110 (restricted)" } }
           : pick === 'backup' ? { recording: true, video: true, startedAt: Date.now() - 6 * 60000, bytes: 410 * 1024 ** 2, previewAt: 0, moments: 0, capture: { source: 'TikTok LIVE Studio', since: Date.now() - 4.5 * 60000, bytes: 410 * 1024 ** 2 } }

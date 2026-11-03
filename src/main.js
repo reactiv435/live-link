@@ -9,7 +9,7 @@ const { LiveLinkApi } = require('./core/api');
 const { Controller } = require('./core/controller');
 const { Store } = require('./core/store');
 const { ShowManager } = require('./core/show-manager');
-const { Updater } = require('./core/updater');
+const { Updater, shouldAutoInstall } = require('./core/updater');
 const { TikTokSignIn, USER_AGENT: CHROME_UA, LOGIN_URL, SESSION_COOKIES, SIGNIN_HOSTS } = require('./core/tiktok-signin');
 const { pickCaptureSource, extFor, CHUNK_MS } = require('./core/capture');
 const SITE = require('./site-config.json');
@@ -61,6 +61,15 @@ function notify(title, body, onClick) {
   if (!store || store.get('notify') === false || !Notification.isSupported()) return;
   // silent: a hosting PC is usually capturing its own audio into the stream
   try { const n = new Notification({ title, body, icon: iconPath('icon.png'), silent: true }); if (onClick) n.on('click', onClick); n.show(); } catch {}
+}
+
+// 2.1.0: something broke during a LIVE (lost the LIVE, not recording). On top of the pop-up: the taskbar flashes and the
+// window plays a short alert sound (Settings > Alert sound; it is on by default, and a stream that captures this
+// computer's audio may carry it, which is why it is short and the pop-ups themselves stay silent).
+function alertHost(kind, text) {
+  if (!win || win.isDestroyed()) return;
+  try { win.webContents.send('alert', { kind, text: text || null, sound: store ? store.get('alertSound') !== false : true }); } catch {}
+  try { win.flashFrame(true); setTimeout(() => { if (win && !win.isDestroyed()) win.flashFrame(false); }, 6000); } catch {}
 }
 
 // "Clip that" hotkey: held only while a recording runs, so the key isn't taken from other apps the rest of the time.
@@ -115,6 +124,7 @@ function watchConnection(s) {
           lastLostAt = Date.now();
           dropNotified = 'shown';
           notify('Lost your LIVE', 'LIVE Link lost the connection to TikTok and is reconnecting by itself.');
+          alertHost('lost', 'Lost your LIVE. Reconnecting by itself...');
         } else dropNotified = 'quiet';
       }
     }, 20000);
@@ -127,6 +137,9 @@ function watchConnection(s) {
 }
 let quitting = false;
 let lastState = null;
+// 2.1.0: install a ready update when LIVE Link quits (once; never while Windows/macOS is shutting down or logging off,
+// when an installer could be cut off halfway).
+let sessionEnding = false, quitInstallTried = false;
 let updater = null, forceQuit = false;
 
 // Why an update can't download / install right now (null = it can). Downloads wait for the LIVE to end; installing
@@ -176,7 +189,7 @@ const signInNote = (text) => { if (win && !win.isDestroyed()) win.webContents.se
 function openTikTokSignIn() {
   if (signInWin && !signInWin.isDestroyed()) { signInWin.show(); signInWin.focus(); return true; }
   signInWin = new BrowserWindow({
-    width: 520, height: 820, minWidth: 420, minHeight: 600, title: 'Sign in to TikTok (for LIVE Link recording)', parent: win || undefined, autoHideMenuBar: true,
+    width: 520, height: 820, minWidth: 420, minHeight: 600, title: 'Sign in with the TikTok account you go LIVE on', parent: win || undefined, autoHideMenuBar: true,
     backgroundColor: '#0a0a0a', icon: iconPath(IS_MAC ? 'icon.png' : 'icon.ico'),
     webPreferences: { partition: TT_PARTITION, contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: false },
   });
@@ -189,7 +202,7 @@ function openTikTokSignIn() {
   w.webContents.on('will-navigate', (e, url) => { if (!okUrl(url)) { e.preventDefault(); shell.openExternal(url); } });
   w.loadURL(LOGIN_URL);
   log('info', 'TikTok sign-in window opened');
-  signInNote('Sign in to TikTok in the window that opened. LIVE Link closes it by itself once you are signed in.');
+  signInNote('Finish in the TikTok window: sign in with the account you go LIVE on (the QR code with your phone is easiest). It closes by itself when you are done.');
   clearInterval(signInPoll);
   signInPoll = setInterval(async () => {
     if (!signInWin || signInWin.isDestroyed()) { clearInterval(signInPoll); signInPoll = null; return; }
@@ -299,6 +312,8 @@ function createWindow() {
   // Links never open inside the app.
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', (e) => e.preventDefault());
+  // 2.1.0: Windows is shutting down or logging off: quit without questions and without installing an update.
+  win.on('session-end', () => { sessionEnding = true; forceQuit = true; });
   win.on('close', (e) => {
     if (quitting) return;
     e.preventDefault();
@@ -401,12 +416,13 @@ app.whenReady().then(async () => {
   ipcMain.handle('capture:sources', () => show.captureSources());
   ipcMain.handle('show:captureNow', () => show.captureNow());
   show.on('state', (st) => {
+    ctl.setSignedIn(st.signInAvailable ? !!st.signedIn : null);   // 2.1.0
     syncMomentKey(!!(st.recording && st.recording.recording));
     if (win && !win.isDestroyed()) win.webContents.send('show', { ...st, momentKey: momentKey(), momentKeyOk });
   });
   show.on('momentsMade', (x) => notify('Moment clips ready', `${x.made} "Clip that" moment${x.made === 1 ? ' is' : 's are'} ready to post. Click to open the folder.`, () => { if (x.outDir) shell.openPath(x.outDir); }));
   // The LIVE is on but nothing has been recorded for a minute: one pop-up per failure, with the reason.
-  show.on('recordingFailed', (f) => notify('Not recording your LIVE', `${f.text}. LIVE Link keeps trying; open it for details.`, showWindow));
+  show.on('recordingFailed', (f) => { notify('Not recording your LIVE', `${f.text}. LIVE Link keeps trying; open it for details.`, showWindow); alertHost('recording', f.text); });
   show.on('nudge', () => notify('Remind chat to tap', 'Nobody has tapped for 2 minutes. Tell chat: tapping the screen fills the hype bar.'));
   // One pop-up when everything after the LIVE is done: the clips, the moments, the full-show file.
   show.on('safeToClose', (x) => {
@@ -438,6 +454,40 @@ app.whenReady().then(async () => {
     if (r.ok) { log('info', `installing update ${updater.state.version}`); forceQuit = true; setTimeout(() => app.quit(), 300); }
     return r;
   });
+  // 2.1.0: quiet auto-update on an idle computer (see shouldAutoInstall): installs and opens LIVE Link again.
+  setInterval(async () => {
+    if (quitting || !updater) return;
+    const st = lastState || {};
+    const tk = st.tiktok || {};
+    let idleSeconds = 0;
+    try { idleSeconds = powerMonitor.getSystemIdleTime(); } catch {}
+    const d = shouldAutoInstall({
+      enabled: store.get('autoUpdate') !== false, status: updater.state.status, readyAt: updater.state.readyAt,
+      busy: updateBusy('install'), live: !!st.connected || tk.status === 'live',
+      lastLiveEndedAt: st.lastSession && st.lastSession.endedAt, nextShowAt: st.nextShowAt, idleSeconds,
+    });
+    if (!d.ok) return;
+    log('info', `auto-update: installing ${updater.state.version} (idle ${Math.round(idleSeconds / 60)} min, nothing running)`);
+    const r = await updater.install({ relaunch: true });
+    if (r.ok) { forceQuit = true; setTimeout(() => app.quit(), 300); }
+    else log('warn', `auto-update: install did not start (${r.error})`);
+  }, 2 * 60000).unref();
+
+  // 2.1.0: the pre-show check. 10 minutes before the host's next scheduled show (from live-link-config), once per
+  // show: the window comes up with a 3-item check (TikTok sign-in, recording, up to date) and one pop-up.
+  setInterval(() => {
+    const st = lastState || {};
+    const at = st.nextShowAt;
+    if (!at || st.phase !== 'ready' || quitting) return;
+    const now = Date.now();
+    if (now < at - 10 * 60000 || now > at + 5 * 60000 || store.get('preshowFor') === at) return;
+    store.set('preshowFor', at);
+    log('info', `pre-show check: show at ${new Date(at).toISOString()}`);
+    showWindow();
+    if (win && !win.isDestroyed()) win.webContents.send('preshow', { at });
+    const mins = Math.max(0, Math.round((at - now) / 60000));
+    notify(mins ? `Your show starts in ${mins} min` : 'Your show is starting', 'LIVE Link has a quick 3-step check for you: TikTok sign-in, recording, update.', showWindow);
+  }, 30000).unref();
   ipcMain.handle('show:makeFullShow', (_e, dir) => show.makeFullShow(String(dir || '')));
   ipcMain.handle('show:openFullShow', (_e, dir) => {
     const f = show.fullShowFile(String(dir || ''));
@@ -466,7 +516,7 @@ app.whenReady().then(async () => {
   ctl.on('autoResumed', () => notify('LIVE Link resumed', 'Your show started on reactivvibeai.com, so LIVE Link is watching your TikTok again.'));
   // A sleeping computer drops its sockets and timers: look again as soon as it wakes or is unlocked.
   powerMonitor.on('resume', () => { log('info', 'system resumed from sleep'); ctl.wake(true); });
-  powerMonitor.on('shutdown', () => { forceQuit = true; });   // the computer is shutting down: don't hold it up with a question
+  powerMonitor.on('shutdown', () => { forceQuit = true; sessionEnding = true; });   // the computer is shutting down: don't hold it up with a question
   powerMonitor.on('unlock-screen', () => ctl.wake(false));
   ctl.on('state', (s) => {
     lastState = s;
@@ -496,6 +546,9 @@ app.whenReady().then(async () => {
     captureEnabled: !!(show && show.captureEnabled()),
     captureSource: show ? show.captureSource() : null,
     captureAudio: IS_MAC ? 'microphone' : 'system',
+    // 2.1.0
+    alertSound: store.get('alertSound') !== false,
+    autoUpdate: store.get('autoUpdate') !== false,
   }));
   ipcMain.handle('show:get', () => showState());
   ipcMain.handle('show:mark', () => markMoment('button'));
@@ -546,6 +599,8 @@ app.whenReady().then(async () => {
     else if (key === 'dryRun') ctl.setDryRun(!!value);
     else if (key === 'paused') ctl.setPaused(!!value);
     else if (key === 'notify') store.set('notify', !!value);
+    else if (key === 'alertSound') store.set('alertSound', !!value);
+    else if (key === 'autoUpdate') store.set('autoUpdate', !!value);
     else if (key === 'recordEnabled') {
       store.set('recordEnabled', !!value);
       if (!value) show.stopRecording('recording switched off in Settings');
@@ -595,6 +650,22 @@ app.whenReady().then(async () => {
   // Update info arrives inside live-link-config (`latest` with a short-lived signed link): see Controller.
 });
 
+// 2.1.0: the last step of a quit: a downloaded, checked update installs now, quietly (LIVE Link stays closed; the next
+// start is the new version). Returns true when it took over the quit.
+function installOnQuit(e) {
+  if (quitInstallTried || sessionEnding || !updater || store.get('autoUpdate') === false) return false;
+  if (updater.state.status !== 'ready' || updateBusy('install')) return false;
+  quitInstallTried = true;
+  e.preventDefault();
+  log('info', `auto-update: installing ${updater.state.version} as LIVE Link quits`);
+  updater.install({ relaunch: false })
+    .then((r) => { if (!r.ok) log('warn', `auto-update on quit: ${r.error}`); })
+    .catch(() => {})
+    .finally(() => setTimeout(() => app.quit(), 300));
+  setTimeout(() => app.exit(0), 8000).unref();
+  return true;
+}
+
 app.on('second-instance', showWindow);
 // Mac: clicking the Dock icon brings the window back. The launch itself also fires 'activate'; a quiet start at
 // login must not pop the window, so the first one is skipped then.
@@ -622,10 +693,10 @@ app.on('before-quit', (e) => {
     return;
   }
   quitting = true;
-  if (quitFlushed || !ctl) { if (ctl) ctl.stop(); return; }
+  if (quitFlushed || !ctl) { if (ctl) ctl.stop(); if (installOnQuit(e)) return; return; }
   quitFlushed = true;
   const needGifts = ctl.hasPendingGifts(), needStatus = ctl.getState().phase === 'ready', needRec = !!(show && show.recorder.active);
-  if (!needGifts && !needStatus && !needRec) { ctl.stop(); return; }          // nothing to send or close: quit right away
+  if (!needGifts && !needStatus && !needRec) { ctl.stop(); installOnQuit(e); return; }          // nothing to send or close: quit right away
   e.preventDefault();
   // A recording is closed properly first (ffmpeg finishes its last piece), in parallel with the gift flush.
   const rec = needRec ? show.shutdown().catch(() => {}) : Promise.resolve();
