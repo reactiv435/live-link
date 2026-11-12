@@ -173,7 +173,7 @@ class ClipJobs extends EventEmitter {
       size.topBar = C.topBarFrom(await this._probe(null, C.cropdetectArgs(path.join(job, 'src.mp4'))), sp, size);
       const texts = C.momentTexts(size, { handle: session.handle, at: m.at });
       for (const [name, text] of Object.entries(texts)) write(name, text);
-      const dur = sp.duration || (m.to - m.from) / 1000;
+      const dur = (await this._pieceLength(path.join(job, 'src.mp4'), sp)) || (m.to - m.from) / 1000;
       const out = size.portrait ? 'clip.mp4' : 'wide.mp4';
       await this._ff(C.highlightArgs({ hotFile: null, verdictFile: 'src.mp4', outFile: out, size, font: 'font.ttf', hotDur: 0, verdictDur: dur,
         hasAudio: [sp.hasAudio, sp.hasAudio], texts, introSec: 3, endSec: 1.8 }), job);
@@ -310,7 +310,7 @@ class ClipJobs extends EventEmitter {
       write('hot.txt', C.concatList(hotCuts.map((c) => ({ ...c, file: path.relative(job, path.join(dir, c.file)).replace(/\\/g, '/') }))));
       await this._ff(C.copyArgs('hot.txt', 'hot.mp4'), job);
       const hp = C.parseProbe(await this._probe(path.join(job, 'hot.mp4')));
-      hotDur = hp.duration || (plan.hot.to - plan.hot.from) / 1000;
+      hotDur = (await this._pieceLength(path.join(job, 'hot.mp4'), hp)) || (plan.hot.to - plan.hot.from) / 1000;
       hasAudio[0] = hp.hasAudio;
     }
     const verdictCuts = C.cutsFor(tl, plan.verdict.from, plan.verdict.to);
@@ -318,7 +318,7 @@ class ClipJobs extends EventEmitter {
     await this._ff(C.copyArgs('verdict.txt', 'verdict.mp4'), job);
     const vp = C.parseProbe(await this._probe(path.join(job, 'verdict.mp4')));
     hasAudio[1] = vp.hasAudio;
-    const verdictDur = vp.duration || (plan.verdict.to - plan.verdict.from) / 1000;
+    const verdictDur = (await this._pieceLength(path.join(job, 'verdict.mp4'), vp)) || (plan.verdict.to - plan.verdict.from) / 1000;
     // A black bar the stream already has at the top (TikTok's multi-guest layout) takes the title band.
     size.topBar = C.topBarFrom(await this._probe(null, C.cropdetectArgs(path.join(job, 'verdict.mp4'))), src, size);
     // Words for the title band and end card, fitted to the frame (files, so quotes/colons/emoji need no escaping).
@@ -368,6 +368,13 @@ class ClipJobs extends EventEmitter {
   }
 
   // ffmpeg prints a file's details on stderr when given only an input.
+  // One length for a copied piece: where its picture or its sound ends, whichever comes first (see clipper.brandFilter).
+  async _pieceLength(file, probe) {
+    const videoEnd = C.parseStreamEnd(await this._probe(null, C.streamEndArgs(file, 'v')));
+    const audioEnd = probe && probe.hasAudio ? C.parseStreamEnd(await this._probe(null, C.streamEndArgs(file, 'a'))) : null;
+    return C.pieceLength(probe && probe.duration, videoEnd, audioEnd);
+  }
+
   _probe(file, args = ['-hide_banner', '-i', file]) {
     return new Promise((resolve) => {
       let text = '';

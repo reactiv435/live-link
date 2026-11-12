@@ -302,19 +302,24 @@ function brandTexts(size, { artist, title, host }) {
 function brandFilter({ hasHot, hotDur, verdictDur, size, font, endSec = 2.4, introSec = 4.5, hasAudio = [true, true], texts = {} }) {
   const { w: W, h: H, portrait } = size;
   const fit = `scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps=30,format=yuv420p`;
-  const aud = 'aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo';
+  // Sound keeps its own place in time (a late start is filled with silence, never slid forward).
+  const aud = 'aresample=48000:async=1:first_pts=0,aformat=sample_fmts=fltp:channel_layouts=stereo';
   // A piece without sound gets silence of its own length, so the crossfade and the end card still line up.
   const silence = (dur, label) => `anullsrc=r=48000:cl=stereo,atrim=0:${Math.max(0.5, Number(dur) || 0.5).toFixed(3)},${aud}[${label}]`;
+  // A copied piece rarely ends its picture and its sound at the same moment (the copy runs on to the next keyframe).
+  // Both are cut to the piece's one length here; otherwise the next piece's sound starts early and stays early.
+  const cutV = (dur) => `trim=end=${Math.max(0.5, Number(dur) || 0.5).toFixed(3)},`;
+  const cutA = (dur) => `,atrim=end=${Math.max(0.5, Number(dur) || 0.5).toFixed(3)}`;
   const f = [];
   if (hasHot) {
-    f.push(`[0:v]${fit}[hv]`, `[1:v]${fit}[vv]`);
-    f.push(hasAudio[0] ? `[0:a]${aud}[ha]` : silence(hotDur, 'ha'));
-    f.push(hasAudio[1] ? `[1:a]${aud}[va]` : silence(verdictDur, 'va'));
+    f.push(`[0:v]${cutV(hotDur)}${fit}[hv]`, `[1:v]${cutV(verdictDur)}${fit}[vv]`);
+    f.push(hasAudio[0] ? `[0:a]${aud}${cutA(hotDur)}[ha]` : silence(hotDur, 'ha'));
+    f.push(hasAudio[1] ? `[1:a]${aud}${cutA(verdictDur)}[va]` : silence(verdictDur, 'va'));
     const off = Math.max(0.1, hotDur - 0.5).toFixed(3);
     f.push(`[hv][vv]xfade=transition=fade:duration=0.5:offset=${off}[mv]`, `[ha][va]acrossfade=d=0.5[ma]`);
   } else {
-    f.push(`[0:v]${fit}[mv]`);
-    f.push(hasAudio[0] ? `[0:a]${aud}[ma]` : silence(verdictDur, 'ma'));
+    f.push(`[0:v]${cutV(verdictDur)}${fit}[mv]`);
+    f.push(hasAudio[0] ? `[0:a]${aud}${cutA(verdictDur)}[ma]` : silence(verdictDur, 'ma'));
   }
   const L = brandLayout(size), font1 = `fontfile=${font}`;
   const has = (name) => !!String(texts[name] || '').trim();
@@ -397,6 +402,21 @@ function posterArgs(inFile, atSec, outFile) {
 }
 
 // "Duration: 00:01:02.34" and "Video: h264 ..., 720x1280" from ffmpeg's banner.
+// Where one stream of a file ends: a straight copy to nowhere (nothing is decoded), read from ffmpeg's last "time=".
+function streamEndArgs(inFile, kind) { return ['-hide_banner', '-i', inFile, '-map', `0:${kind === 'a' ? 'a' : 'v'}:0`, '-c', 'copy', '-f', 'null', '-']; }
+function parseStreamEnd(text) {
+  const all = String(text || '').match(/time=(\d+):(\d+):(\d+(?:\.\d+)?)/g);
+  if (!all || !all.length) return null;
+  const m = /time=(\d+):(\d+):(\d+(?:\.\d+)?)/.exec(all[all.length - 1]);
+  const sec = Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]);
+  return sec > 0 ? sec : null;
+}
+// The one length a piece is cut to: where its picture or its sound ends, whichever comes first.
+function pieceLength(fileDur, videoEnd, audioEnd) {
+  const ends = [videoEnd, audioEnd, fileDur].filter((x) => Number.isFinite(x) && x > 0);
+  return ends.length ? Math.round(Math.min(...ends) * 1000) / 1000 : null;
+}
+
 function parseProbe(text) {
   const d = /Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/.exec(text);
   const v = /Video:\s*([a-z0-9]+)[^\n]*?\s(\d{2,5})x(\d{2,5})/i.exec(text);
@@ -411,4 +431,4 @@ function parseProbe(text) {
 
 module.exports = { DEFAULTS, readSession, readParts, joinedPartsFor, fullShowPlan, joinArgs, mediaToWall, wallToMedia, timeline, cutsFor, coveredMs, planReview,
   planMoments, momentTexts, concatList, copyArgs, targetSize, brandLayout, topBarFrom, cropdetectArgs, brandTexts, fitText, brandFilter,
-  highlightArgs, socialPlan, verticalArgs, posterArgs, parseProbe };
+  highlightArgs, socialPlan, verticalArgs, posterArgs, parseProbe, streamEndArgs, parseStreamEnd, pieceLength };
