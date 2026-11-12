@@ -205,3 +205,9 @@ The `live-link` bucket is PRIVATE (the project blocks public buckets), files liv
     plays (Settings > Alert sound, on by default). No site change.
 38. **Status timing fix.** A change that happened while a status call was in flight (the LIVE dropping, a sign-in) was
     marked as sent and could wait up to a minute; it now goes out about 1.5 s later.
+
+## 2.1.1: sound and picture stay together in highlight clips (2026-11-11)
+No contract change. App only: each copied piece of a highlight (hot moment, verdict) is measured and cut to one length
+for its picture and its sound before the join, and the sound keeps its own place in time (a late start or a dropout on
+the stream becomes a short silence). Before, the verdict's sound started 0.3 to 2 s early and stayed early. Clips already
+uploaded are not re-made.
