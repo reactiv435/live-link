@@ -18,7 +18,7 @@ permissions:
 
 jobs:
   mac:
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 40   # a hung step must not hold a runner for the default 6 hours
     steps:
       - uses: actions/checkout@v4
