@@ -48,7 +48,8 @@
   const SPOTS = [[0, 0.20], [-0.20, -0.10], [0.20, -0.10], [0, -0.06], [0, -0.28], [-0.16, 0.10], [0.16, 0.10]];
   const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
 
-  function create({ map = DEFAULT_GIFT_MAP, seed = 20261119, geo = null } = {}) {
+  function create({ map: map0 = DEFAULT_GIFT_MAP, seed = 20261119, geo = null } = {}) {
+    let map = Array.isArray(map0) && map0.length ? map0 : DEFAULT_GIFT_MAP;     // the gift list; setMap swaps it, nothing in the air is touched
     const G = Object.assign({}, GEO, geo || {});
     let s0 = seed | 0;
     const rnd = () => { s0 = (s0 + 0x6D2B79F5) | 0; let t = Math.imul(s0 ^ (s0 >>> 15), 1 | s0); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
@@ -253,8 +254,12 @@
     }
     /** missile i of the last sample, at another time (its trail) */
     function missilePos(i, t, o, off) { const m = live[i]; return m ? pathPos(m, t - m.t0, o, off || 0) : o; }
-    const cuesBetween = (a, b) => cues.filter((c) => c.t >= a && c.t < b);
-    return { fire, sample, missilePos, cuesBetween, stats, geo: G, map, air };
+    const NO_CUES = Object.freeze([]);
+    /** the sound cues from a up to b; with none (nearly every frame) nothing is made */
+    const cuesBetween = (a, b) => { let hit = null; for (let i = 0; i < cues.length; i++) { const c = cues[i]; if (c.t >= a && c.t < b) (hit || (hit = [])).push(c); } return hit || NO_CUES; };
+    /** his gift list changed: later gifts are picked from the new one. Missiles in the air, waiting gifts, rests and the seed stay. */
+    function setMap(rows) { map = Array.isArray(rows) && rows.length ? rows : DEFAULT_GIFT_MAP; return map; }
+    return { fire, sample, missilePos, cuesBetween, setMap, stats, geo: G, get map() { return map; }, air };
   }
   return { create, DEFAULT_GIFT_MAP, TIER, FLIGHT, GEO, MAX_AIR, MAX_BURST, MAX_RING, MAX_SPARKLE, COLORS: { CRIMSON, GOLD, CHROME, HOT } };
 });

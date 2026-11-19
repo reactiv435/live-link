@@ -29,8 +29,9 @@
     home: { shade: [1.0, 0.045, 0.03], shade2: [1.0, 0.085, 0.03], key: [1.0, 0.93, 0.86], accent: [1.0, 0.93, 0.86], gain: 1.0 },          // crimson + chrome
     hype: { shade: [1.55, 0.66, 0.13], shade2: [1.72, 1.30, 0.74], key: [1.66, 1.60, 1.48], accent: [1.66, 1.62, 1.52], gain: 1.18 },        // white-hot: an amber shade under a warm white light (never crimson under white: that is pink)
   };
+  const SILENCE = 0.06;      // a level under this is no music at all (a calm stretch of a song reads about 0.5)
   function create() {
-    let energy = null, calm = 0, hype = 0, smile = 0, frown = 0, browSlow = null, surprise = 0, drop = 0, afterDrop = 0, drive = 0, quietFor = 0, dropHold = 0;
+    let energy = null, calm = 0, hype = 0, smile = 0, frown = 0, browSlow = null, surprise = 0, drop = 0, afterDrop = 0, drive = 0, quietFor = 0, dropHold = 0, heardFor = 0, silentFor = 9;
     function step(a, bs, names, dt) {
       const k = (sec) => 1 - Math.exp(-dt / sec);
       // the song. CALM = it has been quiet for a couple of seconds. HYPE = it is loud AND driving (kicks close together),
@@ -44,7 +45,12 @@
       // quarter of a second later, and stays as the trigger for a source that gives no `hit`. After either, the bass coming in
       // cannot fire it a second time (dropHold).
       dropHold = Math.max(0, dropHold - dt);
-      if (calm > 0.85 && quietFor > 2.5 && dropHold <= 0 && (a.hit > 0 || a.bass > 0.6)) { drop = 1; afterDrop = 1; calm *= 0.25; energy = Math.max(energy, 0.72); dropHold = 1.0; }
+      // Fix round: a drop is the bass coming back INTO MUSIC. A song that starts after silence (the first song of a show, the
+      // next song after a pause) is not one: the music must have been there for the whole stretch without bass. A stop of
+      // up to about a second before a drop does not count as silence (only a second of silence ends the music).
+      silentFor = a.level > SILENCE ? 0 : silentFor + dt;
+      heardFor = a.level > SILENCE ? heardFor + dt : silentFor > 1 ? 0 : heardFor;
+      if (calm > 0.85 && quietFor > 2.5 && heardFor > 2.5 && dropHold <= 0 && (a.hit > 0 || a.bass > 0.6)) { drop = 1; afterDrop = 1; calm *= 0.25; energy = Math.max(energy, 0.72); dropHold = 1.0; }
       quietFor = a.bass < 0.6 && dropHold <= 0 ? quietFor + dt : 0;        // how long the bass has been away
       drop *= Math.exp(-dt / 0.45); afterDrop *= Math.exp(-dt / 2.6);
       const hypeNow = clamp01(Math.max(afterDrop * 1.3, sstep(0.17, 0.27, drive)) * sstep(0.62, 0.74, energy) * (0.75 + 0.5 * bright));

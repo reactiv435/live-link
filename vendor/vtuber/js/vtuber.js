@@ -79,6 +79,7 @@
     tryIdle: 'Each button does what a viewer on TikTok would cause. Nothing is sent to TikTok.',
     tryOff: 'Press ON first: the effects show on the character in OBS.',
     trySent: (what, who) => what + ': sent to ' + who + '.',
+    tryMaskOnly: (what, who) => what + ': nothing shows on ' + who + '. Only the Mask reacts to that.',
     giftsSaved: 'Saved. It counts from the next gift.', giftsStandard: 'Back to the standard list.', giftsFailed: 'That was not saved. Try again.',
     giftName: 'Gift name (as TikTok shows it)', upTo: 'Up to', coins: 'coins', bigger: 'Anything bigger',
     restIdle: 'Do this once for the Mask: look at the camera with a relaxed face and your mouth closed, press the button and hold still for two seconds. Your expressions then show stronger.',
@@ -248,9 +249,12 @@
     const cur = settings.maskViz || list[0];
     for (const b of box.children) b.classList.toggle('sel', b.dataset.viz === cur);
   }
+  const MASK_ONLY_TRY = { comment: true, boom: true };   // these two do nothing on the heroes: their buttons are hidden while a hero is picked
   async function tryEffect(kind) {
     const r = await post('try', { kind });
-    st.tryNote = r && r.ok ? MASK.trySent(W.TRY_LABEL[kind], settings.mask ? 'the Mask' : settings.character === 'melanie' ? 'Melanie' : 'Ryo') : MASK.tryOff;
+    const who = settings.mask ? 'the Mask' : settings.character === 'melanie' ? 'Melanie' : 'Ryo';
+    // Ryo and Melanie show gifts, likes, a follower and a share; chat (a comment, "boom") shows on the Mask only
+    st.tryNote = !(r && r.ok) ? MASK.tryOff : !settings.mask && MASK_ONLY_TRY[kind] ? MASK.tryMaskOnly(W.TRY_LABEL[kind], who) : MASK.trySent(W.TRY_LABEL[kind], who);
     render();
   }
   async function loadGifts() {
@@ -718,6 +722,7 @@
     renderMaskBgs();
     $('giftSounds').classList.toggle('sel', settings.maskSounds);
     renderViz();
+    for (const b of $('tries').children) b.hidden = !settings.mask && !!MASK_ONLY_TRY[b.dataset.kind];
     $('tryHint').textContent = st.tryNote || MASK.tryIdle; $('giftsNote').textContent = st.giftsNote;
     for (const b of $('bgs').children) b.classList.toggle('sel', b.dataset.bg === settings.bg);
     $('power').classList.toggle('on', live.on);

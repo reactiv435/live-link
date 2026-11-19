@@ -89,7 +89,7 @@
   let gifts = null;
   if (GIFTS_ON && window.VTGifts3D && window.VTGiftFx) { try { gifts = window.VTGifts3D.create(scene, { noAudio: MANUAL }); } catch (e) { errors.push('gifts: ' + (e && e.message || e)); gifts = null; } }
   const faceC = new B.Vector3();
-  let giftsAsked = -1e9;
+  let giftsAsked = -1e9, giftDrawn = true;
   /** his gift list (the Mask's: which gift sets off which size), read when the avatar goes ON; without it the standard list */
   function askGifts() {
     if (!gifts || MANUAL || performance.now() - giftsAsked < (arguments[0] || 5000)) return;
@@ -346,7 +346,10 @@
       hero.holder.position.x += react.shakeX * hh; hero.holder.position.y += react.shakeY * hh;
       hero.holder.scaling.set(1 + 0.5 * react.squash, 1 - react.squash, 1 + 0.5 * react.squash);
     } else if (hero.holder.scaling.y !== 1) hero.holder.scaling.set(1, 1, 1);
-    if (gifts) {
+    // nothing in the air: no joint matrices and no drawing (one more draw after the last thing has gone puts the rockets away)
+    const giftBusy = !!(gifts && gifts.sample && gifts.sample.busy > 0);
+    if (gifts && (giftBusy || giftDrawn)) {
+      giftDrawn = giftBusy;
       hero.holder.computeWorldMatrix(true); hero.root.computeWorldMatrix(true);
       for (const n of hero.nodes) n.computeWorldMatrix(true);
       B.Vector3.TransformCoordinatesToRef(hero.faceLocal, hero.nodes[hero.nodes.length - 1].getWorldMatrix(), faceC);

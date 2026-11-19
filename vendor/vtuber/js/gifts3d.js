@@ -129,7 +129,16 @@
       per[hero.id] = { hh, geo, fx: Fx.create({ map: rows || undefined, geo, seed: hero.id === 'ryo' ? 20261119 : 20261120 }) };
       return per[hero.id];
     }
-    function setMap(r) { rows = Array.isArray(r) && r.length ? r : null; for (const id in per) per[id].fx = Fx.create({ map: rows || undefined, geo: per[id].geo }); }
+    /** his gift list, read at ON and every 20 s. The same list again changes nothing; a new one is swapped in place (a gift in the air flies on). */
+    let rowsKey = '';
+    function setMap(r) {
+      const next = Array.isArray(r) && r.length ? r : null;
+      let key = ''; try { key = next ? JSON.stringify(next) : ''; } catch (e) { key = String(Math.random()); }
+      if (key === rowsKey) return false;
+      rowsKey = key; rows = next; stats.maps = (stats.maps || 0) + 1;
+      for (const id in per) per[id].fx.setMap(rows);
+      return true;
+    }
     function fire(ev, heroId, tMs) {
       const h = per[heroId];
       if (!h || !ev) return false;
@@ -279,7 +288,19 @@
         w.fire({ type: 'gift', coins: 100000, count: 1 }, 0); w.fire({ type: 'like', count: 5 }, 0.2); w.fire({ type: 'follow' }, 0.6);
         const keepCur = cur, keepS = sample, keepT = tNow, an = hero.anchor, c = new B.Vector3(an.x, an.eye, hero.nodes[hero.nodes.length - 1].getAbsolutePosition().z);
         const fake = { hh: h.hh, geo: h.geo, fx: w };
+        // a finale squashes the hero (a non-uniform scale): Babylon then needs another variant of the hero's own programs and
+        // would build it inside the first finale's frame (25 - 48 ms once). Built here instead: the hero is squashed, unseen,
+        // its programs are compiled for that, the warm frames are drawn with it, and the scale is put back.
+        const keepScale = hero.holder.scaling.clone();
+        try {
+          hero.holder.scaling.set(1.04, 0.92, 1.04); hero.holder.computeWorldMatrix(true);
+          const own = hero.holder.getChildMeshes ? hero.holder.getChildMeshes(false) : (hero.meshes || []);
+          const jobs = [];
+          for (const m of own) { m.computeWorldMatrix(true); if (m.material && m.material.forceCompilationAsync && m.subMeshes && m.subMeshes.length) jobs.push(m.material.forceCompilationAsync(m).catch(() => null)); }
+          await Promise.all(jobs); stats.squashWarm = (stats.squashWarm || 0) + jobs.length;
+        } catch (e) { stats.squashWarmError = String(e && e.message || e); }
         for (const t of [0.7, 2.6, 4.25, 4.5]) { cur = fake; tNow = t; sample = w.sample(t); face({ eyeL_open: 1 }, hero.id); draw(hero, c); scene.render(); }
+        hero.holder.scaling.copyFrom(keepScale); hero.holder.computeWorldMatrix(true);
         // ... and the card is made to finish those draws now, not at the first gift
         try { const gl = scene.getEngine()._gl; gl.finish(); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(4)); } catch (e) { /* no context to finish */ }
         cur = keepCur; sample = keepS; tNow = keepT; QD.used = 0; QT.used = 0; for (const m of rockets) m.setEnabled(false); rocketsOn = 0; flush(QD); flush(QT);
