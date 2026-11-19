@@ -74,7 +74,15 @@ npm run mock        # mock site on http://127.0.0.1:8799/functions/v1/ (pair cod
 set LIVE_LINK_API=http://127.0.0.1:8799/functions/v1/ && npm start
 npm run dist        # requires a clean git tree: source zip + installer + dist/latest.json
 npm run vtuber-smoke   # the VTuber card end to end on the real app: own data folder, mock site, pretend OBS, no TikTok
+                       # (--app <packaged program> tests a built app; --video <clip or picture> gives the pretend camera a face)
+node_modules/.bin/electron scripts/vtuber-capture-check.js --user-data-dir=<scratch> --use-fake-device-for-media-stream
+                       # the VTuber window's rules on real Electron: one named window by its number, nothing else
 ```
+A test run: `LIVE_LINK_USER_DATA=<folder>` gives a run its own data folder and its own single-instance lock (it never
+wakes or signs out an installed LIVE Link). Such a run only starts with `LIVE_LINK_API` on 127.0.0.1, never connects to
+TikTok, and its VTuber only talks to the pretend OBS named in `LIVE_LINK_VTUBER_TEST` (`scripts/vtuber-smoke.js` sets
+all of it).
+
 Release: upload `dist/LIVE-Link-Setup-<v>.exe`, `dist-source/LIVE-Link-source-<v>.zip` and `dist/latest.json`
 to the site's public `live-link` storage bucket.
 
