@@ -186,6 +186,60 @@ test('a VTuber listener that throws never breaks the feed: gifts and likes still
   assert.ok(!/secret|Secret|MARIA|maria/.test(all), all);
 });
 
+test('malformed chat / follow / share / social payloads (and a failing gift end) never throw into the feed: skipped, one log line per kind, no payload in it', async (t) => {
+  const srv = vtuberServer(); await srv.listen();
+  t.after(() => srv.close());
+  const { link, c, logs } = await liveLink(t);
+  const v = new VtuberLink({ port: srv.port }).attach(link);
+  t.after(() => v.stop());
+  assert.ok(await until(() => v.ok));
+  const likes = [], gifts = [], got = [];
+  link.on('like', (l) => likes.push(l));
+  link.on('gift', (g) => gifts.push(g));
+  for (const ev of ['comment', 'follow', 'share']) link.on(ev, () => got.push(ev));
+  const boom = (what) => ({ toString() { throw new Error('secret ' + what); } });     // String(x) throws
+  const badUser = { get user() { throw new RangeError('secret user'); } };
+  const bad = {
+    chat: [null, undefined, 42, 'secret string', [], Object.create(null), badUser,
+      { content: boom('text') }, { get content() { throw new Error('secret getter'); } },
+      { content: 'secret words', user: { nickname: boom('name') } },
+      { content: 'secret words', user: { displayId: boom('handle') } },
+      { content: 'secret words', user: { userId: boom('id') } }],
+    follow: [null, 7, badUser, { user: { nickname: boom('name') } }, { user: { displayId: boom('handle') } }],
+    share: [undefined, 'x', { user: 5 }, badUser, { user: { uniqueId: boom('handle') } }],
+    social: [null, { common: 7 }, badUser, { common: { displayText: { key: Symbol('secret') } } },
+      { common: { get displayText() { throw new Error('secret getter'); } } }, { displayType: boom('type') },
+      { common: { displayText: { key: 'pm_main_follow_message_viewer_2' } }, user: { nickname: boom('name') } }],
+  };
+  for (const [ev, list] of Object.entries(bad)) list.forEach((d, i) => assert.doesNotThrow(() => c.emit(ev, d), `${ev} #${i}`));
+  // the local gift-end step fails (whatever the cause): the gift is still credited and the next one still works
+  const emitLocal = link._emitLocal;
+  link._emitLocal = function (ev, x) { if (ev === 'giftEnd') throw new TypeError('secret end'); return emitLocal.call(this, ev, x); };
+  assert.doesNotThrow(() => c.emit('gift', giftFrame({ type: 0, combo: false, coins: 10, name: 'Cap', giftId: '900', msgId: '424241' })));
+  link._emitLocal = emitLocal;
+  assert.equal(gifts.length, 1, 'credited');
+  assert.equal(link._giftEnd, null, 'nothing left over for the next gift');
+  // the feed carries on: a good comment, follow, share, taps and a gift all arrive, and reach the VTuber
+  assert.ok(await until(() => v.inFlight === 0));
+  c.emit('chat', { content: 'all good', user: { userId: 'ok1', displayId: 'okay', nickname: 'Okay' } });
+  c.emit('follow', { user: { userId: 'ok2', nickname: 'Okay Two' } });
+  c.emit('share', { user: { userId: 'ok3', nickname: 'Okay Three' } });
+  c.emit('like', { count: 4, total: '104' });
+  c.emit('gift', giftFrame({ type: 0, combo: false, coins: 100, name: 'Crown', giftId: '901', msgId: '424242', user: 'ben' }));
+  assert.deepEqual(got.slice(-3), ['comment', 'follow', 'share']);
+  assert.equal(likes.length, 1);
+  assert.equal(gifts.length, 2);
+  assert.equal(link.state.status, 'live');
+  assert.ok(await until(() => srv.events('comment').some((e) => e.text === 'all good') && srv.events('gift').some((e) => e.gift === 'Crown')
+    && srv.events('follow').some((e) => e.name === 'Okay Two') && srv.events('share').some((e) => e.name === 'Okay Three')));
+  assert.ok(!srv.posts.some((p) => /secret/.test(p.body)), 'nothing from a malformed payload reached the VTuber');
+  // one line per kind, naming only the kind and the error type
+  for (const kind of ['comment', 'follow', 'share', 'social', 'giftEnd']) {
+    assert.equal(logs.filter((l) => l.includes(`skipped a malformed TikTok ${kind} message`)).length, 1, kind);
+  }
+  assert.ok(!/secret|Okay|maria|\bben\b/i.test(logs.join('\n')), logs.join('\n'));
+});
+
 test('tiktok-live-connector 2.4.4: the event names, and how a social message becomes follow / share', async (t) => {
   const L = require('tiktok-live-connector');
   assert.equal(L.WebcastEvent.CHAT, 'chat');

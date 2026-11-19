@@ -374,6 +374,15 @@ class TikTokLink extends EventEmitter {
     try { this.emit(event, data); } catch (e) { this.log('warn', `local ${event} listener failed (${(e && e.name) || 'error'})`); }
   }
 
+  // Runs a local-only handler. A malformed TikTok payload that makes it throw is skipped; the log says so once per kind,
+  // with the error's type only (never the payload, a name or a comment).
+  _safeLocal(kind, fn) {
+    try { fn(); } catch (e) {
+      if (!this._localSkipped) this._localSkipped = new Set();
+      if (!this._localSkipped.has(kind)) { this._localSkipped.add(kind); this.log('warn', `skipped a malformed TikTok ${kind} message (${(e && e.name) || 'error'})`); }
+    }
+  }
+
   _pruneGifts(now) {
     if (this.giftStreaks.size > 3000) for (const [k, v] of this.giftStreaks) if (now - v.at > 600000) this.giftStreaks.delete(k);
     if (this.giftMsgs.size > 3000) for (const [k, at] of this.giftMsgs) if (now - at > 600000) this.giftMsgs.delete(k);
@@ -551,8 +560,8 @@ class TikTokLink extends EventEmitter {
       this._giftEnd = null;
       const g = this._gift(d);
       if (g) this.emit('gift', g);
-      const end = this._giftEnd; this._giftEnd = null;
-      if (end) this._emitLocal('giftEnd', end);                     // 2.1.2, local only (after the credit, never instead)
+      // 2.1.2, local only (after the credit, never instead); can't throw into the feed
+      this._safeLocal('giftEnd', () => { const end = this._giftEnd; this._giftEnd = null; if (end) this._emitLocal('giftEnd', end); });
     });
     on(W.LIKE, (d) => {
       confirm();
@@ -572,20 +581,21 @@ class TikTokLink extends EventEmitter {
     // tiktok-live-connector 2.4.4: 'chat' = WebcastChatMessage (the comment is `content`; older shapes `comment`);
     // 'follow' / 'share' = a WebcastSocialMessage whose displayText key says follow / share (anything else is 'social',
     // not used). They don't confirm a room on probation: only viewers, taps and gifts do, as before.
-    on(W.CHAT, (d) => {
+    // Each body is wrapped: no payload, however malformed, can throw into the connector (whose error log would carry it).
+    on(W.CHAT, (d) => this._safeLocal('comment', () => {
       const text = clip(String((d && (d.content ?? d.comment)) || '').replace(/\s+/g, ' '), 500);   // line breaks -> spaces
       if (text) this._emitLocal('comment', { ...this._viewer(d), text, at: this.now() });
-    });
-    on(W.FOLLOW, (d) => this._emitLocal('follow', { ...this._viewer(d), at: this.now() }));
-    on(W.SHARE, (d) => this._emitLocal('share', { ...this._viewer(d), at: this.now() }));
+    }));
+    on(W.FOLLOW, (d) => this._safeLocal('follow', () => this._emitLocal('follow', { ...this._viewer(d), at: this.now() })));
+    on(W.SHARE, (d) => this._safeLocal('share', () => this._emitLocal('share', { ...this._viewer(d), at: this.now() })));
     // 2.4.4 tells follow / share apart by common.displayText.key alone; if TikTok moves the word elsewhere (displayType,
     // the text pattern) the message arrives as 'social': read it there too. A message 2.4.4 already sorted never comes here.
-    on(W.SOCIAL, (d) => {
+    on(W.SOCIAL, (d) => this._safeLocal('social', () => {
       const dt = (d && d.common && d.common.displayText) || {};
       const what = `${dt.key || ''} ${(d && d.displayType) || ''} ${dt.defaultPattern || ''}`;
       const kind = /follow/i.test(what) ? 'follow' : /share/i.test(what) ? 'share' : null;
       if (kind) this._emitLocal(kind, { ...this._viewer(d), at: this.now() });
-    });
+    }));
 
     try {
       let roomId = manual || cached || undefined;
