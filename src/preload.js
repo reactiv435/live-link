@@ -46,4 +46,9 @@ contextBridge.exposeInMainWorld('liveLink', {
   // 2.1.0: an alert when something breaks during a LIVE, and the pre-show check before a scheduled show
   onAlert: (cb) => { const f = (_e, a) => cb(a); ipcRenderer.on('alert', f); return () => ipcRenderer.removeListener('alert', f); },
   onPreshow: (cb) => { const f = (_e, a) => cb(a); ipcRenderer.on('preshow', f); return () => ipcRenderer.removeListener('preshow', f); },
+  // 2.2.0: the VTuber card (Ryo, Melanie, the Mask)
+  getVtuber: () => ipcRenderer.invoke('vtuber:get'),
+  openVtuber: () => ipcRenderer.invoke('vtuber:open'),
+  closeVtuber: () => ipcRenderer.invoke('vtuber:close'),
+  onVtuber: (cb) => { const f = (_e, c) => cb(c); ipcRenderer.on('vtuber', f); return () => ipcRenderer.removeListener('vtuber', f); },
 });

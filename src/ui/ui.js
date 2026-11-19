@@ -55,7 +55,7 @@
   // 2.0.8: the banner is BIG and stays until the update is installed. During a LIVE it can be put off ("Remind me after
   // this LIVE"), never while idle. A version too old to work (update_required) blocks the whole window instead.
   let upd = null, snoozed = null;   // snoozed = { version } while a LIVE is on and the host put the banner off
-  const WAIT_FOR = { recording: 'your recording ends', clips: 'your clips are done', live: 'your LIVE ends' };
+  const WAIT_FOR = { recording: 'your recording ends', clips: 'your clips are done', live: 'your LIVE ends', vtuber: 'you switch VTuber off' };
   function renderUpdate(s) {
     s = s || current || {};
     const need = s.phase === 'update_required', avail = !!(s.update && s.update.available);
@@ -915,6 +915,35 @@
   });
 
   if (bridge.onShow) { bridge.onShow(renderShow); bridge.getShow().then(renderShow); }
+
+  // ---------------------------------------------------------------- 2.2.0: the VTuber card
+  // Every word on it comes from the app (core/vtuber-host.js vtuberCard): one plain sentence that says what to do.
+  const VT_PILL = { off: 'OFF', wait: 'STARTING', ok: 'READY', on: 'ON', fix: 'FIX THIS' };
+  let vtBusy = false;
+  function renderVtuber(c) {
+    const card = $('vtcard');
+    if (!card) return;
+    if (!c || !c.show) { card.classList.add('hidden'); return; }
+    card.classList.remove('hidden');
+    for (const k of Object.keys(VT_PILL)) card.classList.toggle(k, c.tone === k);
+    $('vtcard-pill').textContent = VT_PILL[c.tone] || '';
+    $('vtcard-text').textContent = c.text || '';
+    const b = $('vtcard-btn');
+    b.classList.toggle('hidden', !c.button);
+    b.textContent = c.button || '';
+    b.disabled = vtBusy;
+    $('vtcard-close').classList.toggle('hidden', !c.open);
+  }
+  if (bridge.onVtuber && $('vtcard')) {
+    bridge.onVtuber(renderVtuber);
+    bridge.getVtuber().then(renderVtuber);
+    $('vtcard-btn').addEventListener('click', () => {
+      if (vtBusy) return;
+      vtBusy = true; $('vtcard-btn').disabled = true;
+      Promise.resolve(bridge.openVtuber()).then((c) => { vtBusy = false; renderVtuber(c); }, () => { vtBusy = false; bridge.getVtuber().then(renderVtuber); });
+    });
+    $('vtcard-close').addEventListener('click', () => { bridge.closeVtuber(); });
+  }
 
   // ------------------------------------------------------------ demo (browser only)
   function demoBridge() {

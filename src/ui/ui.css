@@ -296,6 +296,20 @@ button:focus:not(:focus-visible) { outline: none; }
 .light.alarm { animation: alarm .5s ease-in-out 6; }
 @keyframes alarm { 50% { box-shadow: 0 0 0 3px rgba(255,59,84,.85), 0 0 30px rgba(255,59,84,.6); } }
 
+/* 2.2.0: the VTuber card */
+.vtcard { padding: 12px 14px; display: grid; gap: 8px; }
+.vtcard-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.vtcard h2 { margin: 0; font: 800 15px/1.2 var(--font); color: #fff; letter-spacing: .02em; }
+.vtcard-pill { font: 700 10.5px/1 var(--font); letter-spacing: .16em; padding: 6px 9px; border-radius: 999px; border: 1px solid var(--line2); color: var(--muted); }
+.vtcard-text { margin: 0; font-size: 13px; line-height: 1.45; color: #d6d6d6; user-select: text; text-wrap: pretty; }
+.vtcard-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.vtcard-btn { flex: 1 1 160px; }
+.vtcard.on { border-color: rgba(255,90,110,.6); background: linear-gradient(180deg, rgba(224,38,63,.13), rgba(224,38,63,.03)); }
+.vtcard.on .vtcard-pill { color: #fff; border-color: var(--crimson); background: var(--crimson-deep); }
+.vtcard.ok .vtcard-pill { color: #4dffa0; border-color: rgba(34,224,122,.55); }
+.vtcard.fix { border-color: rgba(230,230,230,.5); }
+.vtcard.fix .vtcard-pill { color: #fff; border-color: #e6e6e6; }
+.vtcard.fix .vtcard-text { color: #fff; }
 .ttcard { padding: 14px 16px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; border-color: rgba(255,90,110,.6); background: linear-gradient(180deg, rgba(224,38,63,.13), rgba(224,38,63,.03)); }
 .ttcard-head { display: flex; }
 .ttcard h2 { margin: 0; font: 800 18px/1.2 var(--font); color: #fff; text-wrap: balance; }

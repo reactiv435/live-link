@@ -1,6 +1,6 @@
 'use strict';
 // ReactivVibe LIVE Link: Electron main process. Owns the TikTok link, the site client, the tray and one window.
-const { app, BrowserWindow, Tray, Menu, ipcMain, shell, safeStorage, nativeImage, Notification, powerMonitor, dialog, globalShortcut, session, desktopCapturer } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, shell, safeStorage, nativeImage, Notification, powerMonitor, dialog, globalShortcut, session, desktopCapturer, utilityProcess, screen } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -13,6 +13,8 @@ const { Updater, shouldAutoInstall } = require('./core/updater');
 const { TikTokSignIn, USER_AGENT: CHROME_UA, LOGIN_URL, SESSION_COOKIES, SIGNIN_HOSTS } = require('./core/tiktok-signin');
 const { pickCaptureSource, extFor, CHUNK_MS } = require('./core/capture');
 const { VtuberLink } = require('./core/vtuber-link');
+const { VtuberHost, vtuberCard, vtuberEnabled, pickCameraSource } = require('./core/vtuber-host');
+const { EventEmitter } = require('events');
 const SITE = require('./site-config.json');
 
 // The bundled ffmpeg (records the LIVE, cuts the review clips) and the clip font. Packaged: resources/ffmpeg/<os>-<cpu>/
@@ -35,6 +37,19 @@ const IS_MAC = process.platform === 'darwin';
 let START_HIDDEN = process.argv.includes('--hidden');
 const API_BASE = process.env.LIVE_LINK_API || SITE.apiBase;      // LIVE_LINK_API = the local mock for testing
 
+// Tests and development only: LIVE_LINK_USER_DATA=<folder> gives this run its OWN data folder (settings, sign-in token,
+// logs, the VTuber's files). It is set before the single-instance lock, which is tied to the data folder: such a run
+// never wakes, replaces or logs out the LIVE Link the host really uses. A run like that is a TEST RUN: it only starts
+// against a local stand-in for the site (LIVE_LINK_API on 127.0.0.1), it never connects to TikTok, and its VTuber only
+// talks to a pretend OBS it is given (LIVE_LINK_VTUBER_TEST), never to the real OBS on this computer.
+const TEST_RUN = !!process.env.LIVE_LINK_USER_DATA;
+if (TEST_RUN) {
+  app.setPath('userData', path.resolve(process.env.LIVE_LINK_USER_DATA));
+  if (!/^http:\/\/127\.0\.0\.1:\d+\//.test(API_BASE)) { process.stderr.write('A run with LIVE_LINK_USER_DATA is a test run: it needs LIVE_LINK_API on http://127.0.0.1:<port>/ (the local stand-in for the site).\n'); app.exit(2); return; }
+}
+let TEST_VTUBER = null;
+if (TEST_RUN) { try { TEST_VTUBER = JSON.parse(process.env.LIVE_LINK_VTUBER_TEST || 'null'); } catch { TEST_VTUBER = null; } }
+
 // A second copy must stop HERE: if it ran on, its startup token refresh would rotate the device token and
 // knock the running copy offline mid-show. app.quit() is asynchronous, so exit and return.
 if (!app.requestSingleInstanceLock()) { app.exit(0); return; }
@@ -55,6 +70,7 @@ process.on('uncaughtException', (e) => log('error', `uncaught: ${e && e.stack ||
 process.on('unhandledRejection', (e) => log('error', `unhandled: ${e && e.stack || e}`));
 
 let win = null, tray = null, ctl = null, store = null, show = null, vtuber = null;
+let vtHost = null, vtWin = null, vtSession = null, vtOpening = null;
 let trayKind = '';
 
 // Pop-ups: connected to the LIVE, lost it for more than 20 s, and the end-of-LIVE summary.
@@ -149,6 +165,8 @@ function updateBusy(kind) {
   const st = show ? show.getState() : {};
   if (st.recording && st.recording.recording) return 'recording';
   if (st.busy) return 'clips';
+  // 2.2.0: VTuber is ON (the character covers the host's camera in OBS): no install, no restart
+  if (kind === 'install' && vtHost && vtHost.isOn) return 'vtuber';
   if (kind === 'download' && lastState && lastState.connected && lastState.tiktok && lastState.tiktok.status === 'live') return 'live';
   return null;
 }
@@ -301,13 +319,112 @@ function captureDriver() {
   };
 }
 
+// ---------------------------------------------------------------- 2.2.0: VTuber (Ryo, Melanie, the Mask)
+// The VTuber runs in its own process (core/vtuber-host.js) and serves its page on 127.0.0.1. That page opens in one
+// LIVE Link window with its own browser session: no preload, no Node, locked to that one local address. The session
+// says yes to exactly two things for that address: the microphone (the mouth follows the host's voice) and the ONE
+// window the VTuber named (OBS's small window of the host's camera, by its exact window number: there is no share list
+// and no other window or screen can be picked). Everything else is refused; a camera is never opened.
+const VT_PARTITION = 'persist:vtuber';
+const vtuberDir = () => (app.isPackaged ? path.join(process.resourcesPath, 'vtuber') : path.join(__dirname, '..', 'vendor', 'vtuber'));
+const vtOwn = (url) => { try { const u = new URL(url); return !!vtHost && vtHost.port > 0 && u.protocol === 'http:' && u.hostname === '127.0.0.1' && Number(u.port) === vtHost.port; } catch { return false; } };
+function vtuberSession() {
+  if (vtSession) return vtSession;
+  const ses = session.fromPartition(VT_PARTITION);
+  ses.setPermissionRequestHandler((wc, permission, cb, details) => {
+    const d = details || {};
+    if (!vtOwn(d.requestingUrl || (wc && wc.getURL()) || '')) return cb(false);
+    if (permission === 'media') return cb(!(d.mediaTypes || []).includes('video'));   // the microphone, never a camera
+    cb(permission === 'display-capture');
+  });
+  ses.setPermissionCheckHandler((_wc, permission, origin, details) => {
+    const d = details || {};
+    if (!vtOwn(origin || d.requestingUrl || '')) return false;
+    if (permission === 'media') return d.mediaType !== 'video';
+    return permission === 'display-capture';
+  });
+  ses.setDisplayMediaRequestHandler((req, cb) => {
+    const no = () => { try { cb({}); } catch { try { cb(null); } catch {} } };   // no window: the page reads the camera the slower way by itself
+    const want = vtHost && vtHost.cameraWindow;
+    if (!want || !vtOwn((req && req.securityOrigin) || '')) return no();
+    desktopCapturer.getSources({ types: ['window'], thumbnailSize: { width: 0, height: 0 }, fetchWindowIcons: false }).then((list) => {
+      const src = pickCameraSource(list, vtHost && vtHost.cameraWindow);
+      if (!src) { log('info', 'VTuber: the camera window is not on the list of windows: the slower way'); return no(); }
+      try { cb({ video: src }); } catch { no(); }
+    }, no);
+  }, { useSystemPicker: false });
+  vtSession = ses;
+  return ses;
+}
+const vtuberOn = () => !(ctl && vtuberEnabled(ctl.cfg) === false);
+const vtuberCardNow = () => ({ ...vtuberCard(vtHost ? vtHost.getState() : null, { enabled: vtuberOn(), platform: process.platform }), open: !!(vtWin && !vtWin.isDestroyed()) });
+let vtCardKey = '';
+function sendVtuber() {
+  if (!win || win.isDestroyed()) return;
+  const card = vtuberCardNow(), key = JSON.stringify(card);
+  if (key === vtCardKey) return;
+  vtCardKey = key;
+  try { win.webContents.send('vtuber', card); } catch {}
+}
+// A test run keeps its windows small and out of the way (bottom right), and never takes the keyboard from the owner.
+function testBounds(w, h, slot) {
+  const a = screen.getPrimaryDisplay().workArea;
+  return { width: w, height: h, x: a.x + a.width - (w + 10) * (slot + 1), y: a.y + a.height - h - 10 };
+}
+function showVtuberWindow() {
+  if (!vtWin || vtWin.isDestroyed()) return;
+  if (TEST_RUN) { vtWin.showInactive(); return; }
+  if (vtWin.isMinimized()) vtWin.restore();
+  vtWin.show(); vtWin.focus();
+}
+function openVtuber() {
+  if (vtWin && !vtWin.isDestroyed()) { showVtuberWindow(); return Promise.resolve(vtuberCardNow()); }
+  if (vtOpening) return vtOpening;
+  if (!vtHost || !vtuberOn()) return Promise.resolve(vtuberCardNow());
+  vtOpening = (async () => {
+    const r = await vtHost.start();
+    if (!r.ok || quitting) return vtuberCardNow();
+    const origin = `http://127.0.0.1:${r.port}`;
+    const w = new BrowserWindow({
+      ...(TEST_RUN ? testBounds(360, 560, 0) : { width: 600, height: 940 }), minWidth: 340, minHeight: 480, title: 'LIVE Link VTuber', autoHideMenuBar: true, show: false,
+      backgroundColor: '#0a0a0a', icon: iconPath(IS_MAC ? 'icon.png' : 'icon.ico'),
+      webPreferences: { session: vtuberSession(), sandbox: true, contextIsolation: true, nodeIntegration: false, backgroundThrottling: false, autoplayPolicy: 'no-user-gesture-required', spellcheck: false },
+    });
+    vtWin = w;
+    if (!IS_MAC) w.removeMenu();
+    // its own title, whatever the page calls itself (the desktop-shortcut VTuber's window is called "VTuber")
+    w.on('page-title-updated', (e) => e.preventDefault());
+    w.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+    w.webContents.on('will-navigate', (e, url) => { if (!String(url).startsWith(origin + '/')) e.preventDefault(); });
+    w.webContents.on('render-process-gone', (_e, d) => { log('warn', `VTuber: its window stopped (${d && d.reason})`); try { w.destroy(); } catch {} });
+    w.once('ready-to-show', () => { if (vtWin === w) showVtuberWindow(); });
+    w.on('closed', () => {
+      if (vtWin === w) vtWin = null;
+      // closing the window = OFF: the VTuber switches the avatar off in OBS (the host's camera shows) and ends
+      if (vtHost) vtHost.stop().catch(() => {});
+      sendVtuber();
+    });
+    log('info', 'VTuber: window opened');
+    w.loadURL(origin + '/vtuber.html').catch((e) => { log('warn', `VTuber: its page did not load (${e && e.message})`); try { w.destroy(); } catch {} });
+    return vtuberCardNow();
+  })().catch((e) => { log('warn', `VTuber: could not open (${e && e.message})`); return vtuberCardNow(); }).finally(() => { vtOpening = null; sendVtuber(); });
+  return vtOpening;
+}
+function closeVtuber() {
+  if (vtWin && !vtWin.isDestroyed()) { try { vtWin.close(); } catch {} }
+  else if (vtHost) vtHost.stop().catch(() => {});
+  return true;
+}
+
 function createWindow() {
   win = new BrowserWindow({
     width: 460, height: 780, resizable: true, minWidth: 420, minHeight: 600, maximizable: false, fullscreenable: false,
-    backgroundColor: '#0a0a0a', title: 'ReactivVibe LIVE Link', autoHideMenuBar: true, show: !START_HIDDEN,
+    backgroundColor: '#0a0a0a', title: 'ReactivVibe LIVE Link', autoHideMenuBar: true, show: !START_HIDDEN && !TEST_RUN,
     icon: iconPath(IS_MAC ? 'icon.png' : 'icon.ico'),
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: false },
+    ...(TEST_RUN ? { ...testBounds(420, 600, 1), title: 'LIVE Link (test run)' } : {}),
   });
+  if (TEST_RUN) { win.on('page-title-updated', (e) => e.preventDefault()); if (!START_HIDDEN) win.once('ready-to-show', () => win.showInactive()); }
   if (!IS_MAC) win.removeMenu();   // a Mac app keeps its app menu (Quit, and Copy/Paste for the pair code)
   win.loadFile(path.join(__dirname, 'ui', 'index.html'));
   // Links never open inside the app.
@@ -327,7 +444,7 @@ function createWindow() {
   });
 }
 
-function showWindow() { if (!win) createWindow(); win.show(); win.focus(); }
+function showWindow() { if (!win) createWindow(); if (TEST_RUN) { win.showInactive(); return; } win.show(); win.focus(); }
 
 const HOLD_LABEL = { test: 'TEST MODE (nothing is added)', show: 'start your show on the site', song: 'no song on air' };
 // withCount: the tooltip shows the running tap count; the menu doesn't (it would have to be rebuilt every push).
@@ -402,6 +519,7 @@ app.whenReady().then(async () => {
 
   // The link keeps refused lookups, this LIVE's room and a pasted room in the settings file (they must survive a restart).
   const link = new TikTokLink({ log, persist: { get: (k) => store.get(k), set: (k, v) => store.set(k, v) } });
+  if (TEST_RUN) link.start = () => { log('info', 'test run: the TikTok link stays off'); };   // a test run never connects to TikTok
   const api = new LiveLinkApi({ baseUrl: API_BASE, apiKey: SITE.publishableKey, getToken: () => store.getToken(), userAgent: `ReactivVibe-LIVE-Link/${VERSION}` });
   ctl = new Controller({ api, link, store, log, appVersion: VERSION, deviceName: store.get('deviceName') });
 
@@ -413,7 +531,51 @@ app.whenReady().then(async () => {
   // 2.1.2: the LIVE's gifts, likes, comments, follows and shares also go to a VTuber on this computer when one is
   // listening on 127.0.0.1 (core/vtuber-link.js; nothing new for the host to set up). Attached after the controller and
   // the recorder, so their handling of every event runs first and can't be slowed or broken by it.
-  vtuber = new VtuberLink({ log }).attach(link);
+  // 2.2.0: the VTuber can run inside LIVE Link (the VTuber card). It has its own process; while it runs, the events
+  // are handed to it inside the app, and the HTTP way stays for the desktop-shortcut VTuber.
+  vtHost = new VtuberHost({
+    dir: vtuberDir(), dataDir: path.join(app.getPath('userData'), 'vtuber'), log, test: TEST_RUN, testConfig: TEST_VTUBER,
+    spawn: (entry, env) => {
+      const child = utilityProcess.fork(entry, [], { env: { ...process.env, ...env }, stdio: 'ignore', serviceName: 'LIVE Link VTuber' });
+      return { post: (m) => child.postMessage(m), onMessage: (fn) => child.on('message', fn), onExit: (fn) => child.on('exit', fn), kill: () => child.kill() };
+    },
+  });
+  vtHost.on('state', () => { sendVtuber(); if (updater) updater.poke(); });
+  vtHost.on('front', showVtuberWindow);
+  // its process ended (closed, or crashed): the window goes too, and the card offers "Open VTuber" again
+  vtHost.on('exit', () => { if (vtWin && !vtWin.isDestroyed()) { try { vtWin.destroy(); } catch {} } sendVtuber(); });
+  ipcMain.handle('vtuber:get', () => vtuberCardNow());
+  ipcMain.handle('vtuber:open', () => openVtuber());
+  ipcMain.handle('vtuber:close', () => closeVtuber());
+  const testHttpPort = TEST_RUN ? Number(process.env.LIVE_LINK_VTUBER_HTTP_PORT) || 0 : 0;
+  vtuber = new VtuberLink({
+    log, direct: () => (vtHost && vtHost.running ? (ev) => vtHost.event(ev) : null),
+    // a test run never asks the real VTuber's place (8791) on this computer: HTTP only to a place the test names
+    ...(TEST_RUN ? (testHttpPort && testHttpPort !== 8791 ? { port: testHttpPort } : { http: false }) : {}),
+  });
+  const testFeed = TEST_RUN && Number(process.env.LIVE_LINK_TEST_FEED) > 0;
+  if (!testFeed) vtuber.attach(link);
+  // Test runs only: a pretend TikTok LIVE for the VTuber (made-up viewers; the real TikTok link, the site's taps and
+  // gifts, and the recorder never see it). LIVE_LINK_TEST_FEED = gifts a second.
+  // (the pretend LIVE takes the place of the real link, whose 'not live' would switch it off again)
+  if (testFeed) {
+    const feed = new EventEmitter(), perSec = Math.min(40, Number(process.env.LIVE_LINK_TEST_FEED));
+    feed.state = { status: 'idle' };
+    vtuber.attach(feed);
+    let n = 0;
+    setTimeout(() => {
+      feed.emit('state', { status: 'live' });
+      setInterval(() => {
+        const at = Date.now();
+        for (let i = 0; i < perSec; i++) { n++; feed.emit('giftEnd', { key: 's:' + n, name: n % 9 === 0 ? 'Galaxy' : 'Rose', coins: n % 9 === 0 ? 1000 : 1, count: 1 + (n % 3), userName: 'Viewer ' + (n % 50), at }); }
+        feed.emit('like', { count: 15, name: 'Viewer ' + (n % 50) });
+        if (n % 2 === 0) feed.emit('comment', { name: 'Viewer ' + (n % 50), text: 'test comment ' + n, at });
+        if (n % 5 === 0) feed.emit('follow', { name: 'Viewer ' + n, userId: 'u' + n, at });
+        if (n % 7 === 0) feed.emit('share', { name: 'Viewer ' + (n % 50), at });
+      }, 1000).unref();
+      setInterval(() => log('info', `test feed: ${JSON.stringify(vtuber.stats)}`), 30000).unref();
+    }, 3000).unref();
+  }
   show.refreshSignIn().then((on) => { if (on) log('info', 'TikTok sign-in: a saved sign-in is present'); });
   ipcMain.handle('tiktok:signin', () => openTikTokSignIn());
   ipcMain.handle('tiktok:signout', () => signOutTikTok());
@@ -529,6 +691,7 @@ app.whenReady().then(async () => {
     if (updater) { updater.offer(s.update); updater.poke(); }
     updateTray(s);
     if (win && !win.isDestroyed()) win.webContents.send('state', s);
+    sendVtuber();   // the site can switch the VTuber card off for a host (live-link-config: vtuber.enabled false)
   });
 
   ipcMain.handle('getState', () => lastState || ctl.getState());
@@ -680,7 +843,7 @@ app.on('window-all-closed', (e) => { /* stay in the tray */ });
 // Before quitting: up to 3 s for queued gifts (quitting right after a gift must not lose it), then up to 1.5 s to
 // tell the site this computer stopped watching (the dashboard shows it at once), then quit.
 let quitFlushed = false;
-app.on('will-quit', () => { try { globalShortcut.unregisterAll(); } catch {} try { if (vtuber) vtuber.stop(); } catch {} });
+app.on('will-quit', () => { try { globalShortcut.unregisterAll(); } catch {} try { if (vtuber) vtuber.stop(); } catch {} try { if (vtHost) vtHost.kill(); } catch {} });
 // Quitting while clips are still being made: ask first (they'd finish next time, but the host should know).
 let quitAsking = false;
 app.on('before-quit', (e) => {
@@ -701,13 +864,16 @@ app.on('before-quit', (e) => {
   if (quitFlushed || !ctl) { if (ctl) ctl.stop(); if (installOnQuit(e)) return; return; }
   quitFlushed = true;
   const needGifts = ctl.hasPendingGifts(), needStatus = ctl.getState().phase === 'ready', needRec = !!(show && show.recorder.active);
-  if (!needGifts && !needStatus && !needRec) { ctl.stop(); installOnQuit(e); return; }          // nothing to send or close: quit right away
+  // 2.2.0: a running VTuber is stopped first, so the avatar is OFF in OBS (the host's camera shows) before LIVE Link is gone
+  const needVt = !!(vtHost && vtHost.child);
+  if (!needGifts && !needStatus && !needRec && !needVt) { ctl.stop(); installOnQuit(e); return; }          // nothing to send or close: quit right away
   e.preventDefault();
+  const vtDone = needVt ? Promise.race([vtHost.stop(), new Promise((r) => setTimeout(r, 4000))]).catch(() => {}) : Promise.resolve();
   // A recording is closed properly first (ffmpeg finishes its last piece), in parallel with the gift flush.
   const rec = needRec ? show.shutdown().catch(() => {}) : Promise.resolve();
   const gifts = needGifts ? ctl.flushBeforeQuit(3000).catch(() => {}) : Promise.resolve();
   // Quit again from a FRESH task. Called from this handler's own promise callbacks it can run nested inside the first
   // quit, whose "prevented" result then cancels it: on macOS the app never exited (Cmd+Q / SIGTERM did nothing).
-  Promise.all([gifts, rec]).then(() => ctl.sendFinalStatus(1500)).catch(() => {}).finally(() => setTimeout(() => app.quit(), 0));
+  Promise.all([gifts, rec, vtDone]).then(() => ctl.sendFinalStatus(1500)).catch(() => {}).finally(() => setTimeout(() => app.quit(), 0));
   setTimeout(() => { log('warn', 'quit did not finish in 11 s: exiting'); app.exit(0); }, needRec ? 11000 : 6000).unref();
 });
