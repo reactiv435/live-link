@@ -2,6 +2,7 @@
 // 2.1.2: TikTok events for a VTuber on this computer (src/core/vtuber-link.js). Every test talks to a local HTTP server
 // on a random free port (never the real 8791) and never to TikTok or the site's real endpoints.
 const test = require('node:test');
+const { after } = test;
 const assert = require('node:assert/strict');
 const EventEmitter = require('events');
 const http = require('http');
@@ -19,6 +20,11 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 const tick = () => new Promise((r) => setImmediate(r));
 async function until(fn, ms = 4000) { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (fn()) return true; await wait(10); } return false; }
 const LONE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+
+// Every server, link and timer a test opens is closed in its t.after, so a failing test can't keep this file running.
+// The file-level after() is the last net for the stand-in servers.
+const openServers = new Set();
+after(async () => { for (const s of [...openServers]) await s.close(); });
 
 // A stand-in VTuber server. mode: 'ok' (GET 200 {ok,v}, POST 204) | 'down' (GET 503: something answers, not a VTuber).
 function vtuberServer() {
@@ -41,7 +47,12 @@ function vtuberServer() {
     });
   });
   s.listen = () => new Promise((r) => s.server.listen(0, '127.0.0.1', () => { s.port = s.server.address().port; r(s.port); }));
-  s.close = () => new Promise((r) => { s.server.closeAllConnections && s.server.closeAllConnections(); s.server.close(() => r()); });
+  s.close = () => s.closing || (s.closing = new Promise((r) => {   // safe to call twice
+    openServers.delete(s);
+    s.server.closeAllConnections && s.server.closeAllConnections();
+    s.server.close(() => r());
+  }));
+  openServers.add(s);
   s.events = (type) => s.posts.filter((p) => p.json && (!type || p.json.type === type)).map((p) => p.json);
   return s;
 }
@@ -86,10 +97,11 @@ function giftFrame({ count = 1, end = 0, coins = 1, type = 1, combo = true, grou
     user: { userId: 'u-' + user, displayId: user, nickname: user.toUpperCase() }, toUser: to ? { displayId: to } : undefined };
 }
 
-async function liveLink(scenario = ['live'], user = 'host') {
+async function liveLink(t, scenario = ['live'], user = 'host') {
   const f = fakeLib(scenario);
   const logs = [];
   const link = new TikTokLink({ lib: f.lib, ...noTimers, log: (l, m) => logs.push(`${l} ${m}`) });
+  t.after(() => link.stop());
   link.start(user);
   await tick(); await tick();
   return { f, link, logs, c: f.made[0] };
@@ -97,8 +109,8 @@ async function liveLink(scenario = ['live'], user = 'host') {
 
 // ---------------------------------------------------------------- tiktok-link: the local-only events
 
-test('giftEnd: one per finished combo (its end frame, final count) and one per single gift; the credited gift frames are unchanged', async () => {
-  const { link, c } = await liveLink();
+test('giftEnd: one per finished combo (its end frame, final count) and one per single gift; the credited gift frames are unchanged', async (t) => {
+  const { link, c } = await liveLink(t);
   const gifts = [], ends = [];
   link.on('gift', (g) => gifts.push(g));
   link.on('giftEnd', (g) => ends.push(g));
@@ -128,11 +140,10 @@ test('giftEnd: one per finished combo (its end frame, final count) and one per s
   // a combo that starts and ends in one frame
   c.emit('gift', giftFrame({ count: 3, end: 1, group: '1759900000999', user: 'cat' }));
   assert.deepEqual(ends.slice(3).map((e) => e.count), [3]);
-  link.stop();
 });
 
-test('comments, follows and shares are read (2.4.4 chat / follow / share, social as a fallback) with the gift cuts, and never confirm a room', async () => {
-  const { link, c } = await liveLink();
+test('comments, follows and shares are read (2.4.4 chat / follow / share, social as a fallback) with the gift cuts, and never confirm a room', async (t) => {
+  const { link, c } = await liveLink(t);
   const got = [];
   for (const ev of ['comment', 'follow', 'share']) link.on(ev, (x) => got.push([ev, x]));
   c.emit('chat', { content: 'hello\nthere', user: { userId: 'u1', displayId: '@mira', nickname: 'Mira B' } });
@@ -156,11 +167,10 @@ test('comments, follows and shares are read (2.4.4 chat / follow / share, social
   c.emit('chat', { content: 'x'.repeat(499) + '\u{1F525}', user: { nickname: 'N'.repeat(79) + '\u{1F339}' } });
   const last = got.at(-1)[1];
   assert.ok(last.text.length <= 500 && last.name.length <= 80 && !LONE.test(last.text) && !LONE.test(last.name));
-  link.stop();
 });
 
-test('a VTuber listener that throws never breaks the feed: gifts and likes still arrive, the log names no viewer and no comment', async () => {
-  const { link, c, logs } = await liveLink();
+test('a VTuber listener that throws never breaks the feed: gifts and likes still arrive, the log names no viewer and no comment', async (t) => {
+  const { link, c, logs } = await liveLink(t);
   const likes = [], gifts = [];
   link.on('like', (l) => likes.push(l));
   link.on('gift', (g) => gifts.push(g));
@@ -174,10 +184,9 @@ test('a VTuber listener that throws never breaks the feed: gifts and likes still
   assert.equal(link.state.status, 'live');
   const all = logs.join('\n');
   assert.ok(!/secret|Secret|MARIA|maria/.test(all), all);
-  link.stop();
 });
 
-test('tiktok-live-connector 2.4.4: the event names, and how a social message becomes follow / share', async () => {
+test('tiktok-live-connector 2.4.4: the event names, and how a social message becomes follow / share', async (t) => {
   const L = require('tiktok-live-connector');
   assert.equal(L.WebcastEvent.CHAT, 'chat');
   assert.equal(L.WebcastEvent.FOLLOW, 'follow');
@@ -221,21 +230,23 @@ test('buildEvent: the contract shape, every field clipped, nothing sent for an e
 
 // ---------------------------------------------------------------- vtuber-link against a local server
 
-test('defaults: port 8791, the contract path, a 15 s ask and 4 like sends a second at most (no request made here)', () => {
+test('defaults: port 8791, the contract path, a 15 s ask and 4 like sends a second at most (no request made here)', (t) => {
   assert.equal(DEFAULT_PORT, 8791);
   assert.equal(PATH, '/api/tiktok-event');
   assert.equal(PROBE_EVERY_MS, 15000);
   assert.ok(LIKE_EVERY_MS >= 250);
   const v = new VtuberLink();
+  t.after(() => v.stop());
   assert.equal(v.port, 8791);
-  v.stop();
 });
 
-test('sends each event to 127.0.0.1 with the contract headers and body, only after the ask found a VTuber', async () => {
+test('sends each event to 127.0.0.1 with the contract headers and body, only after the ask found a VTuber', async (t) => {
   const srv = vtuberServer(); await srv.listen();
+  t.after(() => srv.close());
   const link = new FakeLink();
   const logs = [];
   const v = new VtuberLink({ port: srv.port, log: (l, m) => logs.push(`${l} ${m}`) }).attach(link);
+  t.after(() => v.stop());
   link.emit('comment', { name: 'Early', text: 'before the LIVE' });           // no LIVE yet: nothing, not even an ask
   await wait(50);
   assert.equal(srv.gets.length + srv.posts.length, 0);
@@ -266,13 +277,14 @@ test('sends each event to 127.0.0.1 with the contract headers and body, only aft
   // one quiet line, with no viewer name or comment in it
   assert.deepEqual(logs.filter((l) => /VTuber/.test(l)).length, 1);
   assert.ok(!/Mira|Fan|Sharer|Tapper|song/.test(logs.join('\n')));
-  v.stop(); await srv.close();
 });
 
-test('gifts through the real link: one send per finished combo with its final count, one per single gift; a combo that never ends goes out once it is quiet', async () => {
+test('gifts through the real link: one send per finished combo with its final count, one per single gift; a combo that never ends goes out once it is quiet', async (t) => {
   const srv = vtuberServer(); await srv.listen();
-  const { link, c } = await liveLink();
+  t.after(() => srv.close());
+  const { link, c } = await liveLink(t);
   const v = new VtuberLink({ port: srv.port, comboQuietMs: 300 }).attach(link);   // the link is already LIVE
+  t.after(() => v.stop());
   assert.ok(await until(() => v.ok));
   for (let n = 1; n <= 10; n++) c.emit('gift', giftFrame({ count: n, group: '1759900000123', user: 'mira' }));
   c.emit('gift', giftFrame({ count: 10, end: 1, group: '1759900000123', user: 'mira' }));
@@ -288,13 +300,14 @@ test('gifts through the real link: one send per finished combo with its final co
   await wait(400);
   const g = srv.events('gift').map((e) => [e.name, e.gift, e.coins, e.count]).sort();
   assert.deepEqual(g, [['BEN', 'Galaxy', 1000, 1], ['CAT', 'Heart', 5, 4], ['MIRA', 'Rose', 1, 10]]);
-  v.stop(); link.stop(); await srv.close();
 });
 
-test('likes are summed and sent at most 4 times a second, nothing lost', async () => {
+test('likes are summed and sent at most 4 times a second, nothing lost', async (t) => {
   const srv = vtuberServer(); await srv.listen();
+  t.after(() => srv.close());
   const link = new FakeLink();
   const v = new VtuberLink({ port: srv.port }).attach(link);
+  t.after(() => v.stop());
   const sends = [];
   const send = v._send.bind(v);
   v._send = (type, ...a) => { if (type === 'like') sends.push(performance.now()); return send(type, ...a); };
@@ -306,18 +319,20 @@ test('likes are summed and sent at most 4 times a second, nothing lost', async (
   const spanMs = Date.now() - t0;
   assert.ok(await until(() => srv.events('like').reduce((s, e) => s + e.count, 0) === taps, 2000), 'every tap arrives');
   assert.equal(sends.length, srv.events('like').length);
-  for (let i = 1; i < sends.length; i++) assert.ok(sends[i] - sends[i - 1] >= 250, `gap ${sends[i] - sends[i - 1]} ms`);
+  // the sends are timed here, a hair after the link's own 250 ms clock: allow 5 ms of jitter per gap
+  for (let i = 1; i < sends.length; i++) assert.ok(sends[i] - sends[i - 1] >= 245, `gap ${sends[i] - sends[i - 1]} ms`);
   assert.ok(sends.length <= Math.ceil(spanMs / 250) + 2, `${sends.length} sends in ${spanMs} ms`);
   assert.ok(sends.length >= 3, 'batched, not held back');
-  for (const a of sends) assert.ok(sends.filter((b) => b >= a && b < a + 1000).length <= 4, 'at most 4 in any one second');
-  v.stop(); await srv.close();
+  for (const a of sends) assert.ok(sends.filter((b) => b >= a && b < a + 4 * 245).length <= 4, 'at most 4 in any one second (less the jitter)');
 });
 
-test('nothing listening: no sends at all, one ask every interval while LIVE, none after the LIVE; found and lost logged once each', async () => {
+test('nothing listening: no sends at all, one ask every interval while LIVE, none after the LIVE; found and lost logged once each', async (t) => {
   const srv = vtuberServer(); srv.mode = 'down'; await srv.listen();
+  t.after(() => srv.close());
   const link = new FakeLink();
   const logs = [];
   const v = new VtuberLink({ port: srv.port, probeEveryMs: 200, log: (l, m) => logs.push(`${l} ${m}`) }).attach(link);
+  t.after(() => v.stop());
   link.set('live');
   const t0 = Date.now();
   for (let i = 0; i < 20; i++) {
@@ -352,27 +367,28 @@ test('nothing listening: no sends at all, one ask every interval while LIVE, non
   const probes = v.stats.probes;
   await wait(600);
   assert.equal(v.stats.probes, probes, 'no asks without a LIVE');
-  v.stop();
 });
 
-test('a port with nothing on it: the ask fails quietly, nothing is sent, nothing is logged', async () => {
+test('a port with nothing on it: the ask fails quietly, nothing is sent, nothing is logged', async (t) => {
   const port = await deadPort();
   const link = new FakeLink();
   const logs = [];
   const v = new VtuberLink({ port, probeEveryMs: 150, probeTimeoutMs: 1000, log: (l, m) => logs.push(`${l} ${m}`) }).attach(link);
+  t.after(() => v.stop());
   link.set('live');
   for (let i = 0; i < 10; i++) { link.emit('giftEnd', { key: 'm:zzzzzzzz' + i, count: 1, coins: 1, name: 'Rose', userName: 'A' }); await wait(40); }
   assert.ok(await until(() => v.stats.probes >= 2, 6000));
   assert.equal(v.ok, false);
   assert.equal(v.stats.sent + v.stats.failed, 0);
   assert.equal(logs.length, 0);
-  v.stop();
 });
 
-test('follows show once per viewer; never more than 10 other events a second (the VTuber\'s limit)', async () => {
+test('follows show once per viewer; never more than 10 other events a second (the VTuber\'s limit)', async (t) => {
   const srv = vtuberServer(); await srv.listen();
+  t.after(() => srv.close());
   const link = new FakeLink();
   const v = new VtuberLink({ port: srv.port }).attach(link);
+  t.after(() => v.stop());
   link.set('live');
   assert.ok(await until(() => v.ok));
   link.emit('follow', { name: 'F', userId: 'u1' });
@@ -383,25 +399,34 @@ test('follows show once per viewer; never more than 10 other events a second (th
   assert.equal(srv.events('follow').length, 2);
   assert.ok(srv.events('comment').length <= 8, `${srv.events('comment').length} comments in one second`);
   assert.ok(v.stats.dropped >= 22);
-  v.stop(); await srv.close();
 });
 
 // ---------------------------------------------------------------- the site paths are unchanged
 
 // The same LIVE (taps + a combo + a single gift) through the real link and the controller against the mock site,
 // once without and once with a VTuber attached and listening. The site must see exactly the same.
-async function runShow(withVtuber) {
-  const mock = createMock({ pushIntervalMs: 60, autoApprove: true });
+async function runShow(t, withVtuber) {
+  let mock = null, dir = null, link = null, ctl = null, srv = null, v = null, closed = false;
+  const close = async () => {
+    if (closed) return;
+    closed = true;
+    try { if (ctl) ctl.stop(); else if (link) link.stop(); } catch {}
+    try { if (v) v.stop(); } catch {}
+    if (mock) await mock.close();
+    if (srv) await srv.close();
+    try { if (dir) fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+  };
+  t.after(close);
+  mock = createMock({ pushIntervalMs: 60, autoApprove: true });
   const port = await mock.listen(0);
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'livelink-vt-'));
+  dir = fs.mkdtempSync(path.join(os.tmpdir(), 'livelink-vt-'));
   const store = new Store({ dir });
   const f = fakeLib(['live']);
-  const link = new TikTokLink({ lib: f.lib, ...noTimers });
+  link = new TikTokLink({ lib: f.lib, ...noTimers });
   const api = new LiveLinkApi({ baseUrl: `http://127.0.0.1:${port}/functions/v1/`, getToken: () => store.getToken() });
-  const ctl = new Controller({ api, link, store, appVersion: '1.0.0', deviceName: 'TEST-PC' });
+  ctl = new Controller({ api, link, store, appVersion: '1.0.0', deviceName: 'TEST-PC' });
   const credits = [];
   link.on('gift', (g) => credits.push({ ...g, at: 0 }));
-  let srv = null, v = null;
   if (withVtuber) {
     srv = vtuberServer(); await srv.listen();
     v = new VtuberLink({ port: srv.port }).attach(link);
@@ -426,14 +451,13 @@ async function runShow(withVtuber) {
     pushGifts: mock.state.pushes.flatMap((p) => (p.gifts || []).map((g) => ({ ...g, at: 0 }))),
     vt: srv ? srv.events().map((e) => [e.type, e.name, e.gift, e.count, e.text]) : null,
   };
-  ctl.stop(); if (v) v.stop();
-  await mock.close(); if (srv) await srv.close();
+  await close();
   return out;
 }
 
-test('the site sees exactly the same taps and gifts with a VTuber attached as without one', async () => {
-  const without = await runShow(false);
-  const withVt = await runShow(true);
+test('the site sees exactly the same taps and gifts with a VTuber attached as without one', async (t) => {
+  const without = await runShow(t, false);
+  const withVt = await runShow(t, true);
   const { vt, ...a } = withVt;
   const { vt: none, ...b } = without;
   assert.deepEqual(a, b);
