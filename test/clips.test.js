@@ -211,3 +211,26 @@ test('recorder: no video link yet -> asks again every 4 s (not the slow backoff)
   assert.ok(waits[waits.length - 1] >= 3000 && waits[waits.length - 1] !== 4000);
   clearInterval(rec.flushTimer);
 });
+
+// 2.2.0: a clip's recipe names the LIVE Link version that built it; nothing else in the recipe changed
+test('2.2.0 the recipe carries the app version (only that field is new), for the highlight and the full review', async () => {
+  const { buildRecipe, ClipJobs } = require('../src/core/clip-jobs');
+  const { ShowManager } = require('../src/core/show-manager');
+  const plan = { hot: { from: Date.UTC(2026, 10, 19, 12, 0, 5) }, hotWeight: 42 }, opts = { delayMs: 8000 };
+  const old = { hot: { from: '2026-11-19T12:00:05.000Z', weight: 42 }, delay_ms: 8000 };
+  assert.deepEqual(buildRecipe(plan, opts, null), old, 'without a version the recipe is exactly the 2.1.1 one');
+  assert.deepEqual(buildRecipe(plan, opts, '2.2.0'), { ...old, app_version: '2.2.0' });
+  assert.deepEqual(buildRecipe({ hot: null }, opts, '2.2.0'), { hot: null, delay_ms: 8000, app_version: '2.2.0' });
+  assert.equal(new ClipJobs({ api: {}, appVersion: '2.2.0' }).appVersion, '2.2.0');
+  assert.equal(new ClipJobs({ api: {} }).appVersion, null);
+  // the app hands its own version to the clip jobs (main.js gives the controller app.getVersion())
+  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'src', 'core', 'show-manager.js'), 'utf8');
+  assert.ok(src.includes('appVersion: (ctl && ctl.appVersion) || null'), 'the show manager passes the version on');
+  assert.equal(typeof ShowManager, 'function');
+  // the full review goes out later with the SAVED recipe of its job: the stamp of the version that built it travels with it
+  const sent = [];
+  const jobs = new ClipJobs({ api: { clipComplete: async (b) => { sent.push(b); return { ok: true }; } }, appVersion: '2.2.0' });
+  const saved = buildRecipe(plan, opts, jobs.appVersion);
+  await jobs.api.clipComplete({ play_id: 'p1', files: [{ kind: 'full' }], recipe: saved || {} });
+  assert.equal(sent[0].recipe.app_version, '2.2.0');
+});

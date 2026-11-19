@@ -132,7 +132,7 @@ class ShowManager extends EventEmitter {
     this.ffmpegOk = !!ffmpegPath && fs.existsSync(ffmpegPath);
     this.recorder = new Recorder({ ffmpegPath, clock: this.serverNow, log, capture: rec, ...(spawn ? { spawn } : {}) });
     this.recorder.captureEnabled = this.captureEnabled();
-    this.jobs = new ClipJobs({ api, ffmpegPath, fontFile, log, ...(spawn ? { spawn } : {}), ...(fetch ? { fetch } : {}), getOptions: () => this._clipOptions() });
+    this.jobs = new ClipJobs({ api, ffmpegPath, fontFile, log, ...(spawn ? { spawn } : {}), ...(fetch ? { fetch } : {}), getOptions: () => this._clipOptions(), appVersion: (ctl && ctl.appVersion) || null });
     this.starting = false;
     this.room = null;
     this.clipState = null;          // { dir, phase, index, total, title, sent, failed }

@@ -20,9 +20,19 @@ const MIN_COVERAGE = 0.6;   // a review the recording covers less than this is s
 const MAX_ATTEMPTS = 3;     // a review that failed this often waits for the host's "Make & send clips"
 const clockStamp = (ms) => { const d = new Date(Number(ms)); return [d.getHours(), d.getMinutes(), d.getSeconds()].map((n) => String(n).padStart(2, '0')).join('.'); };
 
+// What is sent with a clip as its recipe (the site keeps it as it is). 2.2.0: app_version = the LIVE Link version that
+// BUILT the clip (highlight and full review are cut in the same job, and the full review is sent later with this same
+// saved recipe), so a clip's builder version can always be told afterwards. Nothing else in the recipe changed.
+function buildRecipe(plan, opts, appVersion) {
+  const recipe = { hot: plan.hot ? { from: new Date(plan.hot.from).toISOString(), weight: plan.hotWeight } : null, delay_ms: opts.delayMs };
+  if (appVersion) recipe.app_version = String(appVersion);
+  return recipe;
+}
+
 class ClipJobs extends EventEmitter {
-  constructor({ api, ffmpegPath, fontFile, log = () => {}, spawn = require('child_process').spawn, fetch = globalThis.fetch, getOptions = () => ({}), now = Date.now }) {
+  constructor({ api, ffmpegPath, fontFile, log = () => {}, spawn = require('child_process').spawn, fetch = globalThis.fetch, getOptions = () => ({}), now = Date.now, appVersion = null }) {
     super();
+    this.appVersion = appVersion ? String(appVersion) : null;   // 2.2.0: stamped into every clip's recipe
     this.api = api;
     this.ffmpegPath = ffmpegPath;
     this.fontFile = fontFile;
@@ -338,7 +348,7 @@ class ClipJobs extends EventEmitter {
     for (const f of ['hot.mp4', 'verdict.mp4', 'social.mp4', 'full.txt', 'hot.txt', 'verdict.txt', 'font.ttf', ...Object.keys(texts)]) { try { fs.unlinkSync(path.join(job, f)); } catch {} }
 
     // 5) send the highlight first (the artist is told when it lands); the full review goes in pass 2
-    const recipe = { hot: plan.hot ? { from: new Date(plan.hot.from).toISOString(), weight: plan.hotWeight } : null, delay_ms: opts.delayMs };
+    const recipe = buildRecipe(plan, opts, this.appVersion);
     const files = [];
     for (const kind of ['highlight', 'poster', 'vertical']) {
       files.push(await this._upload(r, kind, path.join(job, kind === 'poster' ? 'poster.jpg' : `${kind}.mp4`)));
@@ -397,4 +407,4 @@ class ClipJobs extends EventEmitter {
   }
 }
 
-module.exports = { ClipJobs };
+module.exports = { buildRecipe, ClipJobs };

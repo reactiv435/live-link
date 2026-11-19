@@ -69,7 +69,7 @@ test('records a LIVE and turns one review into a full review, a branded highligh
     clipUpload: async (m) => ({ upload_url: `http://127.0.0.1:${port}/up/${m.kind}`, path: `host/play-1/${m.kind}` }),
     clipComplete: async (b) => { completes.push(b); return { ok: true }; },
   };
-  const jobs = new ClipJobs({ api, ffmpegPath: FF, fontFile: FONT, log: (l, m) => logs.push(`${l} ${m}`), getOptions: () => ({ delayMs: 0, padStartMs: 1000, padEndMs: 1000, hotSec: 8, verdictSec: 20 }) });
+  const jobs = new ClipJobs({ api, ffmpegPath: FF, fontFile: FONT, appVersion: '9.8.7', log: (l, m) => logs.push(`${l} ${m}`), getOptions: () => ({ delayMs: 0, padStartMs: 1000, padEndMs: 1000, hotSec: 8, verdictSec: 20 }) });
   const result = await jobs.processSession(dir);
   assert.equal(result.sent, 1, `clip not sent: ${JSON.stringify(result)}\n${logs.join('\n')}`);
   assert.ok(got['/up/highlight'] > 50000 && got['/up/full'] > 50000 && got['/up/poster'] > 2000, `uploads: ${JSON.stringify(got)}`);
@@ -90,6 +90,9 @@ test('records a LIVE and turns one review into a full review, a branded highligh
   assert.ok(!fs.existsSync(path.join(job, 'full.mp4')), 'the local copy of the full review is removed once sent');
   assert.ok(JSON.parse(fs.readFileSync(path.join(dir, 'session.json'), 'utf8')).clipsDoneAt, 'the recording is marked done');
   const hotIso = completes[0].recipe.hot.from;
+  // 2.2.0: every recipe sent (the highlight's and the full review's) names the app version that built the clip
+  assert.ok(completes.length >= 2 && completes.every((c) => c.recipe.app_version === '9.8.7'), 'app_version in every recipe');
+  assert.ok(completes.some((c) => c.files.some((f) => f.kind === 'full')) && completes.some((c) => c.files.some((f) => f.kind === 'highlight')));
   const hotFrom = Date.parse(hotIso);
   const burstWall = C.mediaToWall(run, 24000);
   assert.ok(Math.abs(hotFrom - burstWall) < 8000, `hottest moment ${((hotFrom - burstWall) / 1000).toFixed(1)} s from the burst`);
