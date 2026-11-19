@@ -19,6 +19,11 @@
 //    is dropped, never queued. Nothing is retried: a late effect is worse than none.
 //  * Every listener is wrapped: nothing in here can throw into the TikTok feed, the gift crediting, the taps, the
 //    recording or the clips.
+// 2.2.0: the VTuber can also run INSIDE LIVE Link (the VTuber card). While it does, events are handed to it inside the
+// app (opts.direct() returns a function that takes one event; core/vtuber-host.js) and nothing is asked or sent over
+// HTTP. Every rule above stays: the same events, the same caps, only while a LIVE is connected. When no VTuber runs
+// inside the app, the HTTP way is used exactly as in 2.1.2 (the desktop-shortcut VTuber on the host's own computer).
+// opts.http === false (test runs) switches the HTTP way off altogether.
 const http = require('http');
 const { clip } = require('./tiktok-link');
 
@@ -59,6 +64,8 @@ function buildEvent(type, x = {}, at = Date.now()) {
 class VtuberLink {
   constructor(opts = {}) {
     this.port = Number(opts.port) || DEFAULT_PORT;
+    this.http = opts.http !== false;
+    this.direct = typeof opts.direct === 'function' ? opts.direct : null;   // () -> fn(ev) while a VTuber runs in the app, else null
     this.log = opts.log || (() => {});
     this.now = opts.now || (() => Date.now());
     this.mono = opts.mono || (() => performance.now());
@@ -84,7 +91,7 @@ class VtuberLink {
     this.sweepTimer = null;
     this.follows = new Map();       // viewer -> when their follow was sent (memory only)
     this.rate = { gift: { at: -Infinity, n: 0 }, other: { at: -Infinity, n: 0 } };
-    this.stats = { probes: 0, sent: 0, failed: 0, dropped: 0 };
+    this.stats = { probes: 0, sent: 0, failed: 0, dropped: 0, direct: 0 };
     this.failedListener = new Set();
     this.stopped = false;
   }
@@ -149,8 +156,15 @@ class VtuberLink {
     this.probeTimer = this._later(() => this._probeLoop(), this.probeEveryMs);
   }
 
+  // the VTuber inside the app, when one runs: a function that takes one event (never throws into the caller)
+  _inApp() {
+    if (!this.direct) return null;
+    try { const fn = this.direct(); return typeof fn === 'function' ? fn : null; } catch { return null; }
+  }
+
   _probe() {
     if (this.probing) return;
+    if (!this.http || this._inApp()) { this.ok = false; return; }   // in-app VTuber (or HTTP switched off): nothing is asked
     this.probing = true;
     this.stats.probes++;
     const done = (ok) => {
@@ -223,7 +237,7 @@ class VtuberLink {
   }
 
   _like(l) {
-    if (!this.live || !this.ok || !l) return;          // nothing listening: nothing is kept for later
+    if (!this.live || !l || (!this.ok && !this._inApp())) return;   // nothing listening: nothing is kept for later
     const c = Math.floor(Number(l.count) || 0);
     if (!(c > 0)) return;
     if (!this.likes) this.likes = { count: 0, name: null, timer: null };
@@ -259,14 +273,21 @@ class VtuberLink {
 
   // ---------------------------------------------------------------- the send
   _send(type, fields, at) {
-    if (!this.live || !this.ok || this.stopped) { this.stats.dropped++; return false; }
+    const inApp = this.live && !this.stopped ? this._inApp() : null;
+    if (!this.live || this.stopped || (!inApp && !this.ok)) { this.stats.dropped++; return false; }
     const ev = buildEvent(type, fields, at || this.now());
     if (!ev) return false;
     const r = this.rate[type === 'gift' ? 'gift' : 'other'];
     const now = this.mono();
     if (now - r.at >= 1000) { r.at = now; r.n = 0; }
-    if (r.n >= RATE_PER_S[type === 'gift' ? 'gift' : 'other'] || this.inFlight >= MAX_IN_FLIGHT) { this.stats.dropped++; return false; }
+    if (r.n >= RATE_PER_S[type === 'gift' ? 'gift' : 'other'] || (!inApp && this.inFlight >= MAX_IN_FLIGHT)) { this.stats.dropped++; return false; }
     r.n++;
+    if (inApp) {                                         // handed over inside the app: no request, nothing to wait for
+      let took = false;
+      try { took = inApp(ev) !== false; } catch { took = false; }
+      if (took) { this.stats.sent++; this.stats.direct++; } else this.stats.failed++;
+      return took;
+    }
     const body = JSON.stringify(ev);
     this.inFlight++;
     let settled = false;
