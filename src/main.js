@@ -12,6 +12,7 @@ const { ShowManager } = require('./core/show-manager');
 const { Updater, shouldAutoInstall } = require('./core/updater');
 const { TikTokSignIn, USER_AGENT: CHROME_UA, LOGIN_URL, SESSION_COOKIES, SIGNIN_HOSTS } = require('./core/tiktok-signin');
 const { pickCaptureSource, extFor, CHUNK_MS } = require('./core/capture');
+const { VtuberLink } = require('./core/vtuber-link');
 const SITE = require('./site-config.json');
 
 // The bundled ffmpeg (records the LIVE, cuts the review clips) and the clip font. Packaged: resources/ffmpeg/<os>-<cpu>/
@@ -53,7 +54,7 @@ function log(level, msg) {
 process.on('uncaughtException', (e) => log('error', `uncaught: ${e && e.stack || e}`));
 process.on('unhandledRejection', (e) => log('error', `unhandled: ${e && e.stack || e}`));
 
-let win = null, tray = null, ctl = null, store = null, show = null;
+let win = null, tray = null, ctl = null, store = null, show = null, vtuber = null;
 let trayKind = '';
 
 // Pop-ups: connected to the LIVE, lost it for more than 20 s, and the end-of-LIVE summary.
@@ -409,6 +410,10 @@ app.whenReady().then(async () => {
   const signIn = new TikTokSignIn({ fetch: (url, init) => tiktokSession().fetch(url, init), hasSession: hasTikTokSession, log });
   show = new ShowManager({ ctl, link, api, store, log, ffmpegPath: ffmpegPath(), fontFile: fontPath(), defaultRoot: path.join(app.getPath('videos'), 'LIVE Link Recordings'), signIn, capture: captureDriver(), captureAudio: IS_MAC ? 'microphone' : 'system' });
   if (!show.ffmpegOk) log('warn', `recording unavailable: ffmpeg not found (${ffmpegPath()})`);
+  // 2.1.2: the LIVE's gifts, likes, comments, follows and shares also go to a VTuber on this computer when one is
+  // listening on 127.0.0.1 (core/vtuber-link.js; nothing new for the host to set up). Attached after the controller and
+  // the recorder, so their handling of every event runs first and can't be slowed or broken by it.
+  vtuber = new VtuberLink({ log }).attach(link);
   show.refreshSignIn().then((on) => { if (on) log('info', 'TikTok sign-in: a saved sign-in is present'); });
   ipcMain.handle('tiktok:signin', () => openTikTokSignIn());
   ipcMain.handle('tiktok:signout', () => signOutTikTok());
@@ -675,7 +680,7 @@ app.on('window-all-closed', (e) => { /* stay in the tray */ });
 // Before quitting: up to 3 s for queued gifts (quitting right after a gift must not lose it), then up to 1.5 s to
 // tell the site this computer stopped watching (the dashboard shows it at once), then quit.
 let quitFlushed = false;
-app.on('will-quit', () => { try { globalShortcut.unregisterAll(); } catch {} });
+app.on('will-quit', () => { try { globalShortcut.unregisterAll(); } catch {} try { if (vtuber) vtuber.stop(); } catch {} });
 // Quitting while clips are still being made: ask first (they'd finish next time, but the host should know).
 let quitAsking = false;
 app.on('before-quit', (e) => {
