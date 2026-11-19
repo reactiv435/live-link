@@ -33,6 +33,10 @@ two ways to record anyway, both only on your computer:
   `session_total` (TikTok's room total), so retries and short outages never lose or double count taps. The first
   push for a room sets the baseline; the app reports the total from just before its first batch so those taps count.
 - The device token is encrypted with Windows DPAPI (Electron `safeStorage`) and rotated on every start.
+- VTuber (2.1.2, `src/core/vtuber-link.js`): while a LIVE is connected, the app asks `127.0.0.1:8791` every 15 s
+  whether a VTuber is listening and, only while one answers, posts each finished gift combo, likes (at most 4 sends a
+  second), comments, follows and shares to it. Nothing for the host to set up; nothing of it goes to the site, the log
+  or the disk, and no other address is ever used.
 
 ## For developers
 ```
