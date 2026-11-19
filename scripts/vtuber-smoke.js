@@ -9,7 +9,7 @@
 //
 //   node scripts/vtuber-smoke.js [--app <path to the packaged LIVE Link program>] [--video <clip or still picture>]
 //        [--secs 30] [--out <folder>] [--feed 5] [--characters ryo,mask] [--need-face 1] [--min-updates 0]
-//        [--soak-min 0] [--no-avatar]
+//        [--soak-min 0] [--no-avatar] [--keep-data]
 // --video: what the pretend camera shows (a path; nothing is copied or uploaded). Without it: a plain grey picture
 // (no face to find: the run then only proves the road, not the tracking).
 // Exit code 0 = no problem found. The numbers are written to <out>/result.json.
@@ -96,7 +96,7 @@ async function main() {
   const before = mock.snapshot();
 
   const userData = path.join(OUT, 'userdata');
-  fs.rmSync(userData, { recursive: true, force: true });
+  if (!flag('keep-data')) fs.rmSync(userData, { recursive: true, force: true });   // --keep-data: a second start on the same data folder (how long a host waits after the first time)
   const env = { ...process.env, LIVE_LINK_USER_DATA: userData, LIVE_LINK_API: `http://127.0.0.1:${sitePort}/functions/v1/`, LIVE_LINK_TEST_FEED: String(FEED),
     LIVE_LINK_VTUBER_TEST: JSON.stringify({ obsUrl: 'ws://127.0.0.1:' + obsPort, obsConfig, ports: [vtPort], windowCapture: false }) };
   delete env.ELECTRON_RUN_AS_NODE;
@@ -200,7 +200,12 @@ async function main() {
     while (Date.now() - m0 < secs * 1000) {
       if (av) { const s = await av.eval('JSON.stringify({ fps: Math.max(__vt.fps || 0, window.VTMaskPage && VTMaskPage.fps ? VTMaskPage.fps() : 0), errors: __vt.errors.length })').then(JSON.parse).catch(() => null); if (s) { fps.push(s.fps); run.avatarErrors = s.errors; } }
       if (av && shots.length < 4 && Date.now() - m0 > shots.length * Math.min(8000, secs * 250)) { const f = path.join(OUT, who + '-' + shots.length + '.png'); shots.push(await av.shot(f).catch(() => 0)); }
-      if (secs > 120 && Date.now() - m0 > (marks.length + 1) * 300000) { const w = (Date.now() - m0) / 1000; marks.push({ atMin: Math.round(w / 60), updatesPerSec: +(got.perf / w).toFixed(1) }); console.log('  soak ' + JSON.stringify(marks[marks.length - 1])); }
+      if (secs > 120 && Date.now() - m0 > (marks.length + 1) * 300000) {     // a long run: every 5 minutes, that window's own numbers
+        const w = (Date.now() - m0) / 1000, heap = (p) => (p ? p.eval('performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : null').catch(() => null) : null);
+        const last = marks.length ? marks[marks.length - 1] : { perf: 0, w: 0, rx: 0 };
+        const mk = { atMin: Math.round(w / 60), updatesPerSec: +((got.perf - last.perf) / (w - last.w)).toFixed(1), pictureToPoseMedMs: q(got.rx.slice(last.rx), 0.5), avatarFps: fps.length ? q(fps.slice(-200), 0.5) : null, pageHeapMB: await heap(page), avatarHeapMB: await heap(av), perf: got.perf, w, rx: got.rx.length };
+        marks.push(mk); console.log('  soak ' + JSON.stringify({ ...mk, perf: undefined, w: undefined, rx: undefined }));
+      }
       await sleep(500);
     }
     got.on = false;
