@@ -1,0 +1,3 @@
+# the pinned VTuber copy: exact bytes on every system (the pin test hashes them)
+vendor/vtuber/** -text
+test/vtuber-dev/** -text
