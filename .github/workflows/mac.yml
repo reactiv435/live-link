@@ -19,7 +19,7 @@ permissions:
 jobs:
   mac:
     runs-on: macos-15
-    timeout-minutes: 40   # a hung step must not hold a runner for the default 6 hours
+    timeout-minutes: 55   # a hung step must not hold a runner for the default 6 hours
     steps:
       - uses: actions/checkout@v4
 
@@ -48,6 +48,14 @@ jobs:
 
       - name: Tests
         run: node --test "test/*.test.js"
+
+      # 2.2.0: the VTuber. vendor/vtuber must be exactly the pinned commit, and its Node half (the local server, the OBS
+      # link, scene sync, events, start / crash / stop) must work on a Mac against a pretend OBS. Named on its own so a
+      # failure here reads as "VTuber", not as one line among 200 tests.
+      - name: VTuber, the pinned copy and its Node half against a pretend OBS (macOS)
+        run: |
+          node scripts/sync-vtuber.js --check
+          node --test test/vtuber-220.test.js
 
       - name: Recording + review clips end to end (real FFmpeg, ~2 min)
         run: RUN_E2E=1 FFMPEG="$PWD/vendor/ffmpeg/darwin-arm64/ffmpeg" node --test test/clip-e2e.test.js
@@ -112,6 +120,14 @@ jobs:
           lipo -archs "$EXE" | grep -q x86_64
           lipo -archs "$EXE" | grep -q arm64
           test -f "$APP/Contents/Resources/source/SOURCE.md" || ls "$APP/Contents/Resources/source"
+          # 2.2.0: the VTuber's files are plain data in Resources/vtuber (nothing new to sign), and macOS has our words
+          # for the one Microphone question.
+          test -f "$APP/Contents/Resources/vtuber/vtuber.html"
+          test -f "$APP/Contents/Resources/vtuber/livelink-host.js"
+          test -f "$APP/Contents/Resources/vtuber/tracking/vendor/models/face_landmarker.task"
+          test -f "$APP/Contents/Resources/vtuber/assets/models/ryo-arena.glb"
+          /usr/libexec/PlistBuddy -c 'Print :NSMicrophoneUsageDescription' "$APP/Contents/Info.plist" | grep -qi 'microphone'
+          echo "VTuber files: $(find "$APP/Contents/Resources/vtuber" -type f | wc -l | tr -d ' ') ($(du -sm "$APP/Contents/Resources/vtuber" | cut -f1) MB)"
 
       - name: Launch check (starts, logs its start line, no startup errors) on Apple Silicon and Intel
         run: |
@@ -154,6 +170,37 @@ jobs:
             if [ "$OK" = 1 ]; then note "$MODE" "$LOG" notice; else note "$MODE" "$LOG" error; FAIL=1; fi
           done
           exit $FAIL
+
+      # 2.2.0: the VTuber card end to end on the PACKAGED app, as a fenced-in test run: its own data folder, a local
+      # stand-in for the site, no TikTok, a pretend OBS (the Mac way: the camera is read through OBS's pictures), a
+      # DRAWN face as the camera picture (test/fixtures/synthetic-face.jpg: no photo, no real person), the fake
+      # microphone, a pretend LIVE with made-up viewers. It opens LIVE Link, clicks VTuber, picks the Mask and Ryo,
+      # presses ON, and checks: the page gets ready, the face is found, the avatar page draws a picture with no errors,
+      # viewer events arrive, and closing VTuber hides the avatar in the pretend OBS within 3 s.
+      # What this cannot show: a real OBS on a Mac, the real Microphone question, real speed while streaming.
+      - name: VTuber smoke on the packaged app (pretend OBS, a drawn face, Apple Silicon)
+        run: |
+          APP="$(ls -d dist/mac-universal/*.app | head -1)"
+          EXE="$(find "$APP/Contents/MacOS" -type f -perm +111 | head -1)"
+          OUT="$RUNNER_TEMP/vtuber-smoke"
+          set +e
+          FFMPEG_DIR="$PWD/vendor/ffmpeg/darwin-arm64" node scripts/vtuber-smoke.js --app "$EXE" --video test/fixtures/synthetic-face.jpg \
+            --secs 20 --characters mask,ryo --feed 3 --need-face 1 --out "$OUT"
+          CODE=$?
+          set -e
+          node -e 'const fs=require("fs");let t="(no result file)";try{const r=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));t=JSON.stringify({platform:r.platform,ready:r.readySentence,readyMs:r.readyMs,capture:r.capture,avatar:r.avatar,runs:(r.runs||[]).map(x=>({character:x.character,on:x.onSentence,updatesPerSec:x.updatesPerSec,facePerSec:x.facePerSec,pictureToPoseMs:x.pictureToPoseMs,avatarFps:x.avatarFps,avatarErrors:x.avatarErrors,events:x.events,notes:x.pageErrors})),closeHidMs:r.closeHidMs,problems:r.problems},null,1)}catch{};console.log("::"+(process.argv[2]==="0"?"notice":"error")+" title=VTuber smoke::"+t.replace(/%/g,"%25").replace(/\r/g,"%0D").replace(/\n/g,"%0A"))' "$OUT/result.json" "$CODE"
+          exit $CODE
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: vtuber-smoke
+          path: |
+            ${{ runner.temp }}/vtuber-smoke/result.json
+            ${{ runner.temp }}/vtuber-smoke/*.png
+            ${{ runner.temp }}/vtuber-smoke/userdata/logs/
+            ${{ runner.temp }}/vtuber-smoke/userdata/vtuber/vtuber.log
+          if-no-files-found: ignore
 
       - name: dmg, zip and latest-mac.json
         run: node scripts/release-mac.js
