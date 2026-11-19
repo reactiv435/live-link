@@ -444,9 +444,9 @@
   };
   Boot.take(apply);        // messages from now on (the state that arrived while this file loaded comes first)
   window.addEventListener('resize', () => engine.resize());
-  window.__vtReady = Promise.all([loadHero('ryo'), loadHero('melanie')]).then(() => scene.whenReadyAsync()).then(() => {
+  window.__vtReady = Promise.all([loadHero('ryo'), loadHero('melanie')]).then(() => scene.whenReadyAsync()).then(async () => {
     // gift missiles: built and drawn once, unseen, so the first gift of a show does not hitch
-    if (gifts) { for (const id of ['ryo', 'melanie']) { const h = heroes[id]; h.holder.setEnabled(true); gifts.warm(h); h.holder.setEnabled(false); } engine.clear(scene.clearColor, true, true); debug.gifts = gifts.stats; }
+    if (gifts && new URLSearchParams(location.search).get('giftwarm') !== '0') { for (const id of ['ryo', 'melanie']) { const h = heroes[id]; h.holder.setEnabled(true); frame(h); await gifts.warm(h); h.holder.setEnabled(false); } engine.clear(scene.clearColor, true, true); debug.gifts = gifts.stats; }
     debug.ready = true;
     if (MANUAL) return true;
     askGifts();

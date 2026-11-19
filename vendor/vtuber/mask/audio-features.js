@@ -54,10 +54,19 @@
       for (const k in BANDS) {
         const s = st[k], db = Math.max(-100, bandDb(mag, bins[k][0], bins[k][1]));
         // floor and ceiling: jump outward at once, creep back in (ceiling over ~8 s, floor over ~20 s)
+        // Round 5 (the first drop after a start was missed live): the floor must not learn from SILENCE. One spectrum of
+        // digital silence (the moment before the PC-sound helper's first samples, a gap in its pipe) dropped `lo` to
+        // -100 dB at once, and it climbs back with a 20 s time constant: for the first half minute every quiet stretch
+        // read as half loud (bass 0.4 instead of 0.1), so "the bass has been away" never held. Now a silent spectrum
+        // moves neither end, the first real one sets them, and the floor never falls further than 48 dB under the top.
+        const silent = db <= -90;
+        if (!s.seen && silent) { out[k] = 0; continue; }
         if (!s.seen) { s.hi = db + 6; s.lo = db - 24; }
         s.seen++;
-        s.hi = db > s.hi ? db : s.hi + (db - s.hi) * coef(8);
-        s.lo = db < s.lo ? db : s.lo + (db - s.lo) * coef(20);
+        if (!silent) {
+          s.hi = db > s.hi ? db : s.hi + (db - s.hi) * coef(8);
+          s.lo = db < s.lo ? Math.max(db, s.hi - 48) : s.lo + (db - s.lo) * coef(20);
+        }
         const span = Math.max(18, s.hi - s.lo);                       // never stretch noise to the full range
         const abs = clamp01((db - (s.hi - span)) / span);
         s.mean = s.mean == null ? db : s.mean + (db - s.mean) * coef(2.5);

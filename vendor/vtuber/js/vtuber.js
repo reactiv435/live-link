@@ -571,12 +571,21 @@
 
   // ------------------------------------------------------------------ the server's news, once a second (also this page's pulse)
   let polling = false;
+  // V6: inside LIVE Link (the server says embedded) there is no VTuber.bat to double-click: the same three sentences
+  // name LIVE Link's own button instead. Set once; nothing changes for VTuber.bat.
+  function wordsFor(srv) {
+    if (!srv || srv.embedded !== true || SAY.embedded) return;
+    SAY.embedded = true;
+    SAY.stopped = 'VTuber has stopped. Close this window and press Open VTuber in LIVE Link.';
+    SAY.addFailed = 'I could not add the avatar to OBS. Close this window and press Open VTuber in LIVE Link.';
+    SAY.readerFailed = 'The face reader could not start. Close this window and press Open VTuber in LIVE Link.';
+  }
   async function poll() {
     if (polling) return;
     polling = true;
     let srv = null;
     const stopper = new AbortController(), cut = setTimeout(() => stopper.abort(), 2500);
-    try { const r = await fetch('/api/vt/state?hb=1&cap=' + encodeURIComponent(st.applied) + pulseNumbers(), { cache: 'no-store', signal: stopper.signal }); if (r.ok) srv = await r.json(); } catch (e) { srv = null; }
+    try { const r = await fetch('/api/vt/state?hb=1&cap=' + encodeURIComponent(st.applied) + pulseNumbers(), { cache: 'no-store', signal: stopper.signal }); if (r.ok) { srv = await r.json(); wordsFor(srv); } } catch (e) { srv = null; }
     clearTimeout(cut);
     polling = false;
     if (srv) { st.srv = srv; st.srvFails = 0; st.srvEver = true; hookTracker(); } else st.srvFails++;

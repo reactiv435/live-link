@@ -342,7 +342,7 @@ async function startOneClick(opts = {}) {
   async function ensureProjector(fix = false) {
     if (!S.camera || link.state !== 'ok') return;
     const name = S.camera;
-    if (shotsOnly()) { if (S.projector.state !== 'skipped') log('Chrome here cannot take the camera window by itself: the slower way, no camera window'); S.projector = { state: 'skipped', title: '', hwnd: 0, ours: false }; return; }
+    if (shotsOnly()) { if (S.projector.state !== 'skipped') log(embedded && !windowCapture ? 'the camera is read the slower way here (pictures from OBS): no camera window is opened' : 'Chrome here cannot take the camera window by itself: the slower way, no camera window'); S.projector = { state: 'skipped', title: '', hwnd: 0, ours: false }; return; }
     let list = await W.listWindows();
     const old = record.projector;
     if (old && old.camera !== name) { await W.closeWindow(old.hwnd, old.title); record.projector = null; list = await W.listWindows(); }
@@ -569,6 +569,7 @@ async function startOneClick(opts = {}) {
         title: S.projector.title, hwnd: S.projector.hwnd,
       },
       avatar: { ...S.avatar, silent: S.avatarSilent }, on: S.on, shotsPort: port,
+      ...(embedded ? { embedded: true } : {}),          // the page words three sentences for LIVE Link (no VTuber.bat there)
     };
   }
   function readBody(req, max = 16384) {

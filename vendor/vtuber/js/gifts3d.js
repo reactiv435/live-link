@@ -141,7 +141,7 @@
     function begin(heroId, tMs) {
       cur = per[heroId] || null; tNow = tMs / 1000;
       sample = cur ? cur.fx.sample(tNow) : null;
-      if (sample && soundsOn) sounds(tNow);
+      if (sample && soundsOn && !O.noAudio) sounds(tNow);
       return sample ? sample.react : IDLE;
     }
 
@@ -270,13 +270,18 @@
     function setSounds(on) { soundsOn = !!on; if (soundsOn && stats.warm && !O.noAudio) audioOut(true); }
 
     /** everything a gift needs for the first time, made now: the shaders on the graphics card, the buffers, the sound output */
-    function warm(hero) {
+    async function warm(hero) {
       try {
+        // the three programs are built on the graphics card first (Babylon builds them in the background and SKIPS a mesh
+        // whose program is not ready, so drawing at once would warm nothing) ...
+        await Promise.all([rk.material.forceCompilationAsync(rk, { useInstances: true }), QD.mesh.material.forceCompilationAsync(QD.mesh), QT.mesh.material.forceCompilationAsync(QT.mesh)]);
         const h = per[hero.id] || attach(hero), w = Fx.create({ geo: h.geo });
         w.fire({ type: 'gift', coins: 100000, count: 1 }, 0); w.fire({ type: 'like', count: 5 }, 0.2); w.fire({ type: 'follow' }, 0.6);
         const keepCur = cur, keepS = sample, keepT = tNow, an = hero.anchor, c = new B.Vector3(an.x, an.eye, hero.nodes[hero.nodes.length - 1].getAbsolutePosition().z);
         const fake = { hh: h.hh, geo: h.geo, fx: w };
         for (const t of [0.7, 2.6, 4.25, 4.5]) { cur = fake; tNow = t; sample = w.sample(t); face({ eyeL_open: 1 }, hero.id); draw(hero, c); scene.render(); }
+        // ... and the card is made to finish those draws now, not at the first gift
+        try { const gl = scene.getEngine()._gl; gl.finish(); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(4)); } catch (e) { /* no context to finish */ }
         cur = keepCur; sample = keepS; tNow = keepT; QD.used = 0; QT.used = 0; for (const m of rockets) m.setEnabled(false); rocketsOn = 0; flush(QD); flush(QT);
         stats.warm = true; stats.maxDrawMs = 0; stats.maxQuads = 0;
       } catch (e) { stats.warmError = String(e && e.message || e); }
