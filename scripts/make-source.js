@@ -27,6 +27,10 @@ This app is free software under the GNU Affero General Public License v3.0 (see 
 It includes tiktok-live-connector and tiktok-live-proto (AGPL-3.0-only), plus MIT-licensed libraries.
 It bundles FFmpeg (GPL-3.0) to record LIVEs and cut review clips: see Resources/ffmpeg/*/FFMPEG-NOTICE.txt for its
 source. The clip font Chakra Petch is under the SIL Open Font License (assets/fonts/OFL.txt).
+The VTuber (Resources/vtuber; vendor/vtuber in the zip) is part of this app and under the same licence. It includes
+Babylon.js and MediaPipe (Apache-2.0) and ws (MIT). The characters' art (Ryo, Melanie, the backgrounds) is brand art,
+all rights reserved, and is NOT under the AGPL; it and the unchanged MediaPipe model / WebAssembly binaries are not in
+the zip. See docs/licenses/VTUBER.md in the zip.
 
 - Complete source for this version: ${zipName} (in this folder), commit ${commit}.
 - The same zip is published next to the installer in the site's live-link bucket (${pkg.version}/${zipName}).

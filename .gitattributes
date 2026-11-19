@@ -1,3 +1,8 @@
 # the pinned VTuber copy: exact bytes on every system (the pin test hashes them)
 vendor/vtuber/** -text
 test/vtuber-dev/** -text
+# the source zip (scripts/make-source.js = git archive) carries the VTuber's code, not its brand art and not the
+# unchanged third-party model / WebAssembly binaries (docs/licenses/VTUBER.md says where each comes from)
+vendor/vtuber/assets/** -text export-ignore
+vendor/vtuber/tracking/vendor/models/** -text export-ignore
+vendor/vtuber/tracking/vendor/tasks-vision/wasm/*.wasm -text export-ignore
