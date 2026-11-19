@@ -10,6 +10,10 @@
 //   'gift'  { key, count, units, coins, giftId, name, imageUrl, userHandle, userName, at }
 //            key = one combo (or one single gift); count = that combo's running total; units = new since the last frame
 //   'roomChanged' roomId
+//   Local only (2.1.2, for a VTuber on this PC, see vtuber-link.js; never sent to the site):
+//   'giftEnd' { key, count, coins, giftId, name, userHandle, userName, at }
+//            a combo finished (its end frame; count = the combo's final total) or a single gift arrived
+//   'comment' { name, handle, userId, text, at }      'follow' / 'share' { name, handle, userId, at }
 //
 // Why these numbers (ported from tos crew live/server.js):
 //   * a LIVE room that dropped: retry after 10 s;
@@ -320,16 +324,18 @@ class TikTokLink extends EventEmitter {
       const base = sha([this.state.roomId || '', userId, rawGiftId, hasGroup ? String(d.groupId) : '']);
       const s = this.giftStreaks.get(base) || { seq: 0, last: 0, ended: false, at: now };
       const endFrame = Number(d.repeatEnd) === 1;
+      // 2.1.2 (local only): note the combo's end with its final total, for the 'giftEnd' event. Crediting is unchanged.
+      const noteEnd = () => { this._giftEnd = { key: `c:${base}:${s.seq}`, count: s.last, coins, giftId, name, userHandle, userName, at: this.now() }; };
       if (hasGroup) {
         // Real groupIds are unique per combo (millisecond stamps; 0 reuses in 124 real frames): a count at or below
         // what we have is a stale or repeated frame, never a new combo. The end frame usually repeats the last count.
-        if (count <= s.last) { if (endFrame) { s.ended = true; s.at = now; this.giftStreaks.set(base, s); } return null; }
+        if (count <= s.last) { if (endFrame) { if (!s.ended) noteEnd(); s.ended = true; s.at = now; this.giftStreaks.set(base, s); } return null; }
       } else if (s.ended) {
         if (count === s.last) return null;                          // the same end frame again
         if (count < s.last) { s.seq += 1; s.last = 0; }             // no group id: a lower count after an end = new combo
         s.ended = false;
       } else if (count <= s.last) {
-        if (count === s.last && endFrame) { s.ended = true; s.at = now; this.giftStreaks.set(base, s); return null; }
+        if (count === s.last && endFrame) { noteEnd(); s.ended = true; s.at = now; this.giftStreaks.set(base, s); return null; }
         if (count < s.last && now - s.at > 3000) { s.seq += 1; s.last = 0; }   // no group id and the end never came
         else return null;                                           // a stale or repeated frame
       }
@@ -337,6 +343,7 @@ class TikTokLink extends EventEmitter {
       s.last = count; s.ended = Number(d.repeatEnd) === 1; s.at = now;
       this.giftStreaks.set(base, s);
       key = `c:${base}:${s.seq}`;
+      if (s.ended) noteEnd();
     } else {
       const msgId = String((d.common && d.common.msgId) || d.logId || d.orderId || '');
       if (validId(msgId) && /^[A-Za-z0-9_.-]{1,100}$/.test(msgId)) {
@@ -347,8 +354,24 @@ class TikTokLink extends EventEmitter {
         key = `m:${sha([this.state.roomId || '', userId, rawGiftId, this.now(), Math.random()])}`;
       }
       units = count;
+      this._giftEnd = { key, count, coins, giftId, name, userHandle, userName, at: this.now() };   // a single gift is its own end
     }
     return { key, count, units, coins, giftId, name, imageUrl, userHandle, userName, at: this.now() };
+  }
+
+  // 2.1.2: who sent a comment, follow or share (the same cuts as for gifts). Local only: for the VTuber on this PC.
+  _viewer(d) {
+    const u = (d && d.user) || {};
+    const handle = clip(String(u.displayId || u.uniqueId || '').replace(/^@/, ''), 60) || null;
+    const name = clip(u.nickname || '', 80) || handle || 'Someone';
+    const userId = String(u.userId || u.id || handle || '');
+    return { name, handle, userId };
+  }
+
+  // A local-only event (for vtuber-link.js). A listener that throws must never break the TikTok feed, the gifts or the
+  // likes: it is caught here and logged without the event's contents.
+  _emitLocal(event, data) {
+    try { this.emit(event, data); } catch (e) { this.log('warn', `local ${event} listener failed (${(e && e.name) || 'error'})`); }
   }
 
   _pruneGifts(now) {
@@ -523,7 +546,14 @@ class TikTokLink extends EventEmitter {
       const v = Number((d && (d.viewerCount || d.total || d.totalUser)) || 0);
       if (v !== this.state.viewers) this._setState({ viewers: v });
     });
-    on(W.GIFT, (d) => { confirm(); const g = this._gift(d); if (g) this.emit('gift', g); });
+    on(W.GIFT, (d) => {
+      confirm();
+      this._giftEnd = null;
+      const g = this._gift(d);
+      if (g) this.emit('gift', g);
+      const end = this._giftEnd; this._giftEnd = null;
+      if (end) this._emitLocal('giftEnd', end);                     // 2.1.2, local only (after the credit, never instead)
+    });
     on(W.LIKE, (d) => {
       confirm();
       // tiktok-live-proto v3 (what 2.4.4 decodes): count = taps in this batch, total = room total as a STRING.
@@ -537,6 +567,24 @@ class TikTokLink extends EventEmitter {
       const handle = clip(String(u.displayId || u.uniqueId || '').replace(/^@/, ''), 60) || null;
       const name = clip(u.nickname || '', 80) || null;
       if (count > 0 || t !== null) this.emit('like', { count, total, at: this.now(), handle, name });
+    });
+    // 2.1.2, local only (the VTuber on this PC, see vtuber-link.js; nothing here reaches the site or the log).
+    // tiktok-live-connector 2.4.4: 'chat' = WebcastChatMessage (the comment is `content`; older shapes `comment`);
+    // 'follow' / 'share' = a WebcastSocialMessage whose displayText key says follow / share (anything else is 'social',
+    // not used). They don't confirm a room on probation: only viewers, taps and gifts do, as before.
+    on(W.CHAT, (d) => {
+      const text = clip(String((d && (d.content ?? d.comment)) || '').replace(/\s+/g, ' '), 500);   // line breaks -> spaces
+      if (text) this._emitLocal('comment', { ...this._viewer(d), text, at: this.now() });
+    });
+    on(W.FOLLOW, (d) => this._emitLocal('follow', { ...this._viewer(d), at: this.now() }));
+    on(W.SHARE, (d) => this._emitLocal('share', { ...this._viewer(d), at: this.now() }));
+    // 2.4.4 tells follow / share apart by common.displayText.key alone; if TikTok moves the word elsewhere (displayType,
+    // the text pattern) the message arrives as 'social': read it there too. A message 2.4.4 already sorted never comes here.
+    on(W.SOCIAL, (d) => {
+      const dt = (d && d.common && d.common.displayText) || {};
+      const what = `${dt.key || ''} ${(d && d.displayType) || ''} ${dt.defaultPattern || ''}`;
+      const kind = /follow/i.test(what) ? 'follow' : /share/i.test(what) ? 'share' : null;
+      if (kind) this._emitLocal(kind, { ...this._viewer(d), at: this.now() });
     });
 
     try {
@@ -713,4 +761,4 @@ class TikTokLink extends EventEmitter {
   }
 }
 
-module.exports = { TikTokLink, classifyLookup, parseRoomInput, roomFromPageHtml, RETRY_BACKOFF_MS, RATE_LIMIT_MIN_MS, CONNECTING_TIMEOUT_MS, SILENT_SOCKET_MS, BLOCKED_BACKOFF_MS, NOT_FOUND_RETRY_MS, RESTART_HOLD_MS };
+module.exports = { TikTokLink, clip, classifyLookup, parseRoomInput, roomFromPageHtml, RETRY_BACKOFF_MS, RATE_LIMIT_MIN_MS, CONNECTING_TIMEOUT_MS, SILENT_SOCKET_MS, BLOCKED_BACKOFF_MS, NOT_FOUND_RETRY_MS, RESTART_HOLD_MS };
