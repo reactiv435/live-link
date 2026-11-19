@@ -13,7 +13,8 @@ const { Updater, shouldAutoInstall } = require('./core/updater');
 const { TikTokSignIn, USER_AGENT: CHROME_UA, LOGIN_URL, SESSION_COOKIES, SIGNIN_HOSTS } = require('./core/tiktok-signin');
 const { pickCaptureSource, extFor, CHUNK_MS } = require('./core/capture');
 const { VtuberLink } = require('./core/vtuber-link');
-const { VtuberHost, vtuberCard, vtuberEnabled, pickCameraSource } = require('./core/vtuber-host');
+const { VtuberHost, vtuberCard, vtuberEnabled } = require('./core/vtuber-host');
+const { setupVtuberSession } = require('./core/vtuber-session');
 const { EventEmitter } = require('events');
 const SITE = require('./site-config.json');
 
@@ -324,37 +325,13 @@ function captureDriver() {
 // LIVE Link window with its own browser session: no preload, no Node, locked to that one local address. The session
 // says yes to exactly two things for that address: the microphone (the mouth follows the host's voice) and the ONE
 // window the VTuber named (OBS's small window of the host's camera, by its exact window number: there is no share list
-// and no other window or screen can be picked). Everything else is refused; a camera is never opened.
+// and no other window or screen can be picked). Everything else is refused; a camera is never opened. The rules
+// themselves are in core/vtuber-session.js.
 const VT_PARTITION = 'persist:vtuber';
 const vtuberDir = () => (app.isPackaged ? path.join(process.resourcesPath, 'vtuber') : path.join(__dirname, '..', 'vendor', 'vtuber'));
-const vtOwn = (url) => { try { const u = new URL(url); return !!vtHost && vtHost.port > 0 && u.protocol === 'http:' && u.hostname === '127.0.0.1' && Number(u.port) === vtHost.port; } catch { return false; } };
 function vtuberSession() {
-  if (vtSession) return vtSession;
-  const ses = session.fromPartition(VT_PARTITION);
-  ses.setPermissionRequestHandler((wc, permission, cb, details) => {
-    const d = details || {};
-    if (!vtOwn(d.requestingUrl || (wc && wc.getURL()) || '')) return cb(false);
-    if (permission === 'media') return cb(!(d.mediaTypes || []).includes('video'));   // the microphone, never a camera
-    cb(permission === 'display-capture');
-  });
-  ses.setPermissionCheckHandler((_wc, permission, origin, details) => {
-    const d = details || {};
-    if (!vtOwn(origin || d.requestingUrl || '')) return false;
-    if (permission === 'media') return d.mediaType !== 'video';
-    return permission === 'display-capture';
-  });
-  ses.setDisplayMediaRequestHandler((req, cb) => {
-    const no = () => { try { cb({}); } catch { try { cb(null); } catch {} } };   // no window: the page reads the camera the slower way by itself
-    const want = vtHost && vtHost.cameraWindow;
-    if (!want || !vtOwn((req && req.securityOrigin) || '')) return no();
-    desktopCapturer.getSources({ types: ['window'], thumbnailSize: { width: 0, height: 0 }, fetchWindowIcons: false }).then((list) => {
-      const src = pickCameraSource(list, vtHost && vtHost.cameraWindow);
-      if (!src) { log('info', 'VTuber: the camera window is not on the list of windows: the slower way'); return no(); }
-      try { cb({ video: src }); } catch { no(); }
-    }, no);
-  }, { useSystemPicker: false });
-  vtSession = ses;
-  return ses;
+  if (!vtSession) vtSession = setupVtuberSession(session.fromPartition(VT_PARTITION), { desktopCapturer, port: () => (vtHost ? vtHost.port : 0), cameraWindow: () => (vtHost ? vtHost.cameraWindow : null), log });
+  return vtSession;
 }
 const vtuberOn = () => !(ctl && vtuberEnabled(ctl.cfg) === false);
 const vtuberCardNow = () => ({ ...vtuberCard(vtHost ? vtHost.getState() : null, { enabled: vtuberOn(), platform: process.platform }), open: !!(vtWin && !vtWin.isDestroyed()) });
