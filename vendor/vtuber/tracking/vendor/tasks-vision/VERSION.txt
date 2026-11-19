@@ -1,0 +1,1 @@
+0.10.21 (@mediapipe/tasks-vision from npm; vision_bundle.mjs is saved as vision_bundle.js so any static server sends a JavaScript type)

@@ -1,0 +1,9 @@
+{
+  "about": "The Mask's gift list (defaults). Read top to bottom: a row with \"gift\" matches that gift by name and wins; rows with \"upTo\" are coin ranges (coins per gift); the last row catches everything bigger. Effects: chip (small), barrage (mid), grow (big), shatter (biggest). The owner's own list is saved from the VTuber window (More, Gifts) into gifts-owner.json, which wins over this file and is not tracked.",
+  "rows": [
+    { "upTo": 9, "effect": "chip" },
+    { "upTo": 199, "effect": "barrage" },
+    { "upTo": 999, "effect": "grow" },
+    { "effect": "shatter" }
+  ]
+}

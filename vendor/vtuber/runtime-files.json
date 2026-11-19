@@ -1,0 +1,51 @@
+{
+  "about": "V6: the files a host's computer needs to run the VTuber inside LIVE Link. LIVE Link's scripts/sync-vtuber.js copies exactly these (from a commit of this repo) into its vendor/vtuber and pins every file by hash. A file that is not listed here does not ship: tests/v6-embed.test.js fails when a page or a Node file asks for one that is missing. Patterns: a path, or a folder ending in /** (everything tracked under it). 'exclude' wins over 'include'. 'dev' is copied to LIVE Link's test/vtuber-dev for its tests and CI only (never packaged, never his footage).",
+  "v": 1,
+  "include": [
+    "vtuber.html",
+    "avatar.html",
+    "livelink-host.js",
+    "one-click.js",
+    "server.js",
+    "obs-link.js",
+    "obs-scene.js",
+    "sound.js",
+    "sound-loopback.ps1",
+    "win-windows.js",
+    "win-windows.ps1",
+    "runtime-files.json",
+    "js/**",
+    "mask/**",
+    "vendor/**",
+    "assets/**",
+    "tracking/tracker.html",
+    "tracking/tracker.js",
+    "tracking/worker-body.js",
+    "tracking/worker-face.js",
+    "tracking/worker-hub.js",
+    "tracking/hands.html",
+    "tracking/hands.js",
+    "tracking/hands-worker.js",
+    "tracking/lib/**",
+    "tracking/vendor/VENDOR.md",
+    "tracking/vendor/models/**",
+    "tracking/vendor/tasks-vision/**"
+  ],
+  "exclude": [
+    "js/body-lab.js",
+    "js/control.js",
+    "mask/mask.html",
+    "tracking/vendor/tasks-vision/wasm/vision_wasm_nosimd_internal.js",
+    "tracking/vendor/tasks-vision/wasm/vision_wasm_nosimd_internal.wasm"
+  ],
+  "optional": [
+    "tracking/calib-owner.json",
+    "control.html"
+  ],
+  "dev": [
+    "tracking/mock-obs-scenes.js",
+    "tracking/package.json",
+    "tracking/vendor/ws/**",
+    "tools/test-safety.cjs"
+  ]
+}

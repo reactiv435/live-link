@@ -1,0 +1,6 @@
+{
+  "name": "vtuber-tracking",
+  "private": true,
+  "type": "module",
+  "description": "Face + hand tracker for the VTuber test prototype. No install step: everything is vendored in ./vendor."
+}

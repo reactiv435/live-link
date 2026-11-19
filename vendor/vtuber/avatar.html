@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Avatar (OBS Browser Source)</title>
+<link rel="icon" href="data:,">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: transparent; }
+  #bg { position: fixed; inset: 0; display: none; }
+  #bg.green { background: #00FF00; }
+  #bg.black { background: #000000; }
+  #bg.cover { background: #120b09; }
+  #bg.preset { inset: -6%; background-color: #120b09; background-size: cover; background-position: center; filter: blur(7px) saturate(1.05) brightness(0.82); }
+  #bg.preset::after { content: ""; position: absolute; inset: 0; background: radial-gradient(ellipse at 50% 42%, rgba(20, 10, 8, 0) 35%, rgba(20, 10, 8, 0.55) 100%); }
+  #stage { position: fixed; inset: 0; width: 100%; height: 100%; display: block; outline: none; }
+  /* the Mask (the third choice): its own opaque black canvas above the 3D one; viewer names above that, never mirrored */
+  #maskc { position: fixed; inset: 0; width: 100%; height: 100%; display: none; background: #000; z-index: 2; }
+  #maskNames { position: fixed; left: 0; right: 0; top: 7%; display: none; z-index: 3; text-align: center; pointer-events: none; font: 700 4.2vh/1.25 "Segoe UI", system-ui, sans-serif; letter-spacing: .02em; color: #fff6f0; }
+  #maskNames div { margin: 0 6% .6vh; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; text-shadow: 0 0 1.2vh #e01f3d, 0 0 .4vh #000, 0 .2vh .5vh #000; opacity: 0; }
+  #maskNames div.gift { color: #ffe9c4; text-shadow: 0 0 1.4vh #ff7a1a, 0 0 .4vh #000, 0 .2vh .5vh #000; }
+</style>
+</head>
+<body>
+<div id="bg"></div>
+<canvas id="stage"></canvas>
+<canvas id="maskc"></canvas>
+<div id="maskNames"></div>
+<!-- first: connect and cover the camera for the last known state, before the big 3D files load -->
+<script src="js/logic.js"></script>
+<script src="js/avatar-boot.js"></script>
+<!-- the Mask: the designer's modules (mask/*), fed by js/mask-page.js; small, so they come before the big 3D files -->
+<script src="js/mask-wire.js"></script>
+<script src="mask/face-topology.js"></script>
+<script src="mask/mask-core.js"></script>
+<script src="mask/mask-gl.js"></script>
+<script src="mask/mask-looks.js"></script>
+<script src="mask/mask-mood.js"></script>
+<script src="mask/mask-fx.js"></script>
+<script src="mask/mask-sfx.js"></script>
+<script src="mask/mask-live.js"></script>
+<script src="js/mask-page.js"></script>
+<script src="vendor/babylon.js"></script>
+<script src="vendor/babylon.glTF2FileLoader.min.js"></script>
+<script src="js/face.js"></script>
+<script src="js/voice.js"></script>
+<script src="js/expr.js"></script>
+<script src="js/face-map.js"></script>
+<script src="js/face2.js"></script>
+<script src="js/body.js"></script>
+<script src="js/hands3d.js"></script>
+<!-- round 5: gift missiles on the heroes (the logic, then the drawing) -->
+<script src="js/gift-fx.js"></script>
+<script src="js/gifts3d.js"></script>
+<script src="js/avatar.js"></script>
+</body>
+</html>

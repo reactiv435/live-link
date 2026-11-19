@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="icon" href="data:,">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VTuber Tracker</title>
+<style>
+  :root { --bg:#0d0b0a; --panel:#181412; --line:#3a302c; --text:#f1ebe7; --dim:#a89e98; --crimson:#c8102e; --chrome:#d9dde2; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 "Segoe UI", system-ui, sans-serif; }
+  .wrap { max-width:1100px; margin:0 auto; padding:16px; display:grid; grid-template-columns:minmax(0,1fr) 400px; gap:16px; }
+  @media (max-width:880px) { .wrap { grid-template-columns:1fr; } }
+  h1 { font-size:18px; margin:0 0 4px; letter-spacing:.04em; text-transform:uppercase; color:var(--chrome); }
+  h2 { font-size:12px; margin:0 0 10px; letter-spacing:.12em; text-transform:uppercase; color:var(--dim); }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px; margin-bottom:14px; }
+  .status { border-radius:10px; padding:16px 18px; margin-bottom:14px; border:2px solid var(--line); background:var(--panel); }
+  .status .big { font-size:34px; font-weight:800; letter-spacing:.05em; line-height:1.1; }
+  .status .detail { color:var(--text); margin-top:4px; }
+  .status .warns { color:#ffc04d; margin-top:6px; font-size:13px; white-space:pre-line; }
+  .status.good { border-color:#2f9e57; } .status.good .big { color:#56d98a; }
+  .status.warn { border-color:#c98a1b; } .status.warn .big { color:#ffc04d; }
+  .status.bad  { border-color:var(--crimson); } .status.bad .big { color:#ff4a5e; }
+  .status.wait .big { color:var(--chrome); }
+  .row { display:flex; align-items:center; gap:8px; margin:8px 0; flex-wrap:wrap; }
+  .row > label { width:138px; color:var(--dim); flex:none; }
+  input, select, button { font:inherit; color:var(--text); background:#231d1a; border:1px solid var(--line); border-radius:6px; padding:6px 8px; min-width:0; }
+  input[type=number] { width:84px; }
+  input[type=file] { max-width:100%; }
+  select { max-width:260px; }
+  button { cursor:pointer; background:#2c2420; }
+  button.primary { background:var(--crimson); border-color:var(--crimson); color:#fff; font-weight:600; }
+  button.big { font-size:16px; padding:10px 16px; }
+  button:hover { filter:brightness(1.15); }
+  .hint { color:var(--dim); font-size:12.5px; margin:4px 0 0; }
+  ol.steps { margin:6px 0 8px 18px; padding:0; color:var(--text); font-size:13px; }
+  .metrics { display:grid; grid-template-columns:auto 1fr; gap:4px 14px; font-variant-numeric:tabular-nums; margin:0; }
+  .metrics dt { color:var(--dim); } .metrics dd { margin:0; }
+  .metrics dd b { font-size:17px; font-weight:700; }
+  .okv { color:#56d98a; } .badv { color:#ff4a5e; } .warnv { color:#ffc04d; }
+  .capbox { border:1px solid var(--line); border-left-width:4px; border-radius:8px; padding:9px 12px; margin:6px 0 4px; background:#120f0d; }
+  .capbox .captext { font-size:13.5px; color:var(--dim); }
+  .capbox[data-state=collecting] { border-color:#c98a1b; } .capbox[data-state=collecting] .captext { color:#ffc04d; font-size:16px; font-weight:700; }
+  .capbox[data-state=done] { border-color:#2f9e57; } .capbox[data-state=done] .captext { color:#56d98a; font-size:15px; font-weight:700; }
+  .capbox[data-state=rejected] { border-color:var(--crimson); } .capbox[data-state=rejected] .captext { color:#ff4a5e; font-size:15px; font-weight:700; }
+  .capbar { height:10px; border-radius:5px; background:#2c2420; margin-top:8px; overflow:hidden; }
+  .capbar i { display:block; height:100%; width:0%; background:#ffc04d; transition:width .1s linear; }
+  canvas#preview { width:100%; max-width:360px; height:auto; display:block; border-radius:8px; background:#000; border:1px solid var(--line); }
+  video, audio { position:fixed; left:-9999px; top:0; width:2px; height:2px; opacity:0; pointer-events:none; }
+  [hidden] { display:none !important; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div>
+    <h1>VTuber Tracker <span style="color:var(--dim);font-weight:400;text-transform:none;letter-spacing:0">v2</span></h1>
+    <p class="hint" style="margin:0 0 12px">Reads your camera picture, finds your face, body and hands on this PC, and sends the result to the avatar. Nothing leaves this PC. Keep this window open while you stream (it may sit behind other windows).</p>
+
+    <div id="status" class="status wait">
+      <div id="statusBig" class="big">LOADING</div>
+      <div id="statusDetail" class="detail">Starting...</div>
+      <div id="statusWarn" class="warns" hidden></div>
+    </div>
+
+    <div class="card">
+      <h2>Where the picture comes from</h2>
+      <div class="row"><label for="source">Picture source</label>
+        <select id="source">
+          <option value="display">OBS projector window (fastest)</option>
+          <option value="obs">OBS screenshots (slower fallback)</option>
+          <option value="file">A video file (testing)</option>
+          <option value="cam">A webcam (only if you have one)</option>
+        </select>
+      </div>
+
+      <div data-src="display">
+        <ol class="steps">
+          <li>In OBS, right-click your camera source and choose <b>Windowed Projector (Source)</b>. Leave that window open, not minimised.</li>
+          <li>Press the button below and pick the window called <b>Windowed Projector</b> in the <b>Window</b> tab.</li>
+        </ol>
+        <div class="row"><button id="capStart" class="primary big">Start capture</button><button id="capStop">Stop</button><span id="capState" class="hint"></span></div>
+        <div class="row"><label for="crop">Find the picture</label>
+          <select id="crop"><option value="auto">By itself (cuts off the title bar and the black bars)</option><option value="manual">Set by hand</option><option value="off">Use the whole window</option></select>
+          <button id="cropFind">Look again</button></div>
+        <div data-crop="manual" hidden>
+          <div class="row"><label>Cut off (pixels)</label>
+            <span>left</span><input id="cropL" type="number" min="0" max="2000" step="1" style="width:66px">
+            <span>right</span><input id="cropR" type="number" min="0" max="2000" step="1" style="width:66px">
+            <span>top</span><input id="cropT" type="number" min="0" max="2000" step="1" style="width:66px">
+            <span>bottom</span><input id="cropB" type="number" min="0" max="2000" step="1" style="width:66px"></div>
+        </div>
+        <p class="hint" id="cropState"></p>
+      </div>
+
+      <div data-src="obs" hidden>
+        <div class="row"><label for="host">OBS address</label><input id="host" size="14" autocomplete="off"> <span>port</span> <input id="port" type="number" min="1" max="65535"></div>
+        <div class="row"><label for="password">OBS password</label><input id="password" type="password" autocomplete="off" placeholder="type it once, then Save">
+          <button id="connect" class="primary">Save + Connect</button><button id="forget">Forget</button></div>
+        <p class="hint" id="pwState"></p>
+        <div class="row"><label for="sourceName">Camera source</label><select id="sourceName"><option value="">(connect first)</option></select><button id="refresh">Refresh list</button></div>
+        <div class="row"><label for="obsWidth">Picture width</label><input id="obsWidth" type="number" min="160" max="1920" step="2"> <span class="hint">540 is right for an upright phone picture</span></div>
+        <div class="row"><label for="obsFps">Pictures per second</label><input id="obsFps" type="number" min="5" max="60"> <span class="hint">30; lower it if OBS shows "frames missed due to rendering lag"</span></div>
+        <div class="row"><label for="obsView">Camera in OBS</label>
+          <select id="obsView"><option value="auto">Turned / flipped / cropped: read it from OBS</option><option value="manual">Set by hand</option><option value="off">Use the picture as it is</option></select></div>
+        <div data-obsview="manual" hidden>
+          <div class="row"><label for="obsTurn">Turn picture</label>
+            <select id="obsTurn"><option value="0">Not turned</option><option value="90">90&deg; clockwise</option><option value="180">180&deg;</option><option value="270">270&deg; clockwise</option></select>
+            <select id="obsFlip"><option value="none">Not flipped</option><option value="h">Flipped left-right</option><option value="v">Flipped up-down</option></select></div>
+          <div class="row"><label>Crop (% of picture)</label>
+            <span>left</span><input id="obsCropL" type="number" min="0" max="45" step="1" style="width:62px">
+            <span>right</span><input id="obsCropR" type="number" min="0" max="45" step="1" style="width:62px">
+            <span>top</span><input id="obsCropT" type="number" min="0" max="45" step="1" style="width:62px">
+            <span>bottom</span><input id="obsCropB" type="number" min="0" max="45" step="1" style="width:62px"></div>
+        </div>
+        <p class="hint" id="obsViewState"></p>
+      </div>
+
+      <div data-src="file" hidden>
+        <div class="row"><label for="videoFile">Video file</label><input id="videoFile" type="file" accept="video/*"></div>
+        <p class="hint">Plays silently in a loop, through the same path as the live picture.</p>
+      </div>
+
+      <div data-src="cam" hidden>
+        <div class="row"><label for="camId">Webcam</label><select id="camId"><option value="">(default)</option></select><button id="camStart" class="primary">Start</button></div>
+        <p class="hint">Only works if no other app is using that camera. Your phone through DroidCam in OBS is NOT a webcam: use the projector window for it.</p>
+      </div>
+
+      <div data-notsrc="obs">
+        <div class="row"><label for="turn">Turn / flip</label>
+          <select id="turn"><option value="0">Not turned</option><option value="90">90&deg; clockwise</option><option value="180">180&deg;</option><option value="270">270&deg; clockwise</option></select>
+          <select id="flip"><option value="none">Not flipped</option><option value="h">Flipped left-right</option><option value="v">Flipped up-down</option></select>
+          <span class="hint">only if the small picture is sideways or upside down</span></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Options</h2>
+      <div class="row"><label for="mirror">Mirror</label>
+        <select id="mirror"><option value="follow">Follow the control panel</option><option value="on">Always mirrored</option><option value="off">Never mirrored</option></select>
+        <span class="hint">face, body and hands all use this one switch</span></div>
+      <div class="row"><label>Neutral face</label><button id="calib" class="primary">Capture neutral face</button><button id="calibClear">Clear</button></div>
+      <div id="capBox" class="capbox" data-state="idle">
+        <div id="calibMsg" class="captext">Look at the camera with a relaxed face and your mouth closed. Press the button, then hold still for two seconds. Do it once per session (light and camera height change from day to day).</div>
+        <div id="capBarWrap" class="capbar" hidden><i id="capBar"></i></div>
+      </div>
+      <p class="hint" id="calibUse">Calibration in use: checking...</p>
+      <div class="row"><label for="body">Body and hands</label>
+        <select id="body"><option value="on">On</option><option value="off">Off (face only)</option></select></div>
+      <div class="row"><label for="faceMax">Face checks / second</label>
+        <select id="faceMax"><option value="30">Up to 30 (right for this PC)</option><option value="60">Up to 60 (needs a faster PC and a 60 fps camera)</option></select></div>
+      <div class="row"><label for="bodyMax">Body checks / second</label>
+        <select id="bodyMax"><option value="30">Up to 30</option><option value="15">Up to 15 (leaves more of the PC for the face and for OBS)</option></select></div>
+      <div class="row"><label for="shed">When the PC is busy</label>
+        <select id="shed"><option value="auto">Lighten body + hands by itself (the face keeps full speed)</option><option value="off">Never lighten</option></select></div>
+      <div class="row"><label for="delegate">Run tracking on</label>
+        <select id="delegate"><option value="GPU">Graphics card (fast)</option><option value="CPU">Processor (slow)</option></select></div>
+      <div class="row"><label for="line">Hand line</label>
+        <select id="line"><option value="follow">Follow the control panel</option><option value="on">Force ON</option><option value="off">Force OFF</option></select></div>
+      <div class="row"><label for="pv">Small picture</label>
+        <select id="pv"><option value="on">Show it</option><option value="off">Hide it (saves a little PC)</option></select></div>
+    </div>
+
+    <div class="card">
+      <h2>Song sound for the hand line</h2>
+      <div class="row"><label for="audio">Sound source</label>
+        <select id="audio">
+          <option value="none">Off</option>
+          <option value="display">What this PC is playing (share system audio)</option>
+          <option value="file">An audio or video file (testing)</option>
+          <option value="mic">A microphone</option>
+        </select>
+        <button id="audioStart" class="primary">Start</button><button id="audioStop">Stop</button>
+      </div>
+      <div data-aud="display" hidden><p class="hint">Press Start, choose <b>Entire screen</b>, tick <b>Also share system audio</b>, then Share. Only the sound is used; nothing is recorded or sent anywhere.</p></div>
+      <div data-aud="file" hidden><div class="row"><label for="audioFile">File</label><input id="audioFile" type="file" accept="audio/*,video/*"></div><p class="hint">Leave empty to use the sound of the test video above. It is never played on the speakers.</p></div>
+      <div data-aud="mic" hidden><div class="row"><label for="micId">Microphone</label><select id="micId"><option value="">(default)</option></select></div></div>
+      <p class="hint" id="audioState"></p>
+    </div>
+  </div>
+
+  <div>
+    <div class="card">
+      <h2>What the tracker sees</h2>
+      <canvas id="preview" width="360" height="640"></canvas>
+      <p class="hint">Shown the way it goes out on stream (after mirror). White dots = face, blue = shoulders and arms, gold = hands.</p>
+    </div>
+    <div class="card">
+      <h2>Speed</h2>
+      <dl class="metrics">
+        <dt>Pictures in</dt><dd><b id="mIn">0</b> / second</dd>
+        <dt>Face</dt><dd><b id="mFace">0</b> / second <span class="hint" id="mFaceMs"></span></dd>
+        <dt>Body + hands</dt><dd><b id="mBody">0</b> / second <span class="hint" id="mBodyMs"></span></dd>
+        <dt>Sent to the avatar</dt><dd><b id="mPerf">0</b> / second</dd>
+        <dt>Delay</dt><dd><b id="mDelay">0</b> ms <span class="hint" id="mDelay95"></span></dd>
+        <dt></dt><dd class="hint">from the picture being taken to the result being sent</dd>
+        <dt>Skipped pictures</dt><dd id="mDrop">--</dd>
+        <dt>Picture</dt><dd id="mSize">--</dd>
+        <dt>Runs on</dt><dd id="mRuns">--</dd>
+        <dt>Lightened</dt><dd id="mShed">no</dd>
+        <dt>Avatar link</dt><dd id="mRelay" class="badv">not connected</dd>
+        <dt>Mirror</dt><dd id="mMirror">off</dd>
+        <dt>Hand line</dt><dd id="mLine">off</dd>
+      </dl>
+    </div>
+  </div>
+</div>
+<video id="vid" playsinline muted></video>
+<audio id="aud"></audio>
+<script type="module" src="./tracker.js"></script>
+</body>
+</html>
