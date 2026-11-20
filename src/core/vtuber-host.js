@@ -10,6 +10,9 @@
 // Messages (the VTuber repo's livelink-host.js documents them): we send { t: 'event', ev } and { t: 'stop' }; it sends
 // ready / state / camera-window / front / log / failed / stopped. Viewer names and comment text pass through `event`
 // only: they are never logged and never kept here.
+// V8: `event` also carries the show state and a pressed key (contract v2: { type: 'show' } / { type: 'control' }, see
+// vtuber-link.js). `wire` says which contract the VTuber in this install speaks: 2 when its files know the v2 messages
+// (js/mask-wire.js has cleanShow) or its "ready" says so ({ wire: 2 }); 1 otherwise (it then gets the 2.2.0 events only).
 const { EventEmitter } = require('events');
 const fs = require('fs');
 const path = require('path');
@@ -99,6 +102,17 @@ class VtuberHost extends EventEmitter {
     this.cameraWindow = null;        // { hwnd, title } the VTuber page may capture, or null
     this.stats = { events: 0, starts: 0, crashes: 0 };
     this._stopWaiters = [];
+    this._wire = null;               // the contract the VTuber's files speak (read once), raised by its "ready"
+  }
+
+  /** 1 = the 2.2.0 events only; 2 = also who the viewer is, `show` and `control` (V8) */
+  get wire() {
+    if (this._wire === null) {
+      let v = 1;
+      try { if (/\bcleanShow\b/.test(fs.readFileSync(path.join(this.dir || '', 'js', 'mask-wire.js'), 'utf8'))) v = 2; } catch { v = 1; }
+      this._wire = v;
+    }
+    return this._wire;
   }
 
   get entry() { return path.join(this.dir || '', 'livelink-host.js'); }
@@ -108,7 +122,7 @@ class VtuberHost extends EventEmitter {
   get isOn() { return this.running && !!(this.vt && this.vt.on); }
 
   getState() {
-    return { installed: this.installed, status: this.status, problem: this.problem, port: this.port, vt: this.vt, cameraWindow: this.cameraWindow ? { ...this.cameraWindow } : null };
+    return { installed: this.installed, status: this.status, problem: this.problem, port: this.port, vt: this.vt, cameraWindow: this.cameraWindow ? { ...this.cameraWindow } : null, wire: this.wire };
   }
   _emit() { this.emit('state', this.getState()); }
 
@@ -180,6 +194,7 @@ class VtuberHost extends EventEmitter {
   _message(m, settle) {
     if (m.t === 'ready') {
       this.status = 'running'; this.port = Number(m.port) || 0; this.problem = null;
+      if (Number(m.wire) >= 2) this._wire = 2;
       this.log('info', `VTuber: running on this computer (place ${this.port})`);
       this._emit();
       settle({ ok: true, port: this.port });

@@ -102,6 +102,7 @@ class VtuberLink {
     this.http = opts.http !== false;
     this.direct = typeof opts.direct === 'function' ? opts.direct : null;   // () -> fn(ev) while a VTuber runs in the app, else null
     this.log = opts.log || (() => {});
+    this.onChange = typeof opts.onChange === 'function' ? opts.onChange : null;   // V8: live / found / lost changed
     this.now = opts.now || (() => Date.now());
     this.mono = opts.mono || (() => performance.now());
     this.setTimeout = opts.setTimeout || setTimeout;
@@ -175,7 +176,10 @@ class VtuberLink {
       // V8: which picture-server families this LIVE's viewers used (family names and counts only: no address, no viewer)
       try { const line = this.pictures && this.pictures.line(); if (line) { this.log('info', `VTuber link: ${line}`); this.pictures.reset(); } } catch {}
     }
+    this._changed();
   }
+
+  _changed() { if (this.onChange) { try { this.onChange(); } catch {} } }
 
   /** the contract version the listening VTuber speaks: 2 = it takes who the viewer is, `show` and `control` */
   _v(inApp) { return inApp ? (Number(inApp.v) >= 2 ? 2 : 1) : (this.ok && this.peerV >= 2 ? 2 : 1); }
@@ -248,11 +252,13 @@ class VtuberLink {
   _found() {
     this.ok = true;
     if (this.said !== 'found') { this.said = 'found'; this.log('info', `VTuber found on this computer (port ${this.port}): TikTok events go to it`); }
+    this._changed();
   }
 
   _lost() {
     this.ok = false;
     if (this.said === 'found') { this.said = 'lost'; this.log('info', 'VTuber on this computer stopped answering: no events go to it until it is back'); }
+    this._changed();
   }
 
   // ---------------------------------------------------------------- events
