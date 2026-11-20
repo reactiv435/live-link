@@ -82,6 +82,30 @@
     .swatches { grid-template-columns: repeat(5, minmax(0, 1fr)); }
     #wheelBox { grid-template-columns: 130px minmax(0, 1fr); } #wheel { width: 130px; height: 130px; }
   }
+  /* V8: the puppet show card */
+  .moves { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
+  .mv { position: relative; min-height: 78px; border: 2px solid var(--line2); background: linear-gradient(180deg, #1d1512, #120d0b); border-radius: 12px; padding: 8px 4px 10px; font-size: 14px; font-weight: 700; line-height: 1.2; overflow: hidden; touch-action: none; user-select: none; }
+  .mv b { display: block; margin: 6px auto 0; width: 30px; padding: 2px 0; border-radius: 6px; border: 1px solid var(--line2); background: #0e0a08; color: var(--chrome); font: 700 12px/1.3 Consolas, "Segoe UI", monospace; }
+  .mv small { display: block; font-size: 11px; font-weight: 600; color: var(--warn); margin-top: 4px; min-height: 14px; }
+  .mv u { position: absolute; left: 0; bottom: 0; height: 4px; width: 0%; background: var(--chrome); text-decoration: none; }
+  .mv.go { border-color: var(--crimson2); background: linear-gradient(180deg, #ff3b57, #8a0f22); box-shadow: 0 0 16px #e01f3d66; color: #fff; }
+  .mv.atk { border-color: var(--warn); }
+  .mv:disabled { opacity: .5; cursor: default; }
+  #v8Fight { width: 100%; margin-top: 12px; border: 2px solid var(--crimson2); background: linear-gradient(180deg, #3a0f17, #1d0a0d); border-radius: 14px; padding: 14px 12px; font-size: 22px; font-weight: 800; letter-spacing: .12em; color: #fff; }
+  #v8Fight small { display: block; font-size: 13px; font-weight: 500; letter-spacing: .02em; color: #f3d6da; margin-top: 4px; min-height: 18px; }
+  #v8Fight:disabled { border-color: var(--line2); background: #120d0b; color: #8f8880; cursor: default; }
+  #v8Fight:disabled small { color: var(--warn); }
+  #v8Fight.run { background: linear-gradient(180deg, #ff3b57, #b3122c); box-shadow: 0 0 22px #e01f3d77; }
+  .voterow { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 8px; }
+  .voterow button { min-height: 44px; font-weight: 700; }
+  #v8Own input { width: 100%; margin-top: 8px; font: inherit; padding: 9px 10px; border-radius: 8px; border: 1px solid var(--line2); background: #120d0b; color: var(--text); }
+  #v8BarsY { margin-top: 10px; }
+  #v8Note { font-size: 14px; color: var(--chrome); margin: 10px 0 0; min-height: 20px; }
+  .keyrow { display: grid; grid-template-columns: minmax(0, 1fr) 64px 92px; gap: 8px; align-items: center; margin-top: 8px; font-size: 14px; }
+  .keyrow b { text-align: center; padding: 6px 0; border-radius: 6px; border: 1px solid var(--line2); background: #0e0a08; font: 700 13px/1.3 Consolas, "Segoe UI", monospace; }
+  .keyrow button { min-height: 36px; padding: 4px 8px; font-size: 13px; }
+  .keyrow button.wait { border-color: var(--crimson2); color: #fff; }
+  @media (max-width: 480px) { .moves { grid-template-columns: repeat(3, minmax(0, 1fr)); } .voterow { grid-template-columns: minmax(0, 1fr); } }
   .mic { height: 12px; border-radius: 6px; background: #0e0a08; border: 1px solid var(--line2); overflow: hidden; margin-top: 8px; }
   .mic i { display: block; height: 100%; width: 0%; background: linear-gradient(90deg, #8f8880, #d9d2cb 60%, #ff3b57); }
   .miclabel { font-size: 12px; color: var(--dim); margin-top: 4px; }
@@ -165,6 +189,46 @@
     </div>
   </div>
 
+  <!-- V8: the puppet show (only while the Mask is picked). One plain sentence under every control. -->
+  <div class="card" id="v8Card" hidden>
+    <h2>Puppet show</h2>
+    <button class="plain switch" id="v8On" style="margin-top:0"><span>Puppet show</span><i></i></button>
+    <p class="hint" id="v8OnHint"></p>
+    <div id="v8Body">
+      <div class="field">Moves</div>
+      <div class="moves" id="v8Moves"></div>
+      <p class="hint" id="v8MovesHint"></p>
+      <button id="v8Fight"><span id="v8FightText">BOSS FIGHT</span><small id="v8FightWhy"></small></button>
+      <p class="hint" id="v8FightHint"></p>
+      <div class="field">Votes</div>
+      <div class="voterow"><select id="v8VoteWhich" aria-label="Which vote"></select><button class="plain" id="v8Vote"></button></div>
+      <div id="v8Own" hidden>
+        <input id="v8OwnQ" type="text" maxlength="60" placeholder="Your question, for example: Is this song a banger?" aria-label="Your question">
+        <input id="v8OwnA" type="text" maxlength="100" placeholder="The answers, a comma between them: Yes, No" aria-label="The answers">
+      </div>
+      <p class="hint" id="v8VoteHint"></p>
+      <button class="plain switch" id="v8Rand"><span>Random votes every few minutes</span><i></i></button>
+      <p class="hint">A new vote by itself about every 4 minutes. Never during a boss fight.</p>
+      <button class="plain switch" id="v8Chat"><span>Chat can trigger moves</span><i></i></button>
+      <p class="hint">A viewer who types goo, fire, melt, crack or eat sets off that move: one every 12 seconds for the whole room, one a minute for each viewer. A gift sets off a bigger move.</p>
+      <button class="plain switch" id="v8Hands"><span>Hand puppets</span><i></i></button>
+      <p class="hint" id="v8HandsHint">Hold a hand up by your face: right hand = angel, left = devil.</p>
+      <button class="plain switch" id="v8Swap"><span>Swap hands</span><i></i></button>
+      <p class="hint" id="v8SwapHint">If the angel shows on your left hand, turn this on.</p>
+      <div class="field">Where the fight's bars sit</div>
+      <div class="amt" id="v8Bars"></div>
+      <input type="range" id="v8BarsY" min="0" max="1" step="0.01" aria-label="The bars: up - down">
+      <p class="hint">Top is where your hype bar sits. Slide to put them anywhere between; the Mask moves out of their way.</p>
+      <details id="v8KeysBox">
+        <summary>Change the keys</summary>
+        <div id="v8Keys"></div>
+        <p class="hint" id="v8KeysHint"></p>
+        <button class="plain" id="v8KeysReset">Standard keys</button>
+      </details>
+    </div>
+    <p id="v8Note"></p>
+  </div>
+
   <!-- V7: shuffle to the beat (all three) -->
   <div class="card" id="shuffleCard">
     <h2>Shuffle to the beat</h2>
@@ -220,6 +284,8 @@
 <script src="js/mask-wire.js"></script>
 <script src="mask/face-topology.js"></script>
 <script src="mask/mask-core.js"></script>
+<!-- V8: the puppet show's own lists (the moves, the votes): pure logic, the show itself runs on the avatar page -->
+<script src="js/v8-show.js"></script>
 <script src="js/vtuber.js"></script>
 </body>
 </html>

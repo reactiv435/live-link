@@ -177,7 +177,9 @@
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
       return { tex, w, h, set(data) { gl.bindTexture(gl.TEXTURE_2D, tex); gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, w, h, gl.RGBA, gl.FLOAT, data); } };
     }
-    return { gl, W, H, info, program, buffer, attrib, dataTex, beginScene, endScene, fsTri, bindTex, FS_TRI };
+    /** V8: back to the HDR scene target after drawing into a target of its own (mask-v8.js: the goo / fire field) */
+    function bindScene() { gl.bindFramebuffer(gl.FRAMEBUFFER, msFbo); gl.viewport(0, 0, W, H); }
+    return { gl, W, H, info, program, buffer, attrib, dataTex, beginScene, endScene, fsTri, bindTex, FS_TRI, target, bindScene };
   }
 
   // ---------------------------------------------------------------- small matrix helpers (column-major Float32Array(16))

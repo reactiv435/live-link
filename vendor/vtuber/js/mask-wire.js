@@ -71,17 +71,58 @@
   // no control characters, no line breaks, no direction marks; cut to the length the contract allows
   const text = (v, max) => (typeof v === 'string' ? Array.from(v.replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202f\u2066-\u2069\ufeff]/g, ' ').trim()).slice(0, max).join('') : '');
   const int = (v, lo, hi) => (typeof v === 'number' && Number.isFinite(v) ? Math.max(lo, Math.min(hi, Math.round(v))) : null);
-  /** The event checked and clipped (only the fields the contract names), or null when it is not one. */
+  // ---- V8 (V8-PHASE2.md section C): event v2 adds who the viewer is (handle, uid, picture); `show` and `control` are new
+  // C2: the picture hosts. LIVE Link sends only https URLs on these; the VTuber's picture door (/api/pic) checks again.
+  // A host is allowed when it IS one of these names or ends with '.' + one of them. Covers: the site's storage.
+  const PIC_HOSTS = ['tiktokcdn.com', 'tiktokcdn-us.com', 'tiktokcdn-eu.com', 'ibyteimg.com', 'byteimg.com'];
+  const COVER_HOSTS = ['supabase.co', 'reactivvibeai.com'];
+  /** an https picture URL on an allowed host (<= 600 chars, no login part, the standard port), as a string, or null */
+  function picUrl(v, hosts) {
+    if (typeof v !== 'string' || v.length > 600 || v.length < 12 || !/^https:\/\//i.test(v) || /[^\u0021-\u007e]|["<>\\^`{|}]/.test(v)) return null;
+    let u; try { u = new URL(v); } catch (e) { return null; }
+    if (u.protocol !== 'https:' || u.username || u.password || (u.port && u.port !== '443')) return null;
+    const h = u.hostname.toLowerCase();
+    if (!/^[a-z0-9.-]+$/.test(h)) return null;
+    for (const s of hosts || PIC_HOSTS.concat(COVER_HOSTS)) if (h === s || h.endsWith('.' + s)) return u.href;
+    return null;
+  }
+  const handleOf = (v) => (typeof v === 'string' ? v.replace(/^@/, '').replace(/[^A-Za-z0-9._]/g, '').slice(0, 40) : '');
+  const uidOf = (v) => (typeof v === 'string' && /^[0-9]{1,30}$/.test(v) ? v : typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 ? String(v) : null);
+  /** The event checked and clipped (only the fields the contract names), or null when it is not one. v 1 and v 2. */
   function cleanEvent(e) {
-    if (!e || typeof e !== 'object' || Array.isArray(e) || e.v !== 1 || !EVENT_TYPES.includes(e.type)) return null;
+    if (!e || typeof e !== 'object' || Array.isArray(e) || (e.v !== 1 && e.v !== 2) || !EVENT_TYPES.includes(e.type)) return null;
     const out = { type: e.type, name: text(e.name, 40), gift: null, coins: null, count: null, text: null };
     if (e.type === 'gift') {
       out.gift = text(e.gift, 40) || null; out.coins = int(e.coins, 0, 1000000); out.count = int(e.count, 1, 9999) || 1;
       if (!out.gift && out.coins === null) return null;                       // a gift with neither a name nor a price says nothing
     } else if (e.type === 'like') out.count = int(e.count, 1, 9999) || 1;
     else if (e.type === 'comment') out.text = text(e.text, 150);
+    if (e.v === 2) { out.handle = handleOf(e.handle); out.uid = uidOf(e.uid); out.avatar = picUrl(e.avatar, PIC_HOSTS); }   // (a v1 event reads exactly as before)
     return out;
   }
+  const HYPE_LABELS = ['', 'WARMING UP', 'HEATING UP', 'ON FIRE', 'WILDFIRE', 'LEGENDARY', 'MYTHIC'];
+  /** C3, the show state: { type: 'show', onAir, song: { id, title, cover } | null, hype: { taps, rank, label, mythic }, score, at } or null */
+  function cleanShow(e) {
+    if (!e || typeof e !== 'object' || Array.isArray(e) || e.v !== 2 || e.type !== 'show') return null;
+    const s = e.song && typeof e.song === 'object' && !Array.isArray(e.song) ? e.song : null, h = e.hype && typeof e.hype === 'object' ? e.hype : {};
+    const rank = int(h.rank, 0, 6) || 0;
+    return {
+      type: 'show', onAir: e.onAir === true,
+      song: s ? { id: text(typeof s.id === 'number' ? String(s.id) : s.id, 64), title: text(s.title, 80), cover: picUrl(s.cover) } : null,
+      hype: { taps: int(h.taps, 0, 1e9) || 0, rank, label: HYPE_LABELS[rank], mythic: int(h.mythic, 0, 9999) || 0 },
+      score: typeof e.score === 'number' && Number.isFinite(e.score) ? Math.max(0, Math.min(100, Math.round(e.score))) : null,
+      at: int(e.at, 0, 1e14) || 0,
+    };
+  }
+  const PUPPET_MOVES = ['goo', 'fire', 'melt', 'crack', 'eat'];
+  /** C4, a key pressed in LIVE Link: { type: 'control', action: 'puppet' | 'fight' | 'vote', name } or null */
+  function cleanControl(e) {
+    if (!e || typeof e !== 'object' || Array.isArray(e) || e.v !== 2 || e.type !== 'control' || !['puppet', 'fight', 'vote'].includes(e.action)) return null;
+    if (e.action === 'puppet' && !PUPPET_MOVES.includes(e.name)) return null;
+    return { type: 'control', action: e.action, name: e.action === 'puppet' ? e.name : '' };
+  }
+  /** any of the three kinds LIVE Link sends, cleaned, or null */
+  function cleanAny(e) { return e && e.type === 'show' ? cleanShow(e) : e && e.type === 'control' ? cleanControl(e) : cleanEvent(e); }
 
   // ---------------------------------------------------------------- the gift list
   const EFFECTS = ['chip', 'barrage', 'grow', 'shatter'];
@@ -152,5 +193,5 @@
   /** OBS's meter (a multiplier, 0..1 and above) as a level 0..1: -50 dB and below = 0, -6 dB and above = 1 */
   const meterLevel = (mul) => { const db = 20 * Math.log10(Math.max(1e-6, Number(mul) || 0)); return Math.max(0, Math.min(1, (db + 50) / 44)); };
 
-  return { BS_NAMES, MAGIC, FACE_BYTES: FULL, packFace, unpackFace, EVENT_TYPES, cleanEvent, EFFECTS, EFFECT_LABEL, cleanGiftRows, effectFor, TRY_EVENTS, TRY_LABEL, levelFollower, meterLevel };
+  return { BS_NAMES, MAGIC, FACE_BYTES: FULL, packFace, unpackFace, EVENT_TYPES, cleanEvent, cleanShow, cleanControl, cleanAny, picUrl, PIC_HOSTS, COVER_HOSTS, HYPE_LABELS, PUPPET_MOVES, EFFECTS, EFFECT_LABEL, cleanGiftRows, effectFor, TRY_EVENTS, TRY_LABEL, levelFollower, meterLevel };
 });

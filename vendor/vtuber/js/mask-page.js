@@ -47,6 +47,67 @@
   const SH = { sh: null, amount: '', pick: 0, changes: 0, last: null };
   const active = () => !!(S.a && S.a.on && S.a.mask);
 
+  // ---------------------------------------------------------------- V8: the puppet show (V8-PHASE2.md section A)
+  // The show's brain (js/v8-show.js) runs HERE, next to the Mask: this page gets the tracker's raw face, the mic level,
+  // the hand points, viewer events and LIVE Link's show state. The VTuber window only sends the switches (`v8` in the
+  // `avatar` message) and commands ({ t: 'v8-cmd' }), and reads what this page reports back (`v8` in its answers).
+  // Kill switches: ?v8=0 on this page, or a window that sends no `v8` field (an older page, or vtuber.html?v8=0): the
+  // Mask is then made without its V8 stage at all (the V7 Mask, untouched).
+  const hudEl = document.getElementById('maskhud');
+  const V8 = { show: null, hud: null, on: false, status: null, key: '', ackAt: 0, over: null, lastShow: null, pics: new Map(), cover: { id: '', img: null }, nose: null, costMs: 0 };
+  const wantV8 = (a) => !Stage.KILL.v8 && !!(a && a.mask && a.v8) && !!window.VTShow && !!window.VTMaskV8 && !!window.VTMaskHud;
+  const tNow = () => (S.mask && S.mask.clock ? S.mask.clock() : performance.now() / 1000);
+  /** a viewer's picture as something the 2D layer can draw at once: a small canvas with the placeholder on it; the real
+   *  picture (through this server's own door, /api/pic: never from TikTok directly) is drawn over it when it has loaded */
+  function pictureOf(viewer, url) {
+    let p = V8.pics.get(viewer.id);
+    if (!p) {
+      const c = document.createElement('canvas'); c.width = c.height = 96;
+      p = { c, url: '', state: '' };
+      try { const ph = window.VTMaskHud.placeholder(viewer.name); if (ph) c.getContext('2d').drawImage(ph, 0, 0, 96, 96); } catch (e) { /* a plain disc */ }
+      V8.pics.set(viewer.id, p);
+      if (V8.pics.size > 220) V8.pics.delete(V8.pics.keys().next().value);
+    } else { V8.pics.delete(viewer.id); V8.pics.set(viewer.id, p); }
+    if (url && url !== p.url && p.state !== 'loading') {
+      p.url = url; p.state = 'loading';
+      const im = new Image();
+      im.onload = () => { try { const x = p.c.getContext('2d'), s = Math.min(im.naturalWidth, im.naturalHeight); x.clearRect(0, 0, 96, 96); x.drawImage(im, (im.naturalWidth - s) / 2, (im.naturalHeight - s) / 2, s, s, 0, 0, 96, 96); p.state = 'ok'; V8.picsOk = (V8.picsOk || 0) + 1; } catch (e) { p.state = 'bad'; } };
+      im.onerror = () => { p.state = 'bad'; V8.picsBad = (V8.picsBad || 0) + 1; };      // the placeholder stays
+      im.src = '/api/pic?u=' + encodeURIComponent(url);
+    }
+    return p.c;
+  }
+  /** what only the page can do for the show: the song's cover, a size / colour for a while, a flare */
+  function v8Acts(acts, m) {
+    for (const x of acts) {
+      if (x.do === 'song') {
+        const id = x.id, title = x.title;
+        V8.cover.id = id;
+        const eat = (img) => { if (V8.cover.id !== id || !S.mask) return; try { S.mask.song(img ? { image: img, colours: window.VTMaskV8.coverColours(img), title } : { title }); } catch (e) { /* the next song */ } };
+        if (!x.cover) eat(null);
+        else { const im = new Image(); im.onload = () => eat(im); im.onerror = () => eat(null); im.src = '/api/pic?u=' + encodeURIComponent(x.cover); }
+      } else if (x.do === 'songOff') { V8.cover.id = ''; try { m.songOff(); } catch (e) { /* nothing on */ } }
+      else if (x.do === 'over') { V8.over = { zoom: x.zoom || 0, colour: x.colour || '', until: performance.now() + (x.secs || 20) * 1000, ck: S.applied.colourOwn || '' }; S.applied.place = S.applied.colour = undefined; apply(); }
+      else if (x.do === 'flare') { try { m.flare(); } catch (e) { /* no stage */ } }
+    }
+  }
+  /** once per drawn frame, before the Mask draws: the show steps, the Mask is fed; what changed is told to the window */
+  function v8Step(now) {
+    const m = S.mask, show = V8.show; if (!m || !show) return;
+    const b = performance.now();
+    if (V8.over && now > V8.over.until) { V8.over = null; S.applied.place = S.applied.colour = undefined; apply(); }
+    let st = null;
+    try { st = show.step(m.clock()); const acts = show.takeActs(); if (acts.length) v8Acts(acts, m); } catch (e) { S.error = 'the puppet show: ' + String(e && e.message ? e.message : e).slice(0, 120); }
+    V8.costMs += (performance.now() - b - V8.costMs) * 0.05;
+    if (!st) return;
+    V8.status = st;
+    // told at once when something he can see on his buttons changed (a move, the fight, a vote, the song), at most 5 a second
+    const key = [st.on, st.song, st.songSrc, st.attack, st.fight ? st.fight.phase + (st.fight.winner || '') : '', st.vote ? st.vote.active + st.vote.id : '', st.note, MOVES8.map((k) => (st.moves[k].on ? 'o' : st.moves[k].cool > 0 ? 'c' : '-') + st.moves[k].why).join('')].join('|');
+    if (key !== V8.key && now - V8.ackAt > 200) { V8.key = key; V8.ackAt = now; ack(); }
+  }
+  const MOVES8 = ['goo', 'fire', 'melt', 'crack', 'eat'];
+  function ack() { const a = S.a; if (!a || !a.mask || Boot.MANUAL) return; Boot.send({ t: 'avatar-ack', ready: true, on: a.on, character: a.character, mask: window.VTMaskPage.status(), fps: S.fps, w: canvas.width, h: canvas.height, at: Date.now() }); }
+
   function size() {
     const dpr = window.devicePixelRatio || 1;
     let w = Math.max(2, Math.round(window.innerWidth * dpr)), h = Math.max(2, Math.round(window.innerHeight * dpr));
@@ -66,8 +127,17 @@
       S.rows = g && Array.isArray(g.rows) ? g.rows : null; S.giftsRev = a.maskGifts || 0;
       if (!window.VTMaskLive) throw new Error('mask: its files did not load');
       const sz = size();
-      S.mask = window.VTMaskLive.create(canvas, { neutral: S.neutral, bsNames: W.BS_NAMES, width: sz.width, height: sz.height, giftMap: S.rows || undefined, giftSounds: a.maskSounds !== false, background: a.maskBg || 'black', eyeLock: a.eyes !== false });
+      V8.on = wantV8(a);
+      S.mask = window.VTMaskLive.create(canvas, { neutral: S.neutral, bsNames: W.BS_NAMES, width: sz.width, height: sz.height, giftMap: S.rows || undefined, giftSounds: a.maskSounds !== false, background: a.maskBg || 'black', eyeLock: a.eyes !== false, v8: V8.on });
       S.applied = { mode: 'face', bg: a.maskBg || 'black', sounds: a.maskSounds !== false, viz: '', eyes: a.eyes !== false };
+      // V8: the show's brain and the 2D layer over the Mask (bars, pictures, the vote: everything that is read)
+      V8.show = null; V8.hud = null; V8.status = null; V8.key = '';
+      if (V8.on && hudEl) {
+        hudEl.width = sz.width; hudEl.height = sz.height;
+        V8.hud = window.VTMaskHud.create(hudEl, { layout: 'stack' });
+        V8.show = window.VTShow.create({ mask: S.mask, engines: { VTBoss: window.VTBoss, VTFaceTriggers: window.VTFaceTriggers, VTVotes: window.VTVotes, VTHandPuppets: window.VTHandPuppets }, bsNames: W.BS_NAMES, seed: (Date.now() & 0x7fffffff) || 1, pictureOf, bossParams: window.__v8BossParams || null, voteSeconds: Number(window.__v8VoteSecs) || 0 });      // (the two window.__v8... values: proof tools only, e.g. a shorter fight for a clip; never set by the product)
+        if (V8.lastShow && Date.now() - V8.lastShow.rx < 15000) V8.show.setShow(V8.lastShow.s, S.mask.clock());
+      } else if (hudEl) { try { hudEl.getContext('2d').clearRect(0, 0, hudEl.width, hudEl.height); } catch (e) { /* nothing drawn */ } }
       S.error = ''; S.drawnOnce = false;
       apply();
     } catch (e) {
@@ -84,6 +154,7 @@
   }
   function drop() {
     const m = S.mask; S.mask = null;
+    V8.show = null; V8.hud = null; V8.status = null; V8.over = null; if (hudEl) hudEl.style.display = 'none';
     if (m) { try { m.destroy(); } catch (e) { /* gone */ } }
     // a canvas that had a graphics context cannot get a new one: a fresh canvas takes its place
     const c = canvas.cloneNode(false);
@@ -108,10 +179,18 @@
     canvas.style.display = active() && S.mask && S.drawnOnce ? 'block' : 'none';
     canvas.style.transform = a && a.mirror ? 'scaleX(-1)' : '';
     if (namesEl) namesEl.style.display = active() ? 'block' : 'none';
+    // V8: the 2D layer shows with the Mask and is NEVER flipped (its words must read right; Mirror flips the Mask only)
+    if (hudEl) hudEl.style.display = active() && S.mask && S.drawnOnce && V8.on ? 'block' : 'none';
     if (!a || !a.mask) { if (!S.unchosenAt) S.unchosenAt = performance.now(); return; }
     S.unchosenAt = 0;
     if (!m) { make(); return; }
+    // the puppet show was switched in or out as a whole (?v8=0, or a window that knows nothing of it): the Mask is made again
+    if (wantV8(a) !== V8.on && !S.making) { drop(); make(); return; }
     const ap = S.applied;
+    if (V8.show) {
+      const v = a.v8 || {}, vk = [v.on, v.chat, v.hands, v.rand, v.bars, v.swap, !!a.mirror].join('|');
+      if (ap.v8 !== vk) { ap.v8 = vk; V8.show.settings(v); try { m.setBars(v.bars || 0); m.setMirror(!!a.mirror); } catch (e) { /* an older mask */ } }
+    }
     // V7: he picked something himself while shuffle runs (`pick` went up), or shuffle was switched on / off: everything
     // the message says is shown again (his picks), and shuffle goes on from there
     const wantSh = !Stage.KILL.shuffle && Beat && a.on && a.shuffle ? a.shuffle : '';
@@ -123,10 +202,16 @@
     if (ap.mode !== a.maskMode) { ap.mode = a.maskMode; m.setMode(a.maskMode); look.mode = a.maskMode; }
     if (ap.bg !== a.maskBg) { ap.bg = a.maskBg; m.setBackground(a.maskBg); look.bg = a.maskBg; }
     // V7: where the face sits and how big (the canvas is flipped as a whole when Mirror is on, so left-right is flipped back)
-    const pz = Stage.KILL.place ? 1 : a.zoom, px = Stage.KILL.place ? 0 : (a.mirror ? -1 : 1) * (a.offsetX || 0), py = Stage.KILL.place ? 0 : Math.min(a.offsetY, L.placeUp ? L.placeUp('mask') : 0.45), pk = pz + '|' + px + '|' + py;
-    if (ap.place !== pk && typeof m.setPlace === 'function') { ap.place = pk; m.setPlace({ zoom: pz, x: px, y: py }); }
+    // V8: a vote's winner may change his size ("shrink him to an inch", "make him HUGE") or his colour for a while (V8.over)
+    const ov = V8.over, oz = ov && ov.zoom ? ov.zoom : 0;
+    const pz = Stage.KILL.place ? 1 : a.zoom, px = Stage.KILL.place ? 0 : (a.mirror ? -1 : 1) * (a.offsetX || 0), py = Stage.KILL.place ? 0 : Math.min(a.offsetY, L.placeUp ? L.placeUp('mask') : 0.45), pk = pz + '|' + px + '|' + py + '|' + oz;
+    if (ap.place !== pk && typeof m.setPlace === 'function') { ap.place = pk; m.setPlace(oz ? { zoom: oz < 1 ? oz : Math.min(2, Math.max(pz, 1) * oz), x: oz < 1 ? px : px * 0.4, y: oz < 1 ? py : py * 0.4 } : { zoom: pz, x: px, y: py }); }
     // V7: a colour he picked (not there = Auto) and whether the music still moves it
-    const col = Stage.KILL.colour ? '' : (a.maskColour || ''), ck = col + '|' + (a.maskColourMusic !== false);
+    const own = Stage.KILL.colour ? '' : (a.maskColour || '');
+    // (a colour he picks himself on the card while a voted colour shows wins at once: the voted one is dropped)
+    if (ov && ov.colour && own !== ov.ck) { ov.colour = ''; }
+    ap.colourOwn = own;
+    const col = ov && ov.colour ? ov.colour : own, ck = col + '|' + (a.maskColourMusic !== false);
     if (ap.colour !== ck && typeof m.setColour === 'function') { ap.colour = ck; m.setColour(col || null, a.maskColourMusic !== false); look.colour = 'auto'; }
     if (ap.eyes !== (a.eyes !== false) && typeof m.setEyeLock === 'function') { ap.eyes = a.eyes !== false; m.setEyeLock(ap.eyes); }      // eyes on camera (round 5)
     if (ap.sounds !== a.maskSounds) { ap.sounds = a.maskSounds; m.setGiftSounds(a.maskSounds); }
@@ -151,6 +236,8 @@
     let ok = false;
     try { ok = S.mask.frame(f.lm, f.bs, f.mat, { width: f.w || 1, height: f.h || 1 }, f.at); } catch (e) { ok = false; }
     if (ok) { S.faces++; S.faceN++; S.newFaceAt = f.at; if (S.log && S.log.faces.length < 20000) S.log.faces.push([f.at, epoch(), f.lm[3], f.lm[4]]); }
+    // V8: his REAL face is the boss's controller (mouth wide = eat, a head turn = dodge, a pucker = the shield ...)
+    if (V8.show) { try { V8.nose = f.lm ? [f.lm[3], f.lm[4]] : null; V8.show.face(f.lm ? { bs: f.bs, mat: f.mat, lm: f.lm } : null, S.mask.clock()); } catch (e) { /* the next frame */ } }
   };
 
   // ---------------------------------------------------------------- the music
@@ -170,6 +257,9 @@
     const now = performance.now();
     S.src = m.s === 'pc' || m.s === 'obs' ? m.s : 'voice'; S.srcAt = now;
     if (!Array.isArray(m.f) || m.f.length < 8 || !S.mask || !active()) return;
+    // V8: the Mask's own ear for "is a song playing?" (only used while LIVE Link says nothing): the PC's sound level,
+    // never while one of the Mask's own sounds is playing
+    if (V8.show && !ownSound(now)) V8.show.ear(Number(m.f[6]) || 0, S.src, S.mask.clock());
     const f = guard(fromList(m.f), now);
     shuffleStep(f, now);
     if (S.src === 'pc') { try { S.mask.audio(f); } catch (e) { /* the next one */ } }
@@ -203,6 +293,7 @@
   }
   function onMic(m) {
     const now = performance.now();
+    if (V8.show && S.mask) V8.show.mic(Number(m.level) || 0, S.mask.clock());      // V8: a real yell = the scream (with a wide jaw)
     if (now - S.srcAt > 2500) S.src = 'voice';             // nothing from the app about the music (an older server): his voice
     if (S.src !== 'voice' || !active()) return;
     const f = guard(follower.push(Number(m.level) || 0, now / 1000), now);
@@ -217,8 +308,18 @@
     else if (m.t === 'mask-event') {
       if (!S.mask || !active() || !m.e || typeof m.e !== 'object') return;
       S.events++; S.lastEventAt = performance.now();
-      try { S.mask.fire(m.e); } catch (e) { /* an event the mask does not know */ }
+      // V8: the show takes it first (a tap = a missile in a fight, a comment = a vote or a chat word, a gift = a weapon
+      // or a move); `v4` says whether the Mask's older gift effect plays as well (not in a fight)
+      let v4 = true;
+      if (V8.show) { try { v4 = V8.show.event(m.e, S.mask.clock()).v4 !== false; } catch (e) { v4 = true; } }
+      if (v4) { try { S.mask.fire(m.e); } catch (e) { /* an event the mask does not know */ } }
     }
+    // V8: a button / key on the VTuber window, or one of LIVE Link's global keys
+    else if (m.t === 'v8-cmd') { if (V8.show && S.mask && active()) { try { V8.show.cmd(m, S.mask.clock()); } catch (e) { /* one press lost */ } } }
+    // V8: LIVE Link's show state (song on air, its cover, the hype rank, his score). Older than 15 s = not believed.
+    else if (m.t === 'v8-show') { if (m.s && typeof m.s === 'object' && typeof m.rx === 'number' && Date.now() - m.rx < 15000) { V8.lastShow = { s: m.s, rx: m.rx }; if (V8.show && S.mask) V8.show.setShow(m.s, S.mask.clock()); } }
+    // V8: the hand model's raw result, for the angel / devil puppets (the tracker sends it only while the switch is on)
+    else if (m.t === 'v8-hands') { if (V8.show && S.mask && active() && Array.isArray(m.hands)) { try { V8.show.hands(m.hands.slice(0, 2), { aspect: m.w && m.h ? m.w / m.h : 0.5625, face: V8.nose }, S.mask.clock()); } catch (e) { /* the next one */ } } }
   };
 
   // ---------------------------------------------------------------- drawing
@@ -244,13 +345,16 @@
       try { m.audio({ ...c, kick: S.kick, hit: 0 }); } catch (e) { /* the next one */ }
       S.kick = 0;
     }
+    v8Step(now);                                           // V8: the show steps and feeds the Mask before it draws
     let drew = false;
     try { drew = m.draw() !== false; } catch (e) { S.error = String(e && e.message ? e.message : e).slice(0, 160); }
     if (drew) {
       S.draws++; S.fpsN++;
-      if (!S.drawnOnce) { S.drawnOnce = true; S.firstDrawAt = performance.now(); canvas.style.display = active() ? 'block' : 'none'; }
+      if (!S.drawnOnce) { S.drawnOnce = true; S.firstDrawAt = performance.now(); canvas.style.display = active() ? 'block' : 'none'; if (hudEl) hudEl.style.display = active() && V8.on ? 'block' : 'none'; }
+      // V8: the 2D layer (never flipped; with Mirror on, what rides on the Mask's picture has its x flipped to follow)
+      if (V8.hud) { try { const b = performance.now(); V8.hud.draw(m.hud(), { mirror: !!(S.a && S.a.mirror), barsY: S.a && S.a.v8 ? S.a.v8.bars || 0 : 0 }); V8.hudMs = (V8.hudMs || 0) + (performance.now() - b - (V8.hudMs || 0)) * 0.05; } catch (e) { /* the next frame */ } }
       // V7: the small picture for the VTuber window (only while it asks for it)
-      if (S.a && S.a.pv && S.drawnOnce && active()) { const d = Stage.picture([{ canvas, mirror: !!S.a.mirror }], now); if (d) Boot.send({ t: 'avatar-ack', ready: true, on: S.a.on, character: S.a.character, mask: window.VTMaskPage.status(), fps: S.fps, w: canvas.width, h: canvas.height, at: Date.now(), pv: d }); }
+      if (S.a && S.a.pv && S.drawnOnce && active()) { const d = Stage.picture(V8.hud && hudEl ? [{ canvas, mirror: !!S.a.mirror }, { canvas: hudEl, mirror: false }] : [{ canvas, mirror: !!S.a.mirror }], now); if (d) Boot.send({ t: 'avatar-ack', ready: true, on: S.a.on, character: S.a.character, mask: window.VTMaskPage.status(), fps: S.fps, w: canvas.width, h: canvas.height, at: Date.now(), pv: d }); }
       if (S.newFaceAt) { const d = epoch() - S.newFaceAt; S.lat.push(d); if (S.lat.length > 600) S.lat.splice(0, 300); if (S.log && S.log.draws.length < 20000) S.log.draws.push([S.newFaceAt, epoch()]); S.newFaceAt = 0; }
     }
     try { names(m.names()); } catch (e) { names(null); }
@@ -303,11 +407,13 @@
         // V7: what shows right now (shuffle may have changed it), and the shuffle's own state
         vizNow: st ? st.visualizer : '', colour: st ? st.colour || '' : '', place: st && st.place ? [st.place.zoom, st.place.x, st.place.y] : null,
         ...(SH.sh ? { shuffle: SH.amount, look: { ...look }, changes: SH.changes, bpm: SH.sh.beat && SH.sh.beat.locked ? Math.round(SH.sh.beat.bpm) : 0 } : null),
+        // V8: what the puppet show is doing (cooldowns, the fight, the vote, why a button is grey), for the VTuber window
+        ...(V8.show && V8.status ? { v8: { ...V8.status, counts: undefined, ms: Math.round(((V8.costMs || 0) + (V8.hudMs || 0)) * 100) / 100, pics: [V8.picsOk || 0, V8.picsBad || 0] } } : null),
       };
     },
     fps: () => S.fps,
     /** for the proof tools only */
-    debug: { S, q, SH, look, startLog() { S.log = { faces: [], draws: [], shuffles: [] }; }, takeLog() { const l = S.log; S.log = null; return l; }, get mask() { return S.mask; }, get canvas() { return canvas; } },
+    debug: { S, q, SH, look, V8, startLog() { S.log = { faces: [], draws: [], shuffles: [] }; }, takeLog() { const l = S.log; S.log = null; return l; }, get mask() { return S.mask; }, get canvas() { return canvas; } },
   };
   // the Mask answers the app by itself once a second (it does not wait for the heroes' big 3D files)
   setInterval(() => {

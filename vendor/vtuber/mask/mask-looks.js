@@ -15,11 +15,32 @@
   // round 3: the palette (mask-mood.js) and the gift / chat effects (mask-fx.js)
   uniform vec3 uShade, uShade2, uKeyCol, uAccent, uRingCol; uniform vec4 uFlash; uniform float uRainbow, uPulse, uShatter, uGain; uniform vec2 uRing;
   uniform vec4 uImp[10]; uniform vec4 uImpT[10]; uniform vec3 uImpC[10]; uniform int uNImp; uniform vec4 uLock; uniform vec4 uLockCol; uniform vec4 uTap[6]; uniform float uStreak, uViz; uniform int uBg;
+  // V8 (mask-v8.js; all zero = nothing changes): uDmg = holes that stay (rest space xyz, radius), uV8 = (cracks 0..1, cosmic 0..1, heat 0..1, spare), uV8Fire = the colour of what burns inside
+  uniform vec4 uDmg[16]; uniform highp int uNDmg; uniform vec4 uV8; uniform vec3 uV8Fire;
   vec3 hue(float h) { return clamp(abs(fract(h + vec3(0.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - 3.0) - 1.0, 0.0, 1.0); }
   const vec3 CRIM = ${CRIM};
   float band(float x, float a, float b, float s) { return smoothstep(a - s, a + s, x) * (1.0 - smoothstep(b - s, b + s, x)); }
   vec3 hash3(vec3 p) { p = vec3(dot(p, vec3(127.1, 311.7, 74.7)), dot(p, vec3(269.5, 183.3, 246.1)), dot(p, vec3(113.5, 271.9, 124.6))); return fract(sin(p) * 43758.5453123); }
   float hash1(vec3 p) { return fract(sin(dot(p, vec3(12.9898, 78.233, 37.719))) * 43758.5453); }
+  float v8dmg(vec3 at, float rnd) {
+    float d = 0.0;
+    for (int i = 0; i < 16; i++) { if (i >= uNDmg) break; float q = length(at - uDmg[i].xyz) / max(uDmg[i].w, 1e-3) + 0.09 * sin(at.x * 23.0 + at.y * 17.0 + float(i) * 2.4); d = max(d, 1.0 - smoothstep(0.60 + 0.32 * rnd, 1.0, q)); }
+    return d;
+  }
+  // cracks: the edges of a 3D cell pattern fixed to his resting face -> (distance to the nearest edge, the cell's own number)
+  vec2 v8cell(vec3 p) {
+    vec3 ip = floor(p), fp = fract(p); float f1 = 9.0, f2 = 9.0, id = 0.0;
+    for (int z = -1; z <= 1; z++) for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++) {
+      vec3 g = vec3(float(x), float(y), float(z)), o = hash3(ip + g), r = g + o - fp; float d = dot(r, r);
+      if (d < f1) { f2 = f1; f1 = d; id = o.x; } else if (d < f2) f2 = d;
+    }
+    return vec2(sqrt(f2) - sqrt(f1), id);
+  }
+  float v8crack(vec3 at, out float cid) {
+    vec2 ce = v8cell(at * 2.3 + 4.7); cid = ce.y;
+    float reach = 1.0 - smoothstep(uV8.x * 3.6 - 0.55, uV8.x * 3.6, length(at - vec3(0.0, -0.45, 0.35)) + 0.5 * ce.y);
+    return (1.0 - smoothstep(0.0, 0.035 + 0.075 * uV8.x, ce.x)) * reach;
+  }
   float vnoise(vec3 x) {
     vec3 i = floor(x), f = fract(x); f = f * f * (3.0 - 2.0 * f);
     return mix(mix(mix(hash1(i), hash1(i + vec3(1, 0, 0)), f.x), mix(hash1(i + vec3(0, 1, 0)), hash1(i + vec3(1, 1, 0)), f.x), f.y),
@@ -668,6 +689,10 @@
         }
       }
     }
+    // V8: holes that stay, cracks with fire behind them
+    float dmg = 0.0, crk = 0.0, cid = 0.0;
+    if (uNDmg > 0 && uMode != 1) dmg = v8dmg(at0, aRnd.w);
+    if (uV8.x > 0.0 && uMode != 1) { crk = v8crack(at0, cid); P += N * ((cid - 0.5) * 0.07 * uV8.x * (1.0 - crk)) * (1.0 - 0.6 * hold); }
     P += dir * uShatter * (0.22 + 2.4 * aRnd.z * aRnd.z) + cross(dir, vec3(0.0, 1.0, 0.0)) * uShatter * 0.5 * sin(t * 2.0 + aRnd.x * 6.28) * aRnd.z;
     // taps: each one is a small ring that runs through the points from where it landed
     float tapRing = 0.0;
@@ -711,6 +736,14 @@
     col += uAccent * tapRing * 4.0 + SH * (rim * 1.3 + 0.10) * uStreak;      // the tap ring; a streak of taps makes the rim glow
     col = mix(col, SH * (dot(col, vec3(0.5, 0.3, 0.2)) * 1.6 + 0.25), flying);            // what flies takes the shade colour
     col += impCol * (2.2 + 2.0 * aRnd.x);
+    if (crk > 0.0) col = col * (1.0 - 0.5 * crk) + mix(uV8Fire, vec3(1.0, 0.96, 0.88), crk * crk * 0.7) * (crk * (1.6 + 2.6 * uV8.z + 1.2 * uBeat));
+    if (uV8.y > 0.0) {
+      // MYTHIC: the skin of points thins to starlight so the galaxy inside shows; the lines of the face are drawn in gold light
+      float st = step(0.90, aRnd.x) * (0.55 + 0.45 * sin(t * (1.5 + aRnd.y * 5.0) + aRnd.z * 40.0));
+      vec3 cc = mix(uV8Fire, vec3(1.0, 0.96, 0.88), 0.35 + 0.4 * kd) * (line * (2.3 + 0.8 * uBeat) + 0.05) + vec3(1.0, 0.95, 0.86) * st * 1.5 + SH * (rim * 0.55);
+      col = uMode == 1 ? col * (1.0 - uV8.y) : mix(col, cc, uV8.y);
+    }
+    if (dmg > 0.0) { float keep = uMode == 0 ? 0.42 * line : 0.0; col = col * (1.0 - dmg * (1.0 - keep)) + uV8Fire * (dmg * (1.0 - dmg) * 1.5 * (0.5 + 0.5 * uBeat + uV8.z)); }
     if (uLockCol.a > 0.0) { float dl = (length(at0 - uLock.xyz) - uLock.w) / 0.045; col += uLockCol.rgb * (exp(-dl * dl) * uLockCol.a * 3.2); }      // lock-on: a ring closing on the face                                                    // the flash of an impact, in the gift's own colour
     float lum = dot(col, vec3(0.45, 0.35, 0.20));
     col = mix(col, uFlash.rgb * (lum * 1.9 + 0.05), uFlash.a);
@@ -744,6 +777,26 @@
     col = mix(col, uFlash.rgb * lum * 1.9, uFlash.a);
     vec3 scorch = vec3(0.0);
     for (int i = 0; i < 10; i++) { if (i >= uNImp) break; float age = uImpT[i].x, bl = uImpT[i].w; if (bl > 0.0 && age >= 0.0 && age < 3.0) { float d = length(vRest - uImp[i].xyz), rr = uImp[i].w, x = (d - rr * 0.8) / (rr * 0.33); scorch += mix(uImpC[i], CRIM, clamp(age * 1.1, 0.0, 1.0)) * (exp(-x * x) * exp(-age * 1.6) * 0.20 * min(bl, 2.0)); } }
+    // V8: holes that stay; cracks: the fire shows through the surface; MYTHIC: a galaxy inside the face
+    float dmgS = uNDmg > 0 ? v8dmg(vRest, 0.5) : 0.0; vec3 v8c = vec3(0.0);
+    if (uV8.x > 0.0) { float cid; float ck = v8crack(vRest, cid); v8c += mix(uV8Fire, vec3(1.0, 0.95, 0.85), ck * ck * 0.8) * (ck * (1.3 + 2.4 * uV8.z + 1.0 * uBeat)) + uV8Fire * (0.10 * uV8.x * (0.5 + cid) * (0.4 + uV8.z)); }
+    if (uV8.y > 0.0) {
+      // deep space behind the face (it slides against the surface as the head turns): thin wisps of cloud, two layers of
+      // stars, and one spiral galaxy on the brow, seen at a tilt
+      vec2 gp = vRest.xy + V.xy * 0.34;
+      float neb = vnoise(vec3(gp * 1.7, uTime * 0.04)) * vnoise(vec3(gp * 4.4 + 3.0, uTime * 0.07)), wisp = smoothstep(0.24, 0.62, neb) * 0.36;
+      vec2 gc = gp - vec2(0.0, 0.34); float ca = cos(0.45), sa = sin(0.45); gc = vec2(ca * gc.x - sa * gc.y, (sa * gc.x + ca * gc.y) * 2.0);
+      float gr = length(gc), ga = atan(gc.y, gc.x), arms = pow(0.5 + 0.5 * cos(2.0 * ga - 5.6 * log(gr + 0.05) + uTime * 0.45), 3.0), disc = exp(-gr * 4.4);
+      vec3 gal = uV8Fire * (arms * disc * 5.0) + vec3(1.0, 0.96, 0.88) * (exp(-gr * gr * 220.0) * 4.0 + arms * disc * disc * 4.0) + uShade * (disc * 0.9);
+      float star = 0.0;
+      for (int ly = 0; ly < 2; ly++) {
+        float scl = ly == 0 ? 26.0 : 52.0; vec2 sp = (vRest.xy + V.xy * (ly == 0 ? 0.50 : 0.22)) * scl, sg = floor(sp); float sh = hash1(vec3(sg, 1.0 + float(ly)));
+        vec2 sf = fract(sp) - 0.5 - (hash3(vec3(sg, 2.0)).xy - 0.5) * 0.6;
+        star += step(ly == 0 ? 0.80 : 0.72, sh) * exp(-dot(sf, sf) * (ly == 0 ? 55.0 : 30.0)) * (0.40 + 0.60 * sin(uTime * (1.0 + sh * 5.0) + sh * 40.0)) * (ly == 0 ? 3.0 : 1.2);
+      }
+      col = mix(col, vec3(0.0), uV8.y * 0.96); v8c += (uShade * (wisp * 0.9 + 0.012) + gal + vec3(1.0, 0.95, 0.86) * star) * (uV8.y * (0.85 + 0.35 * uBass + 0.25 * uBeat));
+    }
+    col = col * (1.0 - dmgS) + v8c * (1.0 - dmgS);
     // no edge: the surface is gone before the outline, and at grazing angles
     o = vec4((col * (1.0 - clamp(hole * 1.4, 0.0, 1.0)) + scorch) * (1.0 - smoothstep(0.0, 0.11, vMask.w)) * smoothstep(0.05, 0.45, dot(N, V)), 1.0);
   }`;
@@ -1300,6 +1353,7 @@
       VZ.move[0] %= 1; VZ.move[1] %= 25.132741; VZ.move[3] %= 12.566370614; if (VZ.move[2] > 30000) VZ.move[2] -= 30000;      // kept small: hours of show must not wear the numbers out
     }
     const VIEW = { fov: 19.5 * Math.PI / 180, dist: 14, targetY: -0.60, halfH: 2.405 };
+    const DMG0 = new Float32Array(64), V80 = [0, 0, 0, 0], V8FIRE0 = [1.0, 0.55, 0.12];
     function draw(look, S) {
       const { time: t, audio: A } = S;
       for (let i = 0; i < 8; i++) { const k = S.kicks[i] || [99, 0]; kickU[i * 2] = k[0]; kickU[i * 2 + 1] = k[1]; }
@@ -1318,7 +1372,7 @@
       const vp0 = M4.mul(proj, view), PLC = S.place || null, ps = PLC ? PLC.zoom : 1, pox = PLC ? 2 * PLC.x : 0, poy = PLC ? 2 * PLC.y : 0;
       let vp = vp0;
       if (PLC && (ps !== 1 || pox || poy)) { vp = vp0.slice(); for (let c = 0; c < 4; c++) { vp[c * 4] = ps * vp0[c * 4] + pox * vp0[c * 4 + 3]; vp[c * 4 + 1] = ps * vp0[c * 4 + 1] + poy * vp0[c * 4 + 3]; } }
-      const FX = S.fx || null, PAL = S.palette || null;
+      const FX = S.fx || null, PAL = S.palette || null, V8U = S.v8 && S.v8.u ? S.v8.u : null;
       const hx = S.head.x, hy = S.head.y, sc = S.head.scale * (FX ? FX.scale * (1 + 0.03 * FX.pulse) : 1);
       const model = M4.trs(S.head.R, sc, [hx, hy, 0]);
       const BGI = Math.max(0, BG_NAMES.indexOf(S.bg)), VIZ = FX ? FX.viz : 0;
@@ -1332,7 +1386,8 @@
         .u('uShade', PAL ? PAL.shade : CRIM3).u('uShade2', PAL ? PAL.shade2 : CRIM3).u('uKeyCol', PAL ? PAL.key : CHROME3).u('uAccent', PAL ? PAL.accent : CHROME3).u('uGain', (PAL ? PAL.gain : 1) * (FX ? 1 - 0.42 * FX.brace : 1))
         .u('uLock', FX && FX.lock ? [FX.lock.pos[0], FX.lock.pos[1], FX.lock.pos[2], FX.lock.r] : [0, 0, 0, 9]).u('uLockCol', FX && FX.lock ? [FX.lock.col[0], FX.lock.col[1], FX.lock.col[2], FX.lock.a] : [0, 0, 0, 0])
         .u('uFlash', flashU).u('uRainbow', FX ? FX.rainbow : 0).u('uPulse', FX ? FX.pulse : 0).u('uShatter', FX ? FX.shatter : 0).u('uRing', FX ? FX.ring : [99, 0]).u('uRingCol', FX ? FX.ringCol : CRIM3)
-        .ui('uNImp', FX ? FX.nImp : 0).uv('uTap', 4, FX ? FX.taps : TAP0).u('uStreak', FX ? FX.streak : 0).u('uViz', FX ? FX.viz : 0).ui('uVizFa', VZF[0]).ui('uVizFb', VZF[1]).u('uVizK', VZK).u('uVizEnv', VZ.env).u('uVizMove', VZ.move).u('uVizC1', VC[0]).u('uVizC2', VC[1]).ui('uBg', BGI).uv('uImp', 4, FX ? FX.imp : IMP0).uv('uImpT', 4, FX ? FX.impT : IMPT0).uv('uImpC', 3, FX ? FX.impC : IMPC0);
+        .ui('uNImp', FX ? FX.nImp : 0).uv('uTap', 4, FX ? FX.taps : TAP0).u('uStreak', FX ? FX.streak : 0).u('uViz', FX ? FX.viz : 0).ui('uVizFa', VZF[0]).ui('uVizFb', VZF[1]).u('uVizK', VZK).u('uVizEnv', VZ.env).u('uVizMove', VZ.move).u('uVizC1', VC[0]).u('uVizC2', VC[1]).ui('uBg', BGI).uv('uImp', 4, FX ? FX.imp : IMP0).uv('uImpT', 4, FX ? FX.impT : IMPT0).uv('uImpC', 3, FX ? FX.impC : IMPC0)
+        .ui('uNDmg', V8U ? V8U.nDmg : 0).uv('uDmg', 4, V8U ? V8U.dmg : DMG0).u('uV8', V8U ? V8U.v8 : V80).u('uV8Fire', V8U ? V8U.fire : V8FIRE0);
       // where the head is on screen (for the background)
       const hc = [hx, hy - 0.45 * sc, 0];
       const cw = vp[3] * hc[0] + vp[7] * hc[1] + vp[11] * hc[2] + vp[15];
@@ -1365,7 +1420,7 @@
       const style = v2 ? 2 : look === 'obsidian' ? 1 : look === 'particles' ? 2 : 0;
       const faceProg = v2 ? 'skin' : look === 'particles' ? 'occlude' : look;
       common(progs[faceProg]).u('uRipple', look === 'chrome' ? 0.022 : look === 'obsidian' ? 0.006 : 0).u('uShrink', look === 'particles' || v2 ? 0.03 : 0).u('uSkin', v2 ? v2.skin : 0);
-      const solid = VIZ < 0.04;                                           // in the visualizer there is no head to hide points behind
+      const solid = VIZ < 0.04 && !(V8U && V8U.gone);                     // in the visualizer there is no head to hide points behind (V8: nor after the boss has exploded)
       if (solid) { gl.bindVertexArray(faceVao[faceProg]); gl.drawElements(gl.TRIANGLES, M.index.length, gl.UNSIGNED_INT, 0); }
       common(pEye).ui('uStyle', style); gl.bindVertexArray(eyeVao);
       if (solid) for (const e of core.eyes) { pEye.u('uCenter', e.c).u('uRadius', look === 'particles' ? e.r * 0.94 : e.r).u('uGaze', e.gaze); gl.drawElements(gl.TRIANGLES, si.length, gl.UNSIGNED_SHORT, 0); }
@@ -1477,6 +1532,8 @@
           pFx.use().u('uViewProj', vp).u('uPx', G.H * 0.066 * ps); gl.bindVertexArray(fxVao); gl.disable(gl.DEPTH_TEST); gl.drawArrays(gl.POINTS, 0, n); gl.enable(gl.DEPTH_TEST);
         }
         gl.disable(gl.BLEND); gl.depthMask(true);
+        // V8: the stage (goo, fire, sparks, puppets ...) is drawn into the same HDR scene, so it blooms with the face
+        if (S.v8 && S.v8.render) S.v8.render({ G, gl, vp, vp0, proj, model, cam, sc, ps, pox, poy, core, time: t, audio: A, kicks: S.kicks, palette: PAL, VIEW });
       }
       gl.bindVertexArray(null);
       const post = v2 ? { bloom: v2.bloom, exposure: 1.0, cool: BGI === 2 ? 1 : 0 } : look === 'chrome' ? { bloom: 0.38, exposure: 1.0 } : look === 'particles' ? { bloom: 0.40, exposure: 1.0 } : look === 'obsidian' ? { bloom: 0.42, exposure: 1.0 } : { bloom: 0.1, exposure: 1.0 };

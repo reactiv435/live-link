@@ -21,6 +21,8 @@
   #stage { position: fixed; inset: 0; width: 100%; height: 100%; display: block; outline: none; }
   /* the Mask (the third choice): its own opaque black canvas above the 3D one; viewer names above that, never mirrored */
   #maskc { position: fixed; inset: 0; width: 100%; height: 100%; display: none; background: #000; z-index: 2; }
+  /* V8: the puppet show's 2D layer (bars, pictures, the vote): above the Mask, NEVER mirrored (its words must read right) */
+  #maskhud { position: fixed; inset: 0; width: 100%; height: 100%; display: none; z-index: 3; pointer-events: none; }
   #maskNames { position: fixed; left: 0; right: 0; top: 7%; display: none; z-index: 3; text-align: center; pointer-events: none; font: 700 4.2vh/1.25 "Segoe UI", system-ui, sans-serif; letter-spacing: .02em; color: #fff6f0; }
   #maskNames div { margin: 0 6% .6vh; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; text-shadow: 0 0 1.2vh #e01f3d, 0 0 .4vh #000, 0 .2vh .5vh #000; opacity: 0; }
   #maskNames div.gift { color: #ffe9c4; text-shadow: 0 0 1.4vh #ff7a1a, 0 0 .4vh #000, 0 .2vh .5vh #000; }
@@ -31,6 +33,7 @@
 <div id="bg2"></div>
 <canvas id="stage"></canvas>
 <canvas id="maskc"></canvas>
+<canvas id="maskhud"></canvas>
 <div id="maskNames"></div>
 <!-- first: connect and cover the camera for the last known state, before the big 3D files load -->
 <script src="js/logic.js"></script>
@@ -47,6 +50,14 @@
 <script src="mask/mask-mood.js"></script>
 <script src="mask/mask-fx.js"></script>
 <script src="mask/mask-sfx.js"></script>
+<!-- V8: the puppet show: the stage (drawn into the Mask), the 2D layer, the four engines, the show's brain -->
+<script src="mask/mask-v8.js"></script>
+<script src="mask/mask-hud.js"></script>
+<script src="js/v8/face-triggers.js"></script>
+<script src="js/v8/boss-engine.js"></script>
+<script src="js/v8/votes.js"></script>
+<script src="js/v8/hand-puppets.js"></script>
+<script src="js/v8-show.js"></script>
 <script src="mask/mask-live.js"></script>
 <script src="js/mask-page.js"></script>
 <script src="vendor/babylon.js"></script>

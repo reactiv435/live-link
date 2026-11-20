@@ -43,7 +43,7 @@
 // with one, expressions are boosted exactly as in the demos.
 (function (root) {
   'use strict';
-  function create(canvas, { neutral = null, bsNames = [], restR = null, width = 1080, height = 1920, look = 'particlesC', giftMap = null, giftSounds = true, background = 'black', visualizer = 'orb', eyeLock = true } = {}) {
+  function create(canvas, { neutral = null, bsNames = [], restR = null, width = 1080, height = 1920, look = 'particlesC', giftMap = null, giftSounds = true, background = 'black', visualizer = 'orb', eyeLock = true, v8 = true, gooColour = 'toxic' } = {}) {
     const Core = root.VTMaskCore, GL = root.VTMaskGL, Looks = root.VTMaskLooks, Mood = root.VTMaskMood, Fx = root.VTMaskFx, Sfx = root.VTMaskSfx;
     canvas.width = width; canvas.height = height;
     const G = GL.create(canvas);
@@ -51,6 +51,8 @@
     let core = null, looks = null, provisional = false;
     let fx = Fx.create(giftMap ? { map: giftMap } : {});
     const mood = Mood.create();
+    // V8 (mask-v8.js): puppet moves, hype layers, the song, the boss fight's look, hand puppets. `v8: false` at create = none of it.
+    const stage = v8 !== false && root.VTMaskV8 ? root.VTMaskV8.create({ gooColour, sounds: true }) : null;
     const S = { eyeLock: eyeLock !== false, bg: background, sounds: giftSounds, mode: 'face', viz: Fx.VISUALIZERS.includes(visualizer) ? visualizer : 'orb', frames: 0, faces: 0, coreMs: 0, drawMs: 0, lastDraw: null, audioAt: -9 };
     let a = { bass: 0.25, mid: 0.3, high: 0.2, beat: 0, level: 0.45, bright: 0.8 }, beat = 0;
     const kicks = [];                                   // [t, strength, big strength]
@@ -58,7 +60,7 @@
     let learn = null, actx = null, sfxOut = null, cueT = 0;
     const playing = [];                                 // gift sounds that are sounding: [end time, level]
     fx.setVisualizer(S.viz, -9);
-    const cmdAt = {};
+    const cmdAt = {}, cuePlayed = new WeakSet();
     const BACKGROUNDS = ['black', 'summer', 'ice', 'forge', 'nebula', 'studio', 'street'];      // the same list, in the same order, as mask-looks.js draws
 
     function build(n) {
@@ -146,9 +148,9 @@
     function setGiftSounds(on) { S.sounds = !!on; if (S.sounds && core) audioOut(true); }
     /** eyes on camera (round 5): true = the eyes point at the lens whatever he looks at; blinks and the head are still his */
     function setEyeLock(on) { S.eyeLock = !!on; if (core) core.eyeLock = S.eyeLock; return true; }
-    function setPlace(p) { S.place = p && typeof p === 'object' ? { zoom: Math.min(2, Math.max(0.5, Number(p.zoom) || 1)), x: Math.min(0.5, Math.max(-0.5, Number(p.x) || 0)), y: Math.min(0.5, Math.max(-0.5, Number(p.y) || 0)) } : null; return true; }
+    function setPlace(p) { S.place = p && typeof p === 'object' ? { zoom: Math.min(2, Math.max(0.15, Number(p.zoom) || 1)), x: Math.min(0.5, Math.max(-0.5, Number(p.x) || 0)), y: Math.min(0.5, Math.max(-0.5, Number(p.y) || 0)) } : null; return true; }
     function setColour(hex, music) { const c = Mood.hexLinear(hex); S.colour = c ? { hex: hex.toLowerCase(), c, music: music !== false, viz: Mood.customViz(c) } : null; return !!c || hex === null || hex === ''; }
-    function busy() { const s = fx.sample(now()); return !!(s.busy > 0 || s.missiles.length || s.glints.length || s.lock || Math.abs(s.scale - 1) > 0.02 || s.shatter > 0.05 || s.brace > 0.05 || s.rainbow > 0.05); }
+    function busy() { const s = fx.sample(now()); return !!((stage && stage.busy()) || s.busy > 0 || s.missiles.length || s.glints.length || s.lock || Math.abs(s.scale - 1) > 0.02 || s.shatter > 0.05 || s.brace > 0.05 || s.rainbow > 0.05); }
     function setHead(h) { if (!['none', 'head', 'hair', 'horns', 'flames', 'demon'].includes(h)) return false; S.head = h; return true; }
     function setGiftMap(rows) {
       // a new list takes effect for the next gift; what is in the air finishes with the old one
@@ -166,7 +168,11 @@
       });
     }
     function sounds(t) {
-      const cues = fx.cuesBetween(cueT, t + 0.12);
+      // V8 (phase 2): a puppet move is asked for BETWEEN two pictures, with its first sound due at once: that moment is
+      // already behind the window the last picture looked through. The stage's sounds are therefore taken by what has
+      // not been played yet (a look-back of 0.4 s), each exactly once; a late one plays now.
+      let cues = fx.cuesBetween(cueT, t + 0.12);
+      if (stage) { const sc = stage.cuesBetween(cueT - 0.4, t + 0.12).filter((c) => !cuePlayed.has(c)); for (const c of sc) cuePlayed.add(c); if (sc.length) cues = cues.concat(sc.map((c) => (c.t < t ? { ...c, t } : c))); }
       cueT = t + 0.12;
       if (!S.sounds || !cues.length) return;
       try {
@@ -192,7 +198,9 @@
       // a colour he picked wins over the light of the background (the background still shows, in its own colours)
       palette = S.colour ? Mood.custom(moodNow, S.colour.c, S.colour.music) : Mood.tint(moodNow, S.bg);
       sounds(t);
-      looks.draw(look, { time: t, audio: au, kicks: live ? ks : [], hits: live ? hs : [], head, palette, fx: fx.sample(t), eyeStyle: 1, bg: S.bg, headPart: S.head || 'none', place: S.place || null, vizCol: S.colour ? S.colour.viz : null });
+      const fxS = fx.sample(t), o = stage ? stage.pre(t, { core, palette, fx: fxS, head, place: S.place || null, mood: moodNow, colour: S.colour ? S.colour.c : null, audio: au }) : null;
+      looks.draw(look, { time: t, audio: au, kicks: live ? ks : [], hits: live ? hs : [], head: o ? o.head : head, palette: o ? o.palette : palette, fx: o ? o.fx : fxS, eyeStyle: 1, bg: S.bg, headPart: S.head || 'none', place: o ? o.place : S.place || null, vizCol: S.colour ? S.colour.viz : null, v8: o ? o.v8 : null });
+      if (stage) stage.post();
       S.drawMs += (performance.now() - b - S.drawMs) * 0.05;
       return true;
     }
@@ -200,6 +208,19 @@
       /** The gift sounds' output: a GainNode on the mask's own AudioContext (`node.context`), connected to that context's
        *  destination. The page may connect it on to an analyser of its own. null when this page has no audio output. */
       sfxOutput: () => (S.sounds ? audioOut(false) : sfxOut),
+      // V8: the puppet show. All of these are no-ops (false / null) when the mask was made with v8: false.
+      puppet: (name, o) => (stage ? stage.puppet(name, o || {}, now()) : false), release: (name) => (stage ? stage.release(name, now()) : false),
+      setHype: (rank, k) => { if (stage) stage.setHype(rank, k, now()); return !!stage; }, hypePlus: () => (stage ? stage.hypePlus(now()) : false),
+      song: (o) => { if (stage) stage.song(o, now()); return !!stage; }, songOff: () => { if (stage) stage.songOff(); }, score: (n) => { if (stage) stage.score(n, now()); return !!stage; },
+      boss: (s) => { if (stage) stage.boss(s); }, vote: (v) => { if (stage) stage.vote(v); }, hands: (p, o) => { if (stage) stage.hands(p, o); },
+      /** what the 2D layer over the canvas draws this frame (mask-hud.js): bars, the vote, names on missiles, the cover, the score */
+      hud: () => (stage ? stage.hud() : null), v8: () => stage, clock: now,
+      /** V8 phase 2: Mirror is on (the page flips this canvas as a whole): words the Mask spells in points are drawn flipped, so they read right */
+      setMirror: (on) => { if (stage && stage.setMirror) stage.setMirror(!!on); },
+      /** where the fight's bars sit, 0 (top) .. 1 (bottom) of the part TikTok leaves free: the Mask makes room on the other side */
+      setBars: (y) => { if (stage && stage.setBars) stage.setBars(Number(y) || 0); },
+      /** one soft full-frame flare (a big gift); goes through the stage's own limit (never 3 a second) */
+      flare: () => (stage ? stage.flash(now(), [1.0, 0.82, 0.5], 0.45) : false),
       frame, audio, fire, setMode, setVisualizer, setBackground, setHead, setPlace, setColour, busy, setGiftSounds, setGiftMap, setNeutral, learnNeutral, draw, setEyeLock,
       /** the short-lived names to show right now: [{ text, kind: 'follow' | 'share' | 'gift', age (s, of 2.5) }], at most two. The page draws them. */
       names: () => fx.sample(now()).names,

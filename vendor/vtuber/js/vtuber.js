@@ -136,9 +136,12 @@
   // V7: place = where each of the three sits and how big (each keeps its own); maskColour '' = Auto, else '#rrggbb';
   // maskColourMusic = the music still moves a picked colour; shuffle / shuffleAmount = shuffle to the beat
   const settings = { character: 'ryo', bg: 'preset:courtyard', mirror: false, handsLine: false, sens: 6, gate: 0.06, zoom: 1, offsetY: 0, deviceId: '', mask: false, maskBg: 'black', maskSounds: true, maskViz: '', eyes: true,
-    place: { ryo: { zoom: 1, x: 0, y: 0 }, melanie: { zoom: 1, x: 0, y: 0 }, mask: { zoom: 1, x: 0, y: 0 } }, maskColour: '', maskColourMusic: true, shuffle: false, shuffleAmount: 'normal', wheelOpen: false };
+    place: { ryo: { zoom: 1, x: 0, y: 0 }, melanie: { zoom: 1, x: 0, y: 0 }, mask: { zoom: 1, x: 0, y: 0 } }, maskColour: '', maskColourMusic: true, shuffle: false, shuffleAmount: 'normal', wheelOpen: false,
+    // V8: the puppet show's switches (kept between starts), its keys, and which vote the Vote button starts
+    v8: { ...L.V8_DEFAULTS }, v8Keys: { ...L.V8_KEYS }, v8Vote: 'random' };
   // the kill switches of this round, as on the avatar page: ?place=0 ?colour=0 ?shuffle=0 (the control is not shown and nothing of it is sent)
-  const QS = new URLSearchParams(location.search), KILL = { place: QS.get('place') === '0', colour: QS.get('colour') === '0', shuffle: QS.get('shuffle') === '0' };
+  // V8: ?v8=0 = no puppet show at all (the card is not shown, nothing of it is sent: the avatar page then draws the V7 Mask, untouched)
+  const QS = new URLSearchParams(location.search), KILL = { place: QS.get('place') === '0', colour: QS.get('colour') === '0', shuffle: QS.get('shuffle') === '0', v8: QS.get('v8') === '0' || !window.VTShow };
   try {
     const saved = JSON.parse(localStorage.getItem(STORE) || 'null');
     if (saved && typeof saved === 'object') {
@@ -155,6 +158,8 @@
   settings.handsLine = settings.handsLine === true;
   if (!L.MASK_BACKGROUNDS.includes(settings.maskBg)) settings.maskBg = 'black';
   if (!L.MASK_VISUALIZERS.includes(settings.maskViz)) settings.maskViz = '';
+  settings.v8 = L.cleanV8(settings.v8); settings.v8Keys = L.cleanKeys(settings.v8Keys);      // V8: whatever was saved, made valid
+  if (typeof settings.v8Vote !== 'string' || settings.v8Vote.length > 12) settings.v8Vote = 'random';
   const save = () => { try { localStorage.setItem(STORE, JSON.stringify(settings)); } catch (e) { /* not saved */ } };
 
   const live = { on: false, mode: 'face', pick: 0 }; // mode: the Mask as his face, or as a visualizer (not kept between starts); pick: see avatarMessage
@@ -199,6 +204,7 @@
       const sm = st.srv && st.srv.mask;
       Object.assign(m, { mask: true, maskMode: live.mode, maskBg: settings.maskBg, maskSounds: settings.maskSounds, maskViz: settings.maskViz, maskGifts: sm ? sm.gifts : 0, maskRest: sm ? sm.rest : 0 });
       if (settings.maskColour && !KILL.colour) { m.maskColour = settings.maskColour; if (!settings.maskColourMusic) m.maskColourMusic = false; }
+      if (!KILL.v8) m.v8 = { ...settings.v8 };            // V8: the puppet show's switches (no field = the avatar page draws the V7 Mask)
     }
     return m;
   };
@@ -256,6 +262,7 @@
           settings.mask = a.mask === true;
           if (!KILL.place) settings.place[who()] = L.cleanPlace({ zoom: a.zoom, x: a.offsetX || 0, y: a.offsetY }, settings.mask ? 'mask' : 'hero');   // (?place=0 never saves "home" over his place)
           settings.shuffle = !!a.shuffle; if (a.shuffle) settings.shuffleAmount = a.shuffle;
+          if (a.mask && a.v8) settings.v8 = L.cleanV8(a.v8);
           if (a.mask) { settings.maskBg = a.maskBg; settings.maskSounds = a.maskSounds; settings.maskViz = a.maskViz; live.mode = a.maskMode; settings.maskColour = a.maskColour || ''; settings.maskColourMusic = a.maskColourMusic !== false; }
           save();
         }
@@ -837,7 +844,7 @@
     // the Mask's own controls show only while the Mask is chosen (the heroes' framing only while a hero is)
     $('maskMain').hidden = !settings.mask; $('maskMore').hidden = !settings.mask; $('heroMore').hidden = settings.mask;
     const now = shown(), viz = now.mode === 'visualizer';
-    renderPlace(); renderColour(); renderShuffle(now);
+    renderPlace(); renderColour(); renderShuffle(now); renderV8();
     $('mode').classList.toggle('viz', viz);
     $('modeText').textContent = viz ? MODE.toFace : MODE.toViz; $('modeHint').textContent = viz ? MODE.toFaceHint : MODE.toVizHint;
     const snd = st.srv && st.srv.mask ? st.srv.mask.sound : null;
@@ -1003,8 +1010,156 @@
   stage.addEventListener('pointermove', touchCard);
   for (const id of ['zoom', 'offx', 'offy', 'placeReset']) $(id).addEventListener('pointerdown', touchCard);
 
+  // ------------------------------------------------------------------ V8: the puppet show card
+  // The show itself runs on the avatar page in OBS (js/v8-show.js, next to the Mask). This card sends it the switches
+  // (inside the `avatar` message) and commands ({ t: 'v8-cmd' }), and shows what it reports back about once a second
+  // and at once when something changes (cooldowns, the fight, the vote, why a button is grey).
+  const V8T = {
+    onHint: 'Buttons, keys, chat and votes move the Mask. Switch this off and the Mask is exactly as it was before.',
+    moves: 'Hold Goo or Fire head and it keeps going while you hold. The letter on a button is its key (it works while this window is in front).',
+    movesFight: 'In a boss fight Goo and Fire head are your special attacks on chat (20 seconds between two).',
+    off: 'Turn the avatar ON first.', wait: 'Waiting for the Mask in OBS ...',
+    fight: 'Chat taps the screen to fire missiles at you. Open your mouth wide to eat them, turn your head to dodge, pucker for a shield, squint for laser eyes, yell to blast them all. Only between songs.',
+    fightSong: 'A song is on air. The fight can start when it is over.', fightEar: 'I hear music playing. The fight can start when it stops.',
+    fightGo: 'Start a fight: chat against you', fightStop: 'Press to call it off (nobody wins)', fightEnd: 'The ending is playing ...',
+    noEar: 'I cannot tell whether a song is playing (LIVE Link is not connected and I hear no PC sound): start a fight only between songs.',
+    vote: 'Chat types the number, or the word of an answer. After half a minute the winner happens by itself: he shrinks to an inch, goes HUGE, changes colour, makes a move, or the boss fight starts.',
+    voteStart: 'Start a vote', voteStop: 'Stop the vote', voteOwn: 'Type a question and two to four answers first.',
+    keys: 'Press "Change", then the key you want: a letter, a number or F1 - F10. Esc = leave it as it is.', keyBad: 'That key cannot be used (Space, Enter, Tab, the arrows, F5, F11 and F12 belong to the window). Pick a letter, a number or F1 - F10.',
+    hands: 'Hold a hand up by your face: right hand = angel, left = devil.', handsNone: 'Hold a hand up by your face: right hand = angel, left = devil. (I do not see a hand right now.)',
+  };
+  const V8M = window.VTShow ? window.VTShow.MOVES : [], V8L = window.VTShow ? window.VTShow.MOVE_LABEL : {};
+  const v8 = { held: {}, keyWait: '', note: '', noteAt: -1e9, barsAt: -1e9 };
+  const v8Ack = () => { const k = st.maskAck && st.maskAck.v8; return k && performance.now() - st.maskAckAt < 3500 ? k : null; };
+  const v8Cmd = (o) => { claim(); send({ t: 'v8-cmd', ...o }); };
+  const v8Say = (text) => { v8.note = text; v8.noteAt = performance.now(); renderV8(); };
+  function v8Set(patch) { claim(); settings.v8 = L.cleanV8({ ...settings.v8, ...patch }); save(); sendAvatar(); render(); }
+  /** press / let go of a move (a button or a key). Goo and Fire head keep going while held. */
+  function v8Down(name) {
+    if (KILL.v8 || !settings.mask || !settings.v8.on || v8.held[name]) return;
+    if (!live.on) { v8Say(V8T.off); return; }
+    v8.held[name] = true; v8Cmd({ action: 'down', name }); renderV8();
+  }
+  function v8Up(name) { if (!v8.held[name]) return; v8.held[name] = false; if (name === 'goo' || name === 'fire') v8Cmd({ action: 'up', name }); renderV8(); }
+  function v8Fight() {
+    if (KILL.v8 || !settings.mask || !settings.v8.on) return;
+    if (!live.on) { v8Say(V8T.off); return; }
+    const k = v8Ack();
+    if (k && k.fight) { if (k.fight.phase === 'intro' || k.fight.phase === 'fight') v8Cmd({ action: 'stop' }); return; }
+    if (k && k.song) { v8Say(k.songSrc === 'ear' ? V8T.fightEar : V8T.fightSong); return; }
+    v8Cmd({ action: 'fight' });
+  }
+  function v8Vote() {
+    if (KILL.v8 || !settings.mask || !settings.v8.on) return;
+    if (!live.on) { v8Say(V8T.off); return; }
+    const k = v8Ack();
+    if (k && k.vote && k.vote.active) { v8Cmd({ action: 'vote-stop' }); return; }
+    const id = settings.v8Vote;
+    if (id === 'own') {
+      const c = window.VTShow.customVote($('v8OwnQ').value, $('v8OwnA').value);
+      if (!c) { v8Say(V8T.voteOwn); return; }
+      v8Cmd({ action: 'vote', custom: { question: c.question, options: c.options.map((o) => o.label) } });
+    } else v8Cmd(id === 'random' ? { action: 'vote' } : { action: 'vote', id });
+  }
+  function buildV8() {
+    if (KILL.v8) return;
+    for (const name of V8M) {
+      const b = document.createElement('button'); b.className = 'mv'; b.dataset.move = name;
+      b.innerHTML = '<span></span><b></b><small></small><u></u>'; b.firstChild.textContent = V8L[name];
+      b.addEventListener('pointerdown', (e) => { if (e.button) return; try { b.setPointerCapture(e.pointerId); } catch (err) { /* no capture */ } v8Down(name); });
+      for (const ev of ['pointerup', 'pointercancel', 'lostpointercapture']) b.addEventListener(ev, () => v8Up(name));
+      b.addEventListener('keydown', (e) => { if ((e.code === 'Enter' || e.code === 'NumpadEnter') && !e.repeat) v8Down(name); });
+      b.addEventListener('keyup', (e) => { if (e.code === 'Enter' || e.code === 'NumpadEnter') v8Up(name); });
+      b.addEventListener('contextmenu', (e) => e.preventDefault());
+      $('v8Moves').appendChild(b);
+    }
+    const sel = $('v8VoteWhich');
+    for (const [id, text] of [['random', 'Surprise me (a random one)'], ...window.VTShow.VOTES.map((v) => [v.id, v.title]), ['own', 'My own question ...']]) { const o = document.createElement('option'); o.value = id; o.textContent = text; sel.appendChild(o); }
+    sel.value = [...sel.options].some((o) => o.value === settings.v8Vote) ? settings.v8Vote : 'random';
+    sel.addEventListener('change', () => { settings.v8Vote = sel.value; save(); renderV8(); });
+    for (const [id, text] of [['top', 'Top'], ['middle', 'Middle'], ['bottom', 'Bottom']]) { const b = document.createElement('button'); b.className = 'opt'; b.dataset.bars = id; b.textContent = text; b.addEventListener('click', () => { v8.barsAt = performance.now(); v8Set({ bars: L.V8_BARS[id] }); b.blur(); }); $('v8Bars').appendChild(b); }
+    $('v8BarsY').addEventListener('input', (e) => { v8.barsAt = performance.now(); v8Set({ bars: Number(e.target.value) }); });
+    $('v8On').addEventListener('click', () => { v8Set({ on: !settings.v8.on }); $('v8On').blur(); });
+    $('v8Rand').addEventListener('click', () => { v8Set({ rand: !settings.v8.rand }); $('v8Rand').blur(); });
+    $('v8Chat').addEventListener('click', () => { v8Set({ chat: !settings.v8.chat }); $('v8Chat').blur(); });
+    $('v8Hands').addEventListener('click', () => { v8Set({ hands: !settings.v8.hands }); $('v8Hands').blur(); });
+    $('v8Swap').addEventListener('click', () => { v8Set({ swap: !settings.v8.swap }); $('v8Swap').blur(); });
+    $('v8Fight').addEventListener('click', () => { v8Fight(); $('v8Fight').blur(); });
+    $('v8Vote').addEventListener('click', () => { v8Vote(); $('v8Vote').blur(); });
+    $('v8KeysReset').addEventListener('click', () => { settings.v8Keys = { ...L.V8_KEYS }; v8.keyWait = ''; save(); renderV8(); $('v8KeysReset').blur(); });
+    for (const a of L.V8_ACTIONS) {
+      const row = document.createElement('div'); row.className = 'keyrow'; row.dataset.action = a;
+      row.innerHTML = '<span></span><b></b><button class="plain"></button>'; row.firstChild.textContent = a === 'fight' ? 'Boss fight' : a === 'vote' ? 'Start a vote' : V8L[a];
+      row.lastChild.addEventListener('click', () => { v8.keyWait = v8.keyWait === a ? '' : a; renderV8(); row.lastChild.blur(); });
+      $('v8Keys').appendChild(row);
+    }
+    // the keys, while this window is in front (never while he types in a box). One plain key each; Space stays ON / OFF.
+    const typing = (e) => { const tag = e.target && e.target.tagName; return tag === 'SELECT' || tag === 'TEXTAREA' || (tag === 'INPUT' && e.target.type !== 'range'); };
+    window.addEventListener('keydown', (e) => {
+      if (v8.keyWait) {                                    // "Change" was pressed: this key becomes that action's key
+        e.preventDefault(); e.stopPropagation();
+        if (e.code === 'Escape') { v8.keyWait = ''; renderV8(); return; }
+        if (e.repeat || ['ShiftLeft', 'ShiftRight', 'ControlLeft', 'ControlRight', 'AltLeft', 'AltRight', 'MetaLeft', 'MetaRight'].includes(e.code)) return;
+        const next = L.setKey(settings.v8Keys, v8.keyWait, e.code);
+        if (!next) { v8Say(V8T.keyBad); return; }
+        settings.v8Keys = next; v8.keyWait = ''; save(); renderV8(); return;
+      }
+      if (e.ctrlKey || e.altKey || e.metaKey || typing(e) || !settings.mask || !settings.v8.on) return;
+      const a = L.keyAction(settings.v8Keys, e.code); if (!a) return;
+      e.preventDefault();
+      if (e.repeat) return;
+      if (a === 'fight') v8Fight(); else if (a === 'vote') v8Vote(); else v8Down(a);
+    }, true);
+    window.addEventListener('keyup', (e) => { const a = L.keyAction(settings.v8Keys, e.code); if (a && a !== 'fight' && a !== 'vote') v8Up(a); }, true);
+    window.addEventListener('blur', () => { for (const m of V8M) v8Up(m); });      // the window lost the focus mid-hold: let go
+    setInterval(() => { if (settings.mask && !KILL.v8 && document.visibilityState === 'visible') renderV8(); }, 250);
+  }
+  function renderV8() {
+    const card = $('v8Card'); card.hidden = KILL.v8 || !settings.mask;
+    if (card.hidden) return;
+    const c = settings.v8, k = live.on ? v8Ack() : null, age = k ? (performance.now() - st.maskAckAt) / 1000 : 0, keys = settings.v8Keys;
+    $('v8On').classList.toggle('sel', c.on); $('v8OnHint').textContent = V8T.onHint; $('v8Body').hidden = !c.on;
+    if (!c.on) { $('v8Note').textContent = ''; return; }
+    const fighting = !!(k && k.fight), attack = !!(k && k.attack);
+    for (const b of $('v8Moves').children) {
+      const name = b.dataset.move, m = k && k.moves ? k.moves[name] : null, cool = m ? Math.max(0, m.cool - age) : 0, isAtk = attack && (name === 'goo' || name === 'fire');
+      const why = !live.on ? 'avatar is off' : !k ? '' : m && m.why === 'fight' ? 'not in a fight' : m && m.why === 'intro' ? 'get ready' : cool > 0.05 ? Math.ceil(cool) + ' s' : isAtk ? 'ATTACK' : m && m.on ? 'going' : '';
+      b.children[1].textContent = L.keyLabel(keys[name]) || '-'; b.children[2].textContent = why;
+      b.children[3].style.width = cool > 0.05 ? Math.min(100, cool / ((attack ? 20 : window.VTShow.COOL[name]) || 5) * 100).toFixed(0) + '%' : '0%';
+      b.classList.toggle('go', !!v8.held[name] || !!(m && m.on)); b.classList.toggle('atk', isAtk && cool <= 0.05);
+      b.disabled = !live.on || !!(m && (m.why === 'fight' || m.why === 'intro')) || (cool > 0.05 && !v8.held[name]);
+    }
+    $('v8MovesHint').textContent = fighting ? V8T.movesFight : V8T.moves;
+    // the boss fight: only between songs. Greyed with the reason while a song is on air.
+    const f = $('v8Fight'), fk = L.keyLabel(keys.fight);
+    let text = 'BOSS FIGHT', why = V8T.fightGo + (fk ? '  [' + fk + ']' : ''), dis = false, run = false;
+    if (!live.on) { why = V8T.off; dis = true; }
+    else if (!k) { why = V8T.wait; dis = true; }
+    else if (k.fight) {
+      run = true;
+      if (k.fight.phase === 'ending') { text = k.fight.winner === 'boss' ? 'YOU WON' : k.fight.winner === 'chat' ? 'CHAT WON' : 'FIGHT OVER'; why = V8T.fightEnd; dis = true; }
+      else { text = 'YOU ' + k.fight.boss + '%  -  CHAT ' + k.fight.chat + '%'; why = (k.fight.phase === 'intro' ? 'The raid gathers. ' : k.fight.tappers + ' tapping. ') + V8T.fightStop; }
+    } else if (k.song) { why = k.songSrc === 'ear' ? V8T.fightEar : V8T.fightSong; dis = true; }
+    f.disabled = dis; f.classList.toggle('run', run && !dis); $('v8FightText').textContent = text; $('v8FightWhy').textContent = why;
+    $('v8FightHint').textContent = k && !k.fight && !k.song && k.songSrc === 'none' ? V8T.noEar : V8T.fight;
+    // votes
+    const vk = L.keyLabel(keys.vote), voting = !!(k && k.vote && k.vote.active);
+    $('v8Vote').textContent = voting ? V8T.voteStop + ' (' + k.vote.left + ' s)' : V8T.voteStart + (vk ? '  [' + vk + ']' : '');
+    $('v8Vote').disabled = !live.on || fighting; $('v8Own').hidden = settings.v8Vote !== 'own';
+    $('v8VoteHint').textContent = voting ? '"' + k.vote.question + '"  ' + k.vote.total + (k.vote.total === 1 ? ' vote' : ' votes') + (k.vote.lead ? ', in front: ' + k.vote.lead : '') : k && k.vote && k.vote.lead ? 'Chat voted: ' + k.vote.lead + '.' : V8T.vote;
+    $('v8Rand').classList.toggle('sel', c.rand); $('v8Chat').classList.toggle('sel', c.chat); $('v8Hands').classList.toggle('sel', c.hands); $('v8Swap').classList.toggle('sel', c.swap); $('v8Swap').hidden = $('v8SwapHint').hidden = !c.hands;
+    $('v8HandsHint').textContent = c.hands && k && !k.handsSeen && !(k.puppets && (k.puppets.angel || k.puppets.devil)) ? V8T.handsNone : V8T.hands;
+    for (const b of $('v8Bars').children) b.classList.toggle('sel', Math.abs(L.V8_BARS[b.dataset.bars] - c.bars) < 0.005);
+    if (document.activeElement !== $('v8BarsY')) $('v8BarsY').value = String(c.bars);
+    for (const row of $('v8Keys').children) { const a = row.dataset.action, w = v8.keyWait === a; row.children[1].textContent = L.keyLabel(keys[a]) || 'none'; row.children[2].textContent = w ? 'Press a key ...' : 'Change'; row.children[2].classList.toggle('wait', w); }
+    $('v8KeysHint').textContent = V8T.keys;
+    const fresh = performance.now() - v8.noteAt < 6000;
+    $('v8Note').textContent = fresh ? v8.note : k && k.note ? k.note : k && k.song && k.title ? 'On air: ' + k.title : '';
+  }
+
   // ------------------------------------------------------------------ wiring
   build();
+  buildV8();
   window.addEventListener('pointerdown', claim, true);
   window.addEventListener('keydown', claim, true);
   $('power').addEventListener('click', () => { setOn(!live.on); $('power').blur(); });
@@ -1078,5 +1233,5 @@
   requestAnimationFrame(drawStage);
   setInterval(() => { if (shuffleOn() && live.on) render(); }, 1000);   // while shuffle runs the buttons follow what shows
   loadGifts();
-  window.__vt = { settings, live, st, panel, SAY, NOTE, FACE, REMOVE, SOUND, MODE, MASK, setMode, setMaskBg, setMaskViz, setGiftSounds, tryEffect, saveGifts, giftRows, onMaskRest, setOn, setCharacter, setBg, readFace, setPlace, resetPlace, setMaskColour, setColourMusic, setShuffle, shown, placeNow, who, atCard, touchCard, KILL, PLACE, COLOUR, SHUFFLE, sentence: () => sentence()[1], cls: () => sentence()[0], notes, tracker: tstate };
+  window.__vt = { v8, v8Down, v8Up, v8Fight, v8Vote, v8Set, v8Ack, settings, live, st, panel, SAY, NOTE, FACE, REMOVE, SOUND, MODE, MASK, setMode, setMaskBg, setMaskViz, setGiftSounds, tryEffect, saveGifts, giftRows, onMaskRest, setOn, setCharacter, setBg, readFace, setPlace, resetPlace, setMaskColour, setColourMusic, setShuffle, shown, placeNow, who, atCard, touchCard, KILL, PLACE, COLOUR, SHUFFLE, sentence: () => sentence()[1], cls: () => sentence()[0], notes, tracker: tstate };
 })();

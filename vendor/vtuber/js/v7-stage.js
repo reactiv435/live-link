@@ -8,7 +8,7 @@
 (function (root) {
   'use strict';
   const q = new URLSearchParams(root.location ? root.location.search : '');
-  const KILL = { place: q.get('place') === '0', colour: q.get('colour') === '0', shuffle: q.get('shuffle') === '0', pv: q.get('pv') === '0' };
+  const KILL = { place: q.get('place') === '0', colour: q.get('colour') === '0', shuffle: q.get('shuffle') === '0', pv: q.get('pv') === '0', v8: q.get('v8') === '0' };
   const PV = { w: 162, h: 288, everyMs: 160, quality: 0.6 };
   let cv = null, cx = null, lastAt = -1e9;
   const images = {};

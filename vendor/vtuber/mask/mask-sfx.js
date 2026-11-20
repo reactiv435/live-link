@@ -60,6 +60,33 @@
       o.connect(og); og.connect(out); o.start(at); o.stop(at + len + 0.05);
     }
   }
+  // V8: the puppet moves, the fight, the hand puppets. Cartoon sounds: wet and round for goo, a roar for fire, never a retch.
+  function one8(ctx, out, c, at) {
+    const k = Math.sqrt(Math.max(0.3, c.size || 1)), osc = (type, f0, f1, len, peak, a0 = 0.01) => { const o = ctx.createOscillator(), g = ctx.createGain(); o.type = type; o.frequency.setValueAtTime(f0, at); o.frequency.exponentialRampToValueAtTime(Math.max(20, f1), at + len); env(g, at, [[a0, peak], [len, 0.0001, true]]); o.connect(g); g.connect(out); o.start(at); o.stop(at + len + 0.05); return o; };
+    const nzf = (type, f0, f1, q, len, pts) => { const n = nz(ctx, at, len), f = ctx.createBiquadFilter(), g = ctx.createGain(); f.type = type; f.Q.value = q; f.frequency.setValueAtTime(f0, at); f.frequency.exponentialRampToValueAtTime(Math.max(30, f1), at + len); env(g, at, pts); n.connect(f); f.connect(g); g.connect(out); return f; };
+    if (c.kind === 'goo') {            // a low gurgle: bubbles of pitch that rise, over a soft wet noise
+      const len = Math.max(0.8, c.dur || 1.6);
+      nzf('lowpass', 520, 300, 3, len, [[0.08, 0.10 * k], [len * 0.8, 0.07 * k], [len, 0.0001]]);
+      for (let i = 0, t = 0.03; t < len - 0.1; i++, t += 0.085 + 0.06 * ((i * 7) % 5) / 5) { const o = ctx.createOscillator(), g = ctx.createGain(), f = 150 + 130 * ((i * 13) % 7) / 7; o.frequency.setValueAtTime(f, at + t); o.frequency.exponentialRampToValueAtTime(f * 2.2, at + t + 0.07); g.gain.setValueAtTime(0.0001, at + t); g.gain.linearRampToValueAtTime(0.11 * k, at + t + 0.012); g.gain.exponentialRampToValueAtTime(0.0001, at + t + 0.08); o.connect(g); g.connect(out); o.start(at + t); o.stop(at + t + 0.1); }
+    } else if (c.kind === 'fire') {    // a roar that breathes
+      const len = Math.max(0.8, c.dur || 2), f = nzf('bandpass', 380, 520, 0.7, len, [[0.12, 0.20 * k], [len * 0.7, 0.15 * k], [len, 0.0001]]);
+      const l = ctx.createOscillator(), lg = ctx.createGain(); l.frequency.value = 7.3; lg.gain.value = 170; l.connect(lg); lg.connect(f.frequency); l.start(at); l.stop(at + len + 0.05);
+      osc('sine', 70, 48, len, 0.12 * k, 0.15);
+    } else if (c.kind === 'melt') { const len = Math.max(0.8, c.dur || 1.6); osc('sawtooth', 420, 70, len, 0.07 * k, 0.05); osc('sine', 300, 55, len, 0.12 * k, 0.05); nzf('lowpass', 900, 200, 2, len, [[0.1, 0.06 * k], [len, 0.0001]]); }
+    else if (c.kind === 'pop') { osc('sine', 260, 880, 0.12, 0.30 * k, 0.005); nzf('highpass', 2500, 5000, 0.7, 0.1, [[0.004, 0.10 * k], [0.09, 0.0001, true]]); }
+    else if (c.kind === 'crack') { nzf('highpass', 1800, 900, 0.8, 0.22, [[0.002, 0.42 * k], [0.05, 0.10 * k, true], [0.2, 0.0001, true]]); osc('square', 140, 60, 0.12, 0.10 * k, 0.002); }
+    else if (c.kind === 'slurp') { const len = Math.max(0.2, c.dur || 0.5); nzf('bandpass', 300, 2400, 5, len, [[len * 0.9, 0.16 * k], [len, 0.0001]]); osc('sine', 180, 720, len, 0.08 * k, len * 0.5); }
+    else if (c.kind === 'chomp') { osc('sine', 190, 60, 0.10, 0.40 * k, 0.003); nzf('lowpass', 1800, 400, 1, 0.09, [[0.002, 0.26 * k], [0.08, 0.0001, true]]); nzf('highpass', 3000, 2400, 1, 0.05, [[0.002, 0.10 * k], [0.04, 0.0001, true]]); }
+    else if (c.kind === 'rise') { const len = Math.max(0.4, c.dur || 0.9); osc('triangle', 220, 880, len, 0.09 * k, len * 0.8); osc('sine', 330, 1320, len, 0.06 * k, len * 0.8); nzf('bandpass', 600, 5200, 1.5, len, [[len * 0.92, 0.06 * k], [len, 0.0001]]); }
+    else if (c.kind === 'ping') { osc('sine', 1560, 1480, 0.35, 0.16 * k, 0.003); osc('sine', 2340, 2300, 0.22, 0.07 * k, 0.003); }
+    else if (c.kind === 'laser') { const len = Math.max(0.2, c.dur || 0.45); osc('sawtooth', 1500, 240, len, 0.09 * k, 0.005); osc('square', 760, 120, len, 0.05 * k, 0.005); }
+    else if (c.kind === 'scream') { const len = Math.max(0.5, c.dur || 0.9); for (const m of [1, 1.51, 2.02]) osc('sawtooth', 330 * m, 190 * m, len, 0.07 * k, 0.04); nzf('bandpass', 1400, 700, 1.2, len, [[0.05, 0.16 * k], [len, 0.0001]]); }
+    else if (c.kind === 'glass') { for (let i = 0; i < 9; i++) { const o = ctx.createOscillator(), g = ctx.createGain(), t = i * 0.035, f = 1700 + 2900 * ((i * 37) % 11) / 11; o.frequency.value = f; g.gain.setValueAtTime(0.0001, at + t); g.gain.linearRampToValueAtTime(0.09 * k, at + t + 0.004); g.gain.exponentialRampToValueAtTime(0.0001, at + t + 0.4); o.connect(g); g.connect(out); o.start(at + t); o.stop(at + t + 0.45); } nzf('highpass', 4000, 2500, 0.7, 0.3, [[0.003, 0.22 * k], [0.28, 0.0001, true]]); }
+    else if (c.kind === 'laugh') { osc('sawtooth', 210, 150, 0.17, 0.13 * k, 0.02); osc('sine', 105, 80, 0.17, 0.16 * k, 0.02); }
+    else if (c.kind === 'poof') { nzf('bandpass', 900, 3200, 0.8, 0.3, [[0.02, 0.16 * k], [0.28, 0.0001, true]]); osc('sine', 520, 1040, 0.18, 0.06 * k, 0.01); }
+    else return false;
+    return true;
+  }
   function schedule(ctx, destination, cues, t0, { volume = 1 } = {}) {
     const master = ctx.createGain();
     master.gain.value = 0.34 * volume;                         // under the music: the loudest boom peaks about 6 dB below full scale
@@ -69,7 +96,8 @@
       let n = 0;
       for (const d of cues) if (d.kind === c.kind && Math.abs(d.t - c.t) < 0.07) n++;
       const g = ctx.createGain(); g.gain.value = 1 / Math.pow(n, 0.85); g.connect(master);
-      one(ctx, g, c, Math.max(ctx.currentTime, t0 + c.t));
+      const at = Math.max(ctx.currentTime, t0 + c.t);
+      if (!one8(ctx, g, c, at)) one(ctx, g, c, at);
     }
     return master;
   }

@@ -86,6 +86,6 @@ else process.on('message', onMessage);
     return;
   }
   if (ending) return;                                  // end() has the start in hand and stops it
-  send({ t: 'ready', port: vt.port, test: vt.test });  // (already sent by the app itself when it began to listen)
+  send({ t: 'ready', port: vt.port, test: vt.test, wire: 2 });  // (already sent by the app itself when it began to listen)
   vt.done.then((why) => end(why || 'stopped by itself', 0));
 })();

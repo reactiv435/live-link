@@ -147,6 +147,12 @@ function onRaw(who, m) {
   S.bodiesDone++; S.lastBodyRan = now; R.body.hit(now);
   lastBody = { at: c.at, body: out ? out.body || null : null, hands: out ? out.hands || null : null };
   send(JSON.stringify(v1));
+  // V8: the hand puppets (only while their switch is on, and only when the hand model ran on this frame): the raw 21
+  // points of each hand go to the avatar page, where js/v8/hand-puppets.js turns them into the angel and the devil
+  if (ctl.puppets && c.hands !== undefined && ws && wsOpen && ws.readyState === 1) {
+    const r4 = (a) => { const o = new Array(a.length); for (let i = 0; i < a.length; i++) o[i] = Math.round(a[i] * 1e4) / 1e4; return o; };
+    try { ws.send(JSON.stringify({ t: 'v8-hands', at: c.at, w: c.w, h: c.h, hands: (c.hands || []).slice(0, 2).map((x) => ({ handed: x.handed, score: Math.round((x.score || 0) * 1e3) / 1e3, lm: r4(x.lm), world: x.world ? r4(x.world) : null })) })); S.puppetsSent = (S.puppetsSent || 0) + 1; } catch (e) { /* closing */ }
+  }
   W.poseMs.add(c.ms[0]); if (c.hands) W.handsMs.add(c.ms[1]); W.sigB.add(sig); W.bodyDelay.add(now - c.at);
   if (dbg) { dbg.poseMs.push(c.ms[0]); dbg.handsMs.push(c.hands ? c.ms[1] : -1); dbg.sigB.push(sig); dbg.bodyDelay.push(now - c.at); }
   if (cfg.preview && now - pvBodyAt > 90) {
@@ -199,7 +205,7 @@ function connectRelay() {
     let m;
     try { m = JSON.parse(text); } catch (e) { return; }
     if (!m || typeof m !== 'object') return;
-    if (m.t === 'avatar' && typeof m.mirror === 'boolean') { const mask = m.mask === true, changed = mask !== ctl.mask || m.mirror !== ctl.mirror; ctl.mirror = m.mirror; ctl.mask = mask; if (changed) pushControl(); }
+    if (m.t === 'avatar' && typeof m.mirror === 'boolean') { const mask = m.mask === true, changed = mask !== ctl.mask || m.mirror !== ctl.mirror; ctl.mirror = m.mirror; ctl.mask = mask; ctl.puppets = mask && m.on === true && !!m.v8 && m.v8.on !== false && m.v8.hands === true; if (changed) pushControl(); }      // (V8: puppets = the angel / devil hand puppets are switched on)
     else if (m.t === 'hands-line') { ctl.line = !!m.on; pushControl(); }
   };
 }

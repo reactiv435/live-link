@@ -304,9 +304,49 @@
         maskViz: MASK_VISUALIZERS.includes(m.maskViz) ? m.maskViz : '',   // the Visualizer's style ('' = the mask's own first one)
         // V7: a colour he picked ('#rrggbb'; not there = Auto), and whether the music still moves it (not there = yes)
         ...(cleanHex(m.maskColour) ? { maskColour: cleanHex(m.maskColour), ...(m.maskColourMusic === false ? { maskColourMusic: false } : null) } : null),
+        // V8: the puppet show's switches (only there when the page sends them: a message without `v8` reads exactly as before)
+        ...(m.v8 && typeof m.v8 === 'object' && !Array.isArray(m.v8) ? { v8: cleanV8(m.v8) } : null),
       } : null),
     };
   }
+
+  // ------------------------------------------------------------------ V8: the puppet show's switches and keys
+  // on = the whole puppet show; chat = chat words and gifts set off moves; hands = the angel / devil hand puppets;
+  // rand = a random vote every few minutes; bars = where the BOSS + CHAT bars sit, 0 (top) .. 1 (bottom) of the part of
+  // the picture TikTok leaves free.
+  const V8_DEFAULTS = Object.freeze({ on: true, chat: true, hands: false, rand: false, bars: 0, swap: false });      // swap: "Swap hands" (the angel showed on his left hand)
+  const V8_BARS = Object.freeze({ top: 0, middle: 0.5, bottom: 1 });
+  function cleanV8(v) {
+    const q = v && typeof v === 'object' ? v : {};
+    const b = (x, d) => (typeof x === 'boolean' ? x : d);
+    return { on: b(q.on, true), chat: b(q.chat, true), hands: b(q.hands, false), rand: b(q.rand, false), bars: typeof q.bars === 'number' && Number.isFinite(q.bars) ? Math.round(clamp(q.bars, 0, 1) * 100) / 100 : 0, swap: b(q.swap, false) };
+  }
+  // THE KEYS (while the VTuber window has the focus). One plain key each, no Ctrl / Alt: nothing a browser or OBS uses
+  // when this window is in front (OBS's own hotkeys only fire while OBS has the focus, unless he made them global;
+  // none of OBS's defaults is a bare letter). Space stays ON / OFF. He can change every one.
+  const V8_ACTIONS = Object.freeze(['goo', 'fire', 'melt', 'crack', 'eat', 'fight', 'vote']);
+  const V8_KEYS = Object.freeze({ goo: 'KeyG', fire: 'KeyF', melt: 'KeyM', crack: 'KeyC', eat: 'KeyE', fight: 'KeyB', vote: 'KeyV' });
+  /** a key the show may use: letters, digits, F1 - F12 (never Space, Tab, Enter, Escape, arrows: the page and the browser use those) */
+  const keyAllowed = (code) => typeof code === 'string' && /^(?:Key[A-Z]|Digit[0-9]|Numpad[0-9]|F(?:[1-9]|1[0-2]))$/.test(code) && code !== 'F5' && code !== 'F11' && code !== 'F12';
+  /** what is printed on a button for a key code: 'KeyG' -> 'G', 'Digit1' -> '1', 'Numpad3' -> 'Num 3', 'F9' -> 'F9' */
+  function keyLabel(code) { const m = /^(Key|Digit|Numpad)?(.+)$/.exec(String(code || '')); return !m || !keyAllowed(code) ? '' : m[1] === 'Numpad' ? 'Num ' + m[2] : m[2]; }
+  /** any saved map -> a full, valid one: unknown actions dropped, a key that is not allowed or used twice falls back to its default (or to none: '') */
+  function cleanKeys(map) {
+    const q = map && typeof map === 'object' ? map : {}, out = {}, used = new Set();
+    for (const a of V8_ACTIONS) { const k = q[a]; if (k === '' ) out[a] = ''; else if (keyAllowed(k) && !used.has(k)) { out[a] = k; used.add(k); } else out[a] = null; }
+    for (const a of V8_ACTIONS) if (out[a] === null) { const d = V8_KEYS[a]; if (!used.has(d)) { out[a] = d; used.add(d); } else out[a] = ''; }
+    return out;
+  }
+  /** set one key: -> the new map, or null when the key is not allowed. A key another action had is taken from it (that one is left without a key). */
+  function setKey(map, action, code) {
+    if (!V8_ACTIONS.includes(action) || !(code === '' || keyAllowed(code))) return null;
+    const out = cleanKeys(map);
+    if (code) for (const a of V8_ACTIONS) if (out[a] === code) out[a] = '';
+    out[action] = code;
+    return out;
+  }
+  /** which action a pressed key is (the event's `code`), or '' */
+  function keyAction(map, code) { for (const a of V8_ACTIONS) if (map && map[a] && map[a] === code) return a; return ''; }
 
   // ------------------------------------------------------------------ the camera picture: black (phone off) or frozen (phone asleep)
   /**
@@ -354,5 +394,6 @@
     clamp, seededRandom, CHARACTERS, FACE_KEYS, BACKGROUNDS, MASK_BACKGROUNDS, MASK_VISUALIZERS, PLACE, PLACE_HOME, placeUp, cleanPlace, cleanHex, MASK_SWATCHES, SHUFFLE_LEVELS, hsvToHex, hexToHsv, HANDS_HINT, handsRarelySeen, isCharacter, validFace, moodFace,
     MOUTH_DEFAULTS, MouthGate, BLINK, BlinkClock, TRACKED_BLINK, TrackedBlink, HEAD_LIMIT, headTarget, Damped, pickFace, readAvatarMessage,
     lumaOf, pictureLook, PictureWatch,
+    V8_DEFAULTS, V8_BARS, cleanV8, V8_ACTIONS, V8_KEYS, keyAllowed, keyLabel, cleanKeys, setKey, keyAction,
   };
 });

@@ -213,13 +213,7 @@ async function startOneClick(opts = {}) {
     return true;
   }
   // at most 20 gifts and 10 other events a second (the contract with LIVE Link)
-  const rateNow = { sec: 0, gift: 0, other: 0 };
-  function rateOk(type) {
-    const sec = Math.floor(Date.now() / 1000);
-    if (sec !== rateNow.sec) { rateNow.sec = sec; rateNow.gift = 0; rateNow.other = 0; }
-    if (type === 'gift') return ++rateNow.gift <= 20;
-    return ++rateNow.other <= 10;
-  }
+  const rateOk = createRate();
   /**
    * One viewer event, whichever door it came through (the HTTP door below, or LIVE Link handing it over inside the app):
    * every field checked and clipped, the same caps. -> 'bad' | 'rate' | 'ok' (on to the avatar page) | 'off' (taken, the
@@ -227,6 +221,19 @@ async function startOneClick(opts = {}) {
    */
   function takeEvent(raw) {
     let ev = null;
+    // V8 (V8-PHASE2.md C3 / C4): LIVE Link's show state (song on air, cover, hype rank, his grade) and its global keys
+    // come through the same two doors. The show state goes to every page of this run (the avatar page draws it, the
+    // window greys "Boss fight" while a song is on air) and is kept for a page that loads again; a key only while on air.
+    if (raw && typeof raw === 'object' && (raw.type === 'show' || raw.type === 'control')) {
+      try { ev = Wire.cleanAny(raw); } catch { ev = null; }
+      if (!ev) return 'bad';
+      if (!rateOk(ev.type)) return 'rate';
+      if (ev.type === 'show') { if (!S.showSeenAt) log('LIVE Link is sending the show state (song on air, hype)'); S.showSeenAt = Date.now(); if (app) app.broadcast({ t: 'v8-show', s: ev, rx: Date.now() }); return 'ok'; }
+      // (a key also goes on while the avatar is OFF in OBS: the pages decide; the avatar page only acts while it is on air)
+      if (!app) return 'off';
+      app.broadcast({ t: 'v8-cmd', action: ev.action === 'puppet' ? 'tap' : ev.action, name: ev.name, from: 'key' });
+      return S.on ? 'ok' : 'off';
+    }
     try { ev = Wire.cleanEvent(raw); } catch { ev = null; }
     if (!ev) return 'bad';
     if (!rateOk(ev.type)) return 'rate';
@@ -249,7 +256,7 @@ async function startOneClick(opts = {}) {
     const refuse = (code, error, extra) => { req.resume(); send(code, { error }, extra); };
     if (!LOOPBACK.has(req.socket.remoteAddress || '')) return refuse(403, 'forbidden');
     if (req.headers.origin !== undefined || req.headers['sec-fetch-site'] !== undefined || req.headers['sec-fetch-mode'] !== undefined) return refuse(403, 'forbidden');   // a web page
-    if (req.method === 'GET' || req.method === 'HEAD') { req.resume(); return send(200, { ok: true, v: 1 }); }
+    if (req.method === 'GET' || req.method === 'HEAD') { req.resume(); return send(200, { ok: true, v: 2 }, { 'X-VTuber-Events': '2' }); }   // (the header: this VTuber also takes v2 events, `show` and `control`)
     if (req.method !== 'POST') return refuse(405, 'method', { Allow: 'GET, POST' });
     if (req.headers['x-livelink-event'] !== '1') return refuse(403, 'forbidden');
     if (!/^application\/json\b/i.test(req.headers['content-type'] || '')) return refuse(415, 'send JSON');
@@ -747,13 +754,13 @@ async function startOneClick(opts = {}) {
     return true;
   };
 
-  app = await serverJs.start(port, { api, onRelay, upgrade, accept, headers, ...(dataDir ? { calibFile: path.join(dataDir, 'calib-saved.json') } : {}), ...(embedded ? { ownOriginOnly: true, onMissing: (p) => log('a file the page asked for is not there: ' + p) } : {}) });
+  app = await serverJs.start(port, { api, onRelay, upgrade, accept, headers, ...(test && typeof opts.picFetch === 'function' ? { picFetch: opts.picFetch } : {}), ...(dataDir ? { calibFile: path.join(dataDir, 'calib-saved.json') } : {}), ...(embedded ? { ownOriginOnly: true, onMissing: (p) => log('a file the page asked for is not there: ' + p) } : {}) });
   if (!embedded) S.chromeMajor = chromeMajor(findChrome() || '');
   log('started on ' + base + (obsUrl ? ' (test OBS)' : ''));
   // Inside LIVE Link: the parent hears "ready" NOW, the moment the page can be served. What follows (finding OBS, adding
   // the avatar, opening the camera's window: on a slow PC the window listings alone can take minutes) is reported on its
   // own through `state` and `camera-window`, so a slow first start is never taken for a dead one and ended half way.
-  if (embedded) host({ t: 'ready', port, test });
+  if (embedded) host({ t: 'ready', port, test, wire: 2 });      // (wire 2: this VTuber takes event v2, `show` and `control`)
   if (recordMigrated) { log(recordMigrated); saveRecord(); }
 
   link.on('state', (state) => {
@@ -799,6 +806,8 @@ async function startOneClick(opts = {}) {
       character: a.mask === true ? 'mask' : typeof a.character === 'string' ? a.character.slice(0, 24) : null,
       avatar: { placed: S.avatar.placed, problem: S.avatar.problem, removed: !!S.avatar.removed, silent: !!S.avatarSilent },
       capture: publicState().capture.mode, sound: sound.state().src, page: !!S.pageSeenAt, pageEver: S.pageEver,
+      // V8: is the Puppet show switched on (the Mask picked, its master switch on)? LIVE Link gives its global keys back when it is not
+      puppet: puppetOn(a),
     };
   }
   function tellHost() {
@@ -868,7 +877,7 @@ async function startOneClick(opts = {}) {
   tellHost();
 
   return {
-    port, stop, done: finished, link, bringToFront, cookie: COOKIE + '=' + TOKEN, event: takeEvent, embedded, test, hostState,
+    port, stop, done: finished, link, bringToFront, cookie: COOKIE + '=' + TOKEN, event: takeEvent, embedded, test, hostState, picStats: () => (app && app.pic ? app.pic.stats() : null),
     state: () => ({ ...publicState(), launches: S.launches || 0, chromePid: S.chrome ? S.chrome.pid : 0, projector: { ...S.projector }, record: JSON.parse(JSON.stringify(record)), stopping: S.stopping, stamp, avatarUrl, windowPath: { slower: shotsOnly(), run: S.noWindowRun, until: S.noWindowUntil, timeouts: S.windowTimeouts }, watch: { ...S.watch }, pageEver: S.pageEver }),
   };
 }
@@ -1018,4 +1027,22 @@ if (require.main === module) {
   });
 }
 
-module.exports = { startOneClick, bootOneClick, bootEmbedded, vtuberAnswers, closeOldServer, findChrome, chromeMajor, EMBED_PORTS };
+/**
+ * The caps of the door, per second (the contract with LIVE Link): 20 gifts, 10 other viewer events, and (V8 fix round S2)
+ * 6 show-state / key messages in a bucket of their own, so a busy room can never push out a key press or the show state.
+ * -> rateOk(type, nowMs = Date.now())
+ */
+/** the Puppet show is on: the Mask is the picked character and the window's `v8` switches are there with `on` not false */
+function puppetOn(avatarMsg) { const a = avatarMsg || {}; return a.mask === true && !!a.v8 && typeof a.v8 === 'object' && a.v8.on !== false; }
+function createRate() {
+  const n = { sec: 0, gift: 0, other: 0, show: 0 };
+  return (type, nowMs = Date.now()) => {
+    const sec = Math.floor(nowMs / 1000);
+    if (sec !== n.sec) { n.sec = sec; n.gift = 0; n.other = 0; n.show = 0; }
+    if (type === 'gift') return ++n.gift <= 20;
+    if (type === 'show' || type === 'control') return ++n.show <= 6;
+    return ++n.other <= 10;
+  };
+}
+
+module.exports = { createRate, puppetOn, startOneClick, bootOneClick, bootEmbedded, vtuberAnswers, closeOldServer, findChrome, chromeMajor, EMBED_PORTS };

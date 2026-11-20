@@ -86,6 +86,80 @@ function calibrationApi(req, res, file) {
   } else { req.resume(); res.writeHead(405, NO_CACHE); res.end(); }
 }
 
+// ---------------------------------------------------------------- V8: viewers' pictures and the song's cover (/api/pic?u=)
+// The avatar page never loads a picture from TikTok itself (that would tell TikTok's servers about the OBS page, and a
+// picture from another site cannot be read back from a canvas). It asks THIS server, which fetches it once:
+//   only https, only the hosts on js/mask-wire.js's list (TikTok's picture servers, the site's storage for covers),
+//   only a picture (jpeg / png / webp / gif by its type AND its first bytes), a viewer's picture at most 300 kB, a song's
+//   cover (the site's storage host only: album art is often over 1 MB) at most 4 MB, 4 s, no redirects followed,
+//   kept in memory only (the newest ~200; never on disk), and the address is never logged.
+// Anything else = 404, and the page draws its placeholder.
+const PIC = { max: 300 * 1024, maxCover: 4 * 1024 * 1024, timeoutMs: 4000, keep: 200, types: ['image/jpeg', 'image/png', 'image/webp', 'image/gif'], badMs: 60000 };
+/** the real fetch: -> Promise<{ type, body: Buffer }> (rejects with a short code). Tests give their own. */
+function httpsPicture(url, { max = PIC.max, timeoutMs = PIC.timeoutMs } = {}) {
+  return new Promise((resolve, reject) => {
+    let done = false, req = null;
+    const end = (err, v) => { if (done) return; done = true; clearTimeout(timer); if (err) { try { req.destroy(); } catch { /* gone */ } reject(new Error(err)); } else resolve(v); };
+    const timer = setTimeout(() => end('timeout'), timeoutMs);
+    req = require('https').get(url, { headers: { Accept: 'image/webp,image/jpeg,image/png,image/gif', 'User-Agent': 'Mozilla/5.0' } }, (res) => {
+      if (res.statusCode !== 200) { res.resume(); return end('status'); }      // (a redirect is not followed: it could lead off the list)
+      const type = String(res.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+      if (!PIC.types.includes(type)) { res.resume(); return end('type'); }
+      if (Number(res.headers['content-length']) > max) { res.resume(); return end('big'); }
+      const parts = []; let size = 0;
+      res.on('data', (d) => { size += d.length; if (size > max) end('big'); else parts.push(d); });
+      res.on('end', () => end(null, { type, body: Buffer.concat(parts) }));
+      res.on('error', () => end('read'));
+    });
+    req.on('error', () => end('net'));
+  });
+}
+/** what the picture's first bytes say it is (the type header alone is not believed) */
+function sniffPicture(b) {
+  if (!b || b.length < 12) return '';
+  if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return 'image/jpeg';
+  if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return 'image/png';
+  if (b.toString('latin1', 0, 4) === 'RIFF' && b.toString('latin1', 8, 12) === 'WEBP') return 'image/webp';
+  if (b.toString('latin1', 0, 4) === 'GIF8') return 'image/gif';
+  return '';
+}
+/** createPicProxy({ fetch, hosts, keep }) -> { handle(req, res), stats() }. One per server. */
+function createPicProxy(o = {}) {
+  const Wire = require('./js/mask-wire.js');
+  const fetchPic = o.fetch || httpsPicture, cache = new Map(), bad = new Map(), flying = new Map();
+  const S = { hits: 0, fetched: 0, refused: 0, failed: 0 };
+  const keep = (k, v) => { cache.delete(k); cache.set(k, v); while (cache.size > (o.keep || PIC.keep)) cache.delete(cache.keys().next().value); };
+  function handle(req, res) {
+    const none = (code = 404) => { res.writeHead(code, { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Content-Length': 0 }); res.end(); };
+    const site = req.headers['sec-fetch-site'];
+    if (!originAllowed(req.headers.origin) || (site && site !== 'same-origin' && site !== 'none')) { S.refused++; return none(403); }
+    if (req.method !== 'GET') return none(405);
+    let u = null;
+    try { u = new URLSearchParams((req.url || '').split('?').slice(1).join('?')).get('u'); } catch { u = null; }
+    const url = Wire.picUrl(u, o.hosts);
+    if (!url) { S.refused++; return none(404); }
+    const max = Wire.picUrl(url, Wire.COVER_HOSTS) ? PIC.maxCover : PIC.max;      // (fix round S4: a cover may be big, a viewer's picture may not)
+    const give = (p) => { res.writeHead(200, { 'Content-Type': p.type, 'Content-Length': p.body.length, 'Cache-Control': 'private, max-age=600', 'X-Content-Type-Options': 'nosniff', 'Cross-Origin-Resource-Policy': 'same-origin' }); res.end(p.body); };
+    const hit = cache.get(url);
+    if (hit) { S.hits++; keep(url, hit); return give(hit); }
+    if (bad.has(url) && Date.now() - bad.get(url) < PIC.badMs) return none(404);          // it failed a moment ago: not asked again for a minute
+    let p = flying.get(url);
+    if (!p) {
+      if (flying.size >= 8) return none(503);                                              // never more than 8 on their way
+      p = Promise.resolve().then(() => fetchPic(url, { max, timeoutMs: PIC.timeoutMs })).then((r) => {
+        const type = r && Buffer.isBuffer(r.body) && r.body.length <= max ? sniffPicture(r.body) : '';
+        if (!type || !PIC.types.includes(String(r.type || '').split(';')[0].trim().toLowerCase())) throw new Error('not a picture');
+        const pic = { type, body: r.body }; keep(url, pic); S.fetched++; return pic;
+      });
+      flying.set(url, p);
+      const clear = () => flying.delete(url);
+      p.then(clear, () => { clear(); S.failed++; bad.set(url, Date.now()); if (bad.size > 400) bad.delete(bad.keys().next().value); });
+    }
+    p.then(give, () => none(404));
+  }
+  return { handle, stats: () => ({ ...S, kept: cache.size }) };
+}
+
 /** Only requests addressed to this PC by its loopback names are answered (a web page elsewhere cannot aim a made-up name at us). */
 function hostAllowed(host) {
   if (typeof host !== 'string') return false;
@@ -106,9 +180,10 @@ function resolveFile(urlPath) {
   return file;
 }
 
-function handle(req, res, calibFile, api, headers, onMissing) {
+function handle(req, res, calibFile, api, headers, onMissing, pic) {
   if (!hostAllowed(req.headers.host)) { res.writeHead(403, NO_CACHE); res.end('Forbidden'); return; }
   if (api && api(req, res)) return;                    // the one-click app's own requests (one-click.js)
+  if (pic && (req.url || '').split('?')[0] === '/api/pic') { pic.handle(req, res); return; }   // V8: a viewer's picture / a cover
   if ((req.url || '').split('?')[0] === '/api/calibration') { calibrationApi(req, res, calibFile || null); return; }
   if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405, NO_CACHE); res.end(); return; }
   const file = resolveFile(req.url || '/');
@@ -141,11 +216,12 @@ function originAllowed(origin) {
  */
 function start(port = PORT, opts = {}) {
   const calibFile = opts.calibFile !== undefined ? opts.calibFile : calibFileFor(port);
-  const server = http.createServer((req, res) => handle(req, res, calibFile, opts.api, opts.headers, opts.onMissing));
+  const pic = createPicProxy({ fetch: opts.picFetch, hosts: opts.picHosts });
+  const server = http.createServer((req, res) => handle(req, res, calibFile, opts.api, opts.headers, opts.onMissing, pic));
   const wss = new WebSocketServer({ noServer: true, maxPayload: 256 * 1024 });
   // The newest settings messages are replayed to a page that joins later (an OBS source that reloads mid-show).
   const sticky = new Map();
-  const STICKY = new Set(['avatar', 'hands-line']);
+  const STICKY = new Set(['avatar', 'hands-line', 'v8-show']);   // (v8-show: LIVE Link's newest show state, for a page that loads again)
   const PRIVATE = new Set(['mask-event']);
   server.on('upgrade', (req, socket, head) => {
     const okPath = (req.url || '').split('?')[0] === '/ws';
@@ -198,7 +274,7 @@ function start(port = PORT, opts = {}) {
   };
   return new Promise((resolve, reject) => {
     server.once('error', reject);
-    server.listen(port, HOST, () => resolve({ server, wss, port: server.address().port, broadcast }));
+    server.listen(port, HOST, () => resolve({ server, wss, port: server.address().port, broadcast, pic }));
   });
 }
 
@@ -219,4 +295,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { start, resolveFile, originAllowed, hostAllowed, calibFileFor };
+module.exports = { start, resolveFile, originAllowed, hostAllowed, calibFileFor, createPicProxy, sniffPicture, PIC };
