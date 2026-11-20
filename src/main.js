@@ -15,6 +15,9 @@ const { pickCaptureSource, extFor, CHUNK_MS } = require('./core/capture');
 const { VtuberLink } = require('./core/vtuber-link');
 const { VtuberHost, vtuberCard, vtuberEnabled } = require('./core/vtuber-host');
 const { setupVtuberSession } = require('./core/vtuber-session');
+const { ShowFeed } = require('./core/show-feed');
+const { PuppetKeys, setKey: setPuppetKey, DEFAULT_KEYS: PUPPET_DEFAULT_KEYS, STREAM_DECK_KEYS } = require('./core/puppet-keys');
+const { coverHosts } = require('./core/pictures');
 const { EventEmitter } = require('events');
 const SITE = require('./site-config.json');
 
@@ -72,6 +75,7 @@ process.on('unhandledRejection', (e) => log('error', `unhandled: ${e && e.stack 
 
 let win = null, tray = null, ctl = null, store = null, show = null, vtuber = null;
 let vtHost = null, vtWin = null, vtSession = null, vtOpening = null;
+let showFeed = null, puppetKeys = null;   // V8: the show state for the Mask, and the keys for its puppet moves
 let trayKind = '';
 
 // Pop-ups: connected to the LIVE, lost it for more than 20 s, and the end-of-LIVE summary.
@@ -335,7 +339,15 @@ function vtuberSession() {
   return vtSession;
 }
 const vtuberOn = () => !(ctl && vtuberEnabled(ctl.cfg) === false);
-const vtuberCardNow = () => ({ ...vtuberCard(vtHost ? vtHost.getState() : null, { enabled: vtuberOn(), platform: process.platform }), open: !!(vtWin && !vtWin.isDestroyed()) });
+// V8: the card's "Puppet show keys" part: only when the VTuber in this install understands the keys (contract v2)
+const puppetNow = () => (puppetKeys && vtHost && vtHost.wire >= 2 ? puppetKeys.getState() : null);
+const vtuberCardNow = () => ({ ...vtuberCard(vtHost ? vtHost.getState() : null, { enabled: vtuberOn(), platform: process.platform }), open: !!(vtWin && !vtWin.isDestroyed()), puppet: puppetNow() });
+// the keys are held only while a VTuber that understands them is listening and a TikTok LIVE is connected
+function syncPuppetKeys() {
+  if (!puppetKeys) return;
+  puppetKeys.setWanted(!!(vtuber && vtuber.canControl) && vtuberOn());
+  sendVtuber();
+}
 let vtCardKey = '';
 function sendVtuber() {
   if (!win || win.isDestroyed()) return;
@@ -518,7 +530,7 @@ app.whenReady().then(async () => {
       return { post: (m) => child.postMessage(m), onMessage: (fn) => child.on('message', fn), onExit: (fn) => child.on('exit', fn), kill: () => child.kill() };
     },
   });
-  vtHost.on('state', () => { sendVtuber(); if (updater) updater.poke(); });
+  vtHost.on('state', () => { syncPuppetKeys(); sendVtuber(); if (updater) updater.poke(); });
   vtHost.on('front', showVtuberWindow);
   // its process ended (closed, or crashed): the window goes too, and the card offers "Open VTuber" again
   vtHost.on('exit', () => { if (vtWin && !vtWin.isDestroyed()) { try { vtWin.destroy(); } catch {} } sendVtuber(); });
@@ -526,10 +538,41 @@ app.whenReady().then(async () => {
   ipcMain.handle('vtuber:open', () => openVtuber());
   ipcMain.handle('vtuber:close', () => closeVtuber());
   const testHttpPort = TEST_RUN ? Number(process.env.LIVE_LINK_VTUBER_HTTP_PORT) || 0 : 0;
+  // V8: the VTuber in the app takes every message the same way; `v` says which contract its files speak
+  const vtDirect = (ev) => vtHost.event(ev);
+  Object.defineProperty(vtDirect, 'v', { get: () => (vtHost ? vtHost.wire : 1) });
   vtuber = new VtuberLink({
-    log, direct: () => (vtHost && vtHost.running ? (ev) => vtHost.event(ev) : null),
+    log, direct: () => (vtHost && vtHost.running ? vtDirect : null), onChange: () => syncPuppetKeys(),
     // a test run never asks the real VTuber's place (8791) on this computer: HTTP only to a place the test names
     ...(TEST_RUN ? (testHttpPort && testHttpPort !== 8791 ? { port: testHttpPort } : { http: false }) : {}),
+  });
+  // V8: the show state for the Mask (the song on air, its cover, the hype rank, the host's grade). It reads the site's
+  // public tables with the publishable key, and only while a song is on air and a VTuber that wants it is listening.
+  // A test run reads its local stand-in for the site (LIVE_LINK_API on 127.0.0.1), never the real one.
+  let restBase = '';
+  try { restBase = new URL(API_BASE).origin + '/rest/v1/'; } catch { restBase = ''; }
+  showFeed = new ShowFeed({ restBase, apiKey: SITE.publishableKey, coverHosts: coverHosts(SITE.apiBase), log,
+    send: (m) => vtuber.sendShow(m), wanted: () => vtuber.canControl });
+  // V8: the puppet keys. A test run never takes a real key from this computer.
+  puppetKeys = new PuppetKeys({
+    keys: store.get('puppetKeys'), enabled: store.get('puppetKeysOn') !== false, log,
+    send: (action, name) => vtuber.sendControl(action, name),
+    register: TEST_RUN ? () => true : (acc, fn) => globalShortcut.register(acc, fn),
+    unregister: TEST_RUN ? () => {} : (acc) => globalShortcut.unregister(acc),
+  });
+  ipcMain.handle('puppet:setKey', (_e, id, key) => {
+    const r = setPuppetKey(puppetKeys.keys, String(id), String(key));
+    if (r.ok) { store.set('puppetKeys', r.keys); puppetKeys.setKeys(r.keys); vtCardKey = ''; sendVtuber(); }
+    return { ...r, puppet: puppetNow() };
+  });
+  ipcMain.handle('puppet:preset', (_e, which) => {
+    const keys = which === 'streamdeck' ? { ...STREAM_DECK_KEYS } : { ...PUPPET_DEFAULT_KEYS };
+    store.set('puppetKeys', keys); puppetKeys.setKeys(keys); sendVtuber();
+    return { ok: true, puppet: puppetNow() };
+  });
+  ipcMain.handle('puppet:setEnabled', (_e, on) => {
+    store.set('puppetKeysOn', !!on); puppetKeys.setEnabled(!!on); sendVtuber();
+    return { ok: true, puppet: puppetNow() };
   });
   const testFeed = TEST_RUN && Number(process.env.LIVE_LINK_TEST_FEED) > 0;
   if (!testFeed) vtuber.attach(link);
@@ -669,6 +712,8 @@ app.whenReady().then(async () => {
     if (updater) { updater.offer(s.update); updater.poke(); }
     updateTray(s);
     if (win && !win.isDestroyed()) win.webContents.send('state', s);
+    if (showFeed) showFeed.update({ connected: s.connected, target: s.target, hold: s.hold });   // V8: the song on air, for the Mask
+    syncPuppetKeys();
     sendVtuber();   // the site can switch the VTuber card off for a host (live-link-config: vtuber.enabled false)
   });
 
@@ -821,7 +866,7 @@ app.on('window-all-closed', (e) => { /* stay in the tray */ });
 // Before quitting: up to 3 s for queued gifts (quitting right after a gift must not lose it), then up to 1.5 s to
 // tell the site this computer stopped watching (the dashboard shows it at once), then quit.
 let quitFlushed = false;
-app.on('will-quit', () => { try { globalShortcut.unregisterAll(); } catch {} try { if (vtuber) vtuber.stop(); } catch {} try { if (vtHost) vtHost.kill(); } catch {} });
+app.on('will-quit', () => { try { if (puppetKeys) puppetKeys.release(); } catch {} try { if (showFeed) showFeed.stop(); } catch {} try { globalShortcut.unregisterAll(); } catch {} try { if (vtuber) vtuber.stop(); } catch {} try { if (vtHost) vtHost.kill(); } catch {} });
 // Quitting while clips are still being made: ask first (they'd finish next time, but the host should know).
 let quitAsking = false;
 app.on('before-quit', (e) => {

@@ -933,6 +933,53 @@
     b.textContent = c.button || '';
     b.disabled = vtBusy;
     $('vtcard-close').classList.toggle('hidden', !c.open);
+    renderPuppetKeys(c.puppet);
+  }
+
+  // V8: the puppet show keys (core/puppet-keys.js). They work in any window, but only while a TikTok LIVE is connected
+  // and VTuber is open; every sentence here says so in plain words.
+  const KEY_STATE = { held: 'ready', taken: 'taken', off: 'off', idle: '' };
+  let puppetKey = '';
+  function renderPuppetKeys(p) {
+    const box = $('vtkeys');
+    if (!box) return;
+    if (!p || !Array.isArray(p.rows)) { box.classList.add('hidden'); return; }
+    box.classList.remove('hidden');
+    const key = JSON.stringify(p);
+    if (key === puppetKey) return;
+    puppetKey = key;
+    const taken = p.rows.filter((r) => r.state === 'taken');
+    box.classList.toggle('live', !!p.active && !taken.length);
+    box.classList.toggle('taken', !!p.active && !!taken.length);
+    const set = p.rows.filter((r) => r.key !== 'off');
+    $('vtkeys-sum').textContent = !p.enabled ? 'Off' : p.active ? (taken.length ? `${taken.length} taken by another program` : 'Working now') : (set.length ? `${set[0].key} to ${set[set.length - 1].key}` : 'No keys set');
+    $('vtkeys-note').textContent = !p.enabled ? 'Off. The buttons in the VTuber window still work.'
+      : p.active ? (taken.length ? 'Another program already uses the keys marked "taken". Pick a different key for those.' : 'These keys work right now, in any window: press one and the Mask does the move.')
+        : 'Press a key in any window (OBS, TikTok, a browser) and the Mask does the move. They work while your TikTok LIVE is connected and VTuber is open. The rest of the time the keys belong to your other programs.';
+    $('vtkeys-on').checked = !!p.enabled;
+    const rows = $('vtkeys-rows');
+    rows.classList.toggle('off', !p.enabled);
+    rows.textContent = '';
+    for (const r of p.rows) {
+      const label = document.createElement('span'); label.className = 'k-label'; label.textContent = r.label;
+      const sel = document.createElement('select'); sel.setAttribute('aria-label', `Key for ${r.label}`); sel.disabled = !p.enabled;
+      for (const c of p.choices || []) { const o = document.createElement('option'); o.value = c; o.textContent = c === 'off' ? 'No key' : c; if (c === r.key) o.selected = true; sel.appendChild(o); }
+      sel.addEventListener('change', () => {
+        Promise.resolve(bridge.setPuppetKey(r.id, sel.value)).then((res) => {
+          $('vtkeys-msg').textContent = res && res.ok === false ? (res.why === 'taken' ? `${sel.value} is already the key for ${res.by}. Pick another one.` : 'That key cannot be used.') : '';
+          puppetKey = '';
+          if (res && res.puppet) renderPuppetKeys(res.puppet);
+        }, () => {});
+      });
+      const st = document.createElement('span'); st.className = `k-state ${r.state}`; st.textContent = p.enabled ? (KEY_STATE[r.state] || '') : '';
+      rows.append(label, sel, st);
+    }
+  }
+  if (bridge.setPuppetKey && $('vtkeys')) {
+    const after = (res) => { $('vtkeys-msg').textContent = ''; puppetKey = ''; if (res && res.puppet) renderPuppetKeys(res.puppet); };
+    $('vtkeys-on').addEventListener('change', () => { Promise.resolve(bridge.setPuppetKeysOn($('vtkeys-on').checked)).then(after, () => {}); });
+    $('vtkeys-usual').addEventListener('click', () => { Promise.resolve(bridge.setPuppetPreset('usual')).then(after, () => {}); });
+    $('vtkeys-deck').addEventListener('click', () => { Promise.resolve(bridge.setPuppetPreset('streamdeck')).then(after, () => {}); });
   }
   if (bridge.onVtuber && $('vtcard')) {
     bridge.onVtuber(renderVtuber);
@@ -1009,6 +1056,7 @@
         steps: doneSteps.map((r) => (r.key === 'send' ? { ...r, state: 'test', text: 'Test mode is on: taps are checked, nothing is added.' } : r)) },
     };
     const pick = new URLSearchParams(location.search).get('demo') || 'live';
+    if (pick === 'puppet-idle') states[pick] = { ...base, ...notLive, tiktok: { status: 'offline' }, message: { level: 'info', text: 'Ready. Waiting for @the_boneyard_ai to go LIVE on TikTok.' } };
     states.alert = states.lost;
     if (pick === 'guide') { try { localStorage.removeItem('ll-guide-seen'); } catch {} }
     const signedOut = ['signin', 'guide', 'preshow', 'notrec', 'verify'].includes(pick);
@@ -1054,6 +1102,20 @@
       tiktokSignIn: async () => true, tiktokSignOut: async () => true, tiktokStatus: async () => ({ signedIn: false }), onTikTok: () => () => {},
       captureSources: async () => [{ id: 'window:1', name: 'TikTok LIVE Studio', kind: 'window' }, { id: 'window:2', name: 'OBS 31.0.3 - Profile: Untitled - Scenes: Untitled', kind: 'window' }, { id: 'screen:0', name: 'Screen 1', kind: 'screen' }],
       captureNow: async () => ({ ok: true }),
+      // V8 stills: ?demo=puppet (keys working during a LIVE), puppet-idle (no LIVE), puppet-taken (one key taken), puppet-off
+      ...(String(pick).startsWith('puppet') ? (() => {
+        const labels = { goo: 'Goo', fire: 'Fire head', melt: 'Melt', crack: 'Crack open', eat: 'Eat a comment', fight: 'Boss fight', vote: 'Vote' };
+        const choices = ['off', ...['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'].map((d) => 'Ctrl+Alt+' + d), ...Array.from({ length: 12 }, (_, i) => 'F' + (13 + i))];
+        const p = { enabled: pick !== 'puppet-off', active: pick === 'puppet' || pick === 'puppet-taken', choices,
+          rows: Object.keys(labels).map((id, i) => ({ id, label: labels[id], key: 'Ctrl+Alt+' + (i + 1), state: pick === 'puppet-taken' && id === 'melt' ? 'taken' : pick === 'puppet' || pick === 'puppet-taken' ? 'held' : 'idle' })) };
+        const card = () => ({ show: true, tone: 'on', title: 'VTuber', text: 'VTuber is ON: your viewers see the Mask instead of your camera. Press OFF in the VTuber window, or close it, to show your camera again.', button: 'Show VTuber', open: true, puppet: p });
+        return {
+          getVtuber: async () => card(), onVtuber: () => () => {}, openVtuber: async () => card(), closeVtuber: async () => card(),
+          setPuppetKey: async (id, key) => { const other = p.rows.find((r) => r.id !== id && r.key === key && key !== 'off'); if (other) return { ok: false, why: 'taken', by: other.label, puppet: p }; p.rows.find((r) => r.id === id).key = key; return { ok: true, puppet: p }; },
+          setPuppetPreset: async (w) => { p.rows.forEach((r, i) => { r.key = w === 'streamdeck' ? 'F' + (13 + i) : 'Ctrl+Alt+' + (i + 1); }); return { ok: true, puppet: p }; },
+          setPuppetKeysOn: async (on) => { p.enabled = !!on; return { ok: true, puppet: p }; },
+        };
+      })() : {}),
     };
   }
 })();

@@ -91,6 +91,18 @@
         <button class="primary vtcard-btn" id="vtcard-btn" type="button">Open VTuber</button>
         <button class="ghost vtcard-close hidden" id="vtcard-close" type="button">Close VTuber</button>
       </div>
+      <!-- V8: keys for the Mask's puppet moves that work in any window (held only during a LIVE with VTuber open) -->
+      <details class="vtkeys hidden" id="vtkeys">
+        <summary><span class="vtkeys-title">Puppet show keys</span><span class="vtkeys-sum" id="vtkeys-sum"></span></summary>
+        <p class="vtkeys-note" id="vtkeys-note" role="status" aria-live="polite"></p>
+        <label class="vtkeys-switch"><span>Use these keys</span><input type="checkbox" id="vtkeys-on"></label>
+        <div class="vtkeys-rows" id="vtkeys-rows"></div>
+        <div class="vtkeys-foot">
+          <button class="ghost" id="vtkeys-usual" type="button">Usual keys: Ctrl+Alt+1 to 7</button>
+          <button class="ghost" id="vtkeys-deck" type="button">Stream Deck keys: F13 to F19</button>
+        </div>
+        <p class="vtkeys-msg" id="vtkeys-msg" role="status" aria-live="polite"></p>
+      </details>
     </section>
     <section class="hero glass">
       <div class="atom-wrap">

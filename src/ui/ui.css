@@ -310,6 +310,28 @@ button:focus:not(:focus-visible) { outline: none; }
 .vtcard.fix { border-color: rgba(230,230,230,.5); }
 .vtcard.fix .vtcard-pill { color: #fff; border-color: #e6e6e6; }
 .vtcard.fix .vtcard-text { color: #fff; }
+/* V8: the puppet show keys */
+.vtkeys { border-top: 1px solid var(--line); padding-top: 8px; }
+.vtkeys summary { cursor: pointer; display: flex; align-items: baseline; justify-content: space-between; gap: 10px; list-style: none; font: 700 13px/1.3 var(--font); color: #fff; }
+.vtkeys summary::-webkit-details-marker { display: none; }
+.vtkeys summary::before { content: '+'; color: var(--muted); width: 12px; flex: none; }
+.vtkeys[open] summary::before { content: '\2212'; }
+.vtkeys-title { flex: 1; }
+.vtkeys-sum { font: 600 11.5px/1.3 var(--font); color: var(--muted); text-align: right; }
+.vtkeys.live .vtkeys-sum { color: #4dffa0; }
+.vtkeys.taken .vtkeys-sum { color: #fff; }
+.vtkeys-note { margin: 8px 0 6px; font-size: 12.5px; line-height: 1.45; color: #d6d6d6; text-wrap: pretty; }
+.vtkeys-switch { display: flex; align-items: center; justify-content: space-between; gap: 10px; font: 600 13px var(--font); color: var(--text); padding: 4px 0 8px; }
+.vtkeys-rows { display: grid; grid-template-columns: 1fr auto auto; gap: 6px 10px; align-items: center; }
+.vtkeys-rows.off { opacity: .5; }
+.vtkeys-rows span.k-label { font: 600 13px var(--font); color: var(--text); }
+.vtkeys-rows select { background: var(--bg2); color: var(--text); border: 1px solid var(--line2); border-radius: 9px; padding: 6px 8px; font: 600 12.5px var(--font); min-width: 118px; }
+.vtkeys-rows span.k-state { font: 700 10px/1 var(--font); letter-spacing: .12em; text-transform: uppercase; color: var(--dim); min-width: 46px; text-align: right; }
+.vtkeys-rows span.k-state.held { color: #4dffa0; }
+.vtkeys-rows span.k-state.taken { color: #fff; }
+.vtkeys-foot { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.vtkeys-foot button { flex: 1 1 150px; font-size: 12px; padding: 8px 10px; }
+.vtkeys-msg { margin: 8px 0 0; min-height: 16px; font-size: 12.5px; line-height: 1.4; color: #fff; }
 .ttcard { padding: 14px 16px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; border-color: rgba(255,90,110,.6); background: linear-gradient(180deg, rgba(224,38,63,.13), rgba(224,38,63,.03)); }
 .ttcard-head { display: flex; }
 .ttcard h2 { margin: 0; font: 800 18px/1.2 var(--font); color: #fff; text-wrap: balance; }
