@@ -23,7 +23,30 @@ function createMock(opts = {}) {
     pushes: [], statuses: [], viewerSamples: [], calls: [],
     failNext: [],             // e.g. [{ path: 'live-link-push', status: 503 }]
     nextShowAt: opts.nextShowAt,   // 2.1.0: live-link-config next_show_at (left out when undefined)
+    // V8: the site's public tables the show feed reads over REST (GET /rest/v1/<table>, publishable key, no device token)
+    rest: { project_hype: [], hype_plays: [], ranking_board: [], content_scores: [], submissions_public: [] },
+    restCalls: [],            // { table, query, apikey: bool }
+    restFail: null,           // (table) -> null | { status, retryAfter? }: an injected failure
   };
+
+  // A small stand-in for PostgREST: col=eq.value, col=not.is.null, order=col.desc[.nullslast], limit=n, select=a,b
+  function restRead(table, q) {
+    let rows = (st.rest[table] || []).slice();
+    for (const [k, v] of q) {
+      if (k === 'select' || k === 'order' || k === 'limit') continue;
+      if (v.startsWith('eq.')) rows = rows.filter((r) => String(r[k]) === v.slice(3));
+      else if (v === 'not.is.null') rows = rows.filter((r) => r[k] !== null && r[k] !== undefined);
+    }
+    const order = q.get('order');
+    if (order) {
+      const [col, dir] = order.split('.');
+      rows.sort((a, b) => (a[col] === b[col] ? 0 : a[col] === null || a[col] === undefined ? 1 : b[col] === null || b[col] === undefined ? -1 : (a[col] < b[col] ? -1 : 1) * (dir === 'desc' ? -1 : 1)));
+    }
+    const limit = Number(q.get('limit'));
+    if (limit > 0) rows = rows.slice(0, limit);
+    const cols = (q.get('select') || '').split(',').filter(Boolean);
+    return cols.length ? rows.map((r) => Object.fromEntries(cols.map((c) => [c, r[c] === undefined ? null : r[c]]))) : rows;
+  }
 
   const send = (res, code, obj) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(obj)); };
   const err = (res, code, error, message, extra = {}) => send(res, code, { error, message: message || error, ...extra });
@@ -34,6 +57,17 @@ function createMock(opts = {}) {
     req.on('data', (c) => { if (tooBig) return; raw += c; if (raw.length > maxBody) { tooBig = true; raw = ''; } });
     req.on('end', () => {
       if (tooBig) { st.tooBig = (st.tooBig || 0) + 1; return err(res, 413, 'validation', 'Body too large'); }
+      if (req.url.startsWith('/rest/v1/')) {
+        const u = new URL(req.url, 'http://127.0.0.1');
+        const table = u.pathname.slice('/rest/v1/'.length);
+        st.restCalls.push({ table, query: u.search, method: req.method, apikey: !!req.headers.apikey, at: Date.now() });
+        if (req.method !== 'GET') return err(res, 405, 'method');             // the app only ever READS these tables
+        if (!req.headers.apikey) return err(res, 401, 'no_api_key');
+        const f = st.restFail && st.restFail(table);
+        if (f) { res.writeHead(f.status, { 'content-type': 'application/json', ...(f.retryAfter ? { 'retry-after': String(f.retryAfter) } : {}) }); return res.end(JSON.stringify({ message: 'injected' })); }
+        if (!Object.prototype.hasOwnProperty.call(st.rest, table)) return err(res, 404, 'no_table');
+        return send(res, 200, restRead(table, u.searchParams));
+      }
       const path = req.url.split('?')[0].replace(/^\/functions\/v1\//, '');
       let body = {};
       try { body = raw ? JSON.parse(raw) : {}; } catch { return err(res, 400, 'validation', 'bad json'); }
