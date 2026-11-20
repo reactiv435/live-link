@@ -166,8 +166,9 @@ function updateBusy(kind) {
   const st = show ? show.getState() : {};
   if (st.recording && st.recording.recording) return 'recording';
   if (st.busy) return 'clips';
-  // 2.2.0: VTuber is ON (the character covers the host's camera in OBS): no install, no restart
-  if (kind === 'install' && vtHost && vtHost.isOn) return 'vtuber';
+  // 2.2.0: VTuber is ON (the character covers the host's camera in OBS): no install, no restart, and no download
+  // either (170 MB arriving while the host is on stream with the tracker and the avatar running)
+  if (vtHost && vtHost.isOn) return 'vtuber';
   if (kind === 'download' && lastState && lastState.connected && lastState.tiktok && lastState.tiktok.status === 'live') return 'live';
   return null;
 }
@@ -330,7 +331,7 @@ function captureDriver() {
 const VT_PARTITION = 'persist:vtuber';
 const vtuberDir = () => (app.isPackaged ? path.join(process.resourcesPath, 'vtuber') : path.join(__dirname, '..', 'vendor', 'vtuber'));
 function vtuberSession() {
-  if (!vtSession) vtSession = setupVtuberSession(session.fromPartition(VT_PARTITION), { desktopCapturer, port: () => (vtHost ? vtHost.port : 0), cameraWindow: () => (vtHost ? vtHost.cameraWindow : null), log });
+  if (!vtSession) vtSession = setupVtuberSession(session.fromPartition(VT_PARTITION), { desktopCapturer, port: () => (vtHost ? vtHost.port : 0), cameraWindow: () => (vtHost ? vtHost.cameraWindow : null), log, ownOnly: true });
   return vtSession;
 }
 const vtuberOn = () => !(ctl && vtuberEnabled(ctl.cfg) === false);

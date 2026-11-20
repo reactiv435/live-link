@@ -85,7 +85,8 @@ test('2.2.0 the VTuber card: every state is one plain sentence that says what to
     [run({ obs: 'closed', camera: null }), 'fix', /^VTuber needs OBS\. Open OBS/, 'Show VTuber'],
     [run({ obs: 'off', camera: null }), 'fix', /Tools, then WebSocket Server Settings, tick "Enable WebSocket server"/, 'Show VTuber'],
     [run({ obs: 'password', camera: null }), 'fix', /Paste it in the VTuber window/, 'Show VTuber'],
-    [run({ camera: null }), 'fix', /OBS has no camera yet/, 'Show VTuber'],
+    [run({ camera: null }), 'fix', /^VTuber could not find a camera it knows in OBS\. It works with DroidCam and Video Capture Device sources\.$/, 'Show VTuber'],
+    [run({ camera: null, cameraAsk: true }), 'fix', /more than one camera\. In the VTuber window, click the picture that shows you/, 'Show VTuber'],
     [run({ avatar: { placed: 0, problem: 'name-taken' } }), 'fix', /already has something else called "VTuber Avatar"/, 'Show VTuber'],
     [run({ avatar: { placed: 0, problem: 'not-visible' } }), 'fix', /hidden in every OBS scene/, 'Show VTuber'],
     [run({ on: true, character: 'ryo', avatar: { placed: 1, silent: true } }), 'fix', /right-click "VTuber Avatar" and click Refresh/, 'Show VTuber'],
@@ -121,6 +122,24 @@ test('2.2.0 the camera window is picked by its exact window number, never by nam
 });
 
 // ------------------------------------------------------------------------------------------------ a test run is fenced in
+test('2.2.0 fix round: the VTuber window asks for nothing but its own local address; the Mac microphone sentence names both uses', () => {
+  const { setupVtuberSession, requestAllowed } = require('../src/core/vtuber-session');
+  for (const u of ['http://127.0.0.1:8791/vtuber.html', 'http://127.0.0.1:8791/api/vt/state', 'ws://127.0.0.1:8791/ws?bin=1', 'data:image/png;base64,AA', 'blob:http://127.0.0.1:8791/abc']) assert.equal(requestAllowed(u, 8791), true, u);
+  for (const u of ['https://example.com/x.js', 'http://example.com/', 'http://127.0.0.1:8792/', 'http://localhost:8791/', 'ws://127.0.0.1:4455/', 'wss://example.com/', 'file:///C:/x', 'https://127.0.0.1:8791/', 'not a url']) assert.equal(requestAllowed(u, 8791), false, u);
+  assert.equal(requestAllowed('http://127.0.0.1:8791/', 0), false, 'no VTuber running: nothing');
+  // the app's session cancels the rest; the check script's session (no ownOnly) is left as it was
+  let hook = null;
+  const ses = { webRequest: { onBeforeRequest: (fn) => { hook = fn; } }, setPermissionRequestHandler() {}, setPermissionCheckHandler() {}, setDisplayMediaRequestHandler() {} };
+  setupVtuberSession(ses, { desktopCapturer: {}, port: () => 8791, cameraWindow: () => null });
+  assert.equal(hook, null);
+  setupVtuberSession(ses, { desktopCapturer: {}, port: () => 8791, cameraWindow: () => null, ownOnly: true });
+  const ask = (url) => { let out = null; hook({ url }, (r) => { out = r; }); return out; };
+  assert.deepEqual(ask('http://127.0.0.1:8791/js/vtuber.js'), { cancel: false });
+  assert.deepEqual(ask('https://cdn.example.com/lib.js'), { cancel: true });
+  const mic = require('../package.json').build.mac.extendInfo.NSMicrophoneUsageDescription;
+  assert.match(mic, /microphone/i); assert.match(mic, /records/); assert.doesNotMatch(mic, /Nothing is recorded/);
+});
+
 test('2.2.0 a test run never starts a VTuber that could reach the real OBS or the real VTuber', async () => {
   const spawned = [];
   const mk = (testConfig) => new VtuberHost({ dir: VT, dataDir: path.join(WORK, 'fence'), test: true, testConfig, spawn: (e, env) => { spawned.push(env); throw new Error('must not start'); } });
