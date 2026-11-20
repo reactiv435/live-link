@@ -418,5 +418,24 @@ test('main.js keeps the rules: a test run never takes a real key, the keys are g
   assert.match(main, /app\.on\('will-quit', \(\) => \{ try \{ if \(puppetKeys\) puppetKeys\.release\(\); \}/);
   assert.match(main, /restBase = new URL\(API_BASE\)\.origin \+ '\/rest\/v1\/'/);
   assert.match(main, /apiKey: SITE\.publishableKey, coverHosts: coverHosts\(SITE\.apiBase\)/);
-  assert.match(main, /puppetKeys\.setWanted\(!!\(vtuber && vtuber\.canControl\) && vtuberOn\(\)\)/);
+  assert.ok(main.includes('puppetKeys.setWanted(puppetWanted({ canControl: !!(vtuber && vtuber.canControl), enabled: vtuberOn(), inApp: !!(vtHost && vtHost.running), vt: vtHost ? vtHost.vt : null }));'), 'the keys follow the chosen character');
+  assert.ok(main.includes('onChange: () => { syncPuppetKeys(); if (showFeed && vtuber && vtuber.canControl) showFeed.nudge(); }'), 'a VTuber that starts listening gets the state at once');
+});
+
+test('fix round: when a VTuber starts listening or the LIVE comes back, the current state is sent at once (not at the next 5 s beat)', async (t) => {
+  const x = await setup(t);
+  x.rest.project_hype.push({ submission_id: 'sub-1', hype_bar: 42 });
+  x.rest.hype_plays.push({ id: 'p1', submission_id: 'sub-1', host_id: 'host-1', start_bar: 0, end_bar: null, started_at: iso(x.now() - 600000), ended_at: null });
+  x.feed.update(onAir());
+  assert.ok(await until(() => x.last().hype.taps === 42, 2000));
+  await wait(100);
+  const n = x.sent.length;
+  await wait(200);
+  assert.equal(x.sent.length, n, 'unchanged: quiet until the 5 s beat');
+  x.feed.nudge();
+  assert.equal(x.sent.length, n + 1, 'nudged: sent now');
+  assert.deepEqual({ ...x.last(), at: 0 }, { ...x.sent[n - 1], at: 0 });
+  x.feed.update({ connected: false, target: null, hold: null });
+  x.feed.nudge();
+  assert.equal(x.sent.length, n + 1, 'no LIVE: a nudge sends nothing');
 });

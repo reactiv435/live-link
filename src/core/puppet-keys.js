@@ -32,6 +32,7 @@ const KEY_CHOICES = (() => {
 const DEFAULT_KEYS = Object.freeze(Object.fromEntries(ACTIONS.map((a, i) => [a.id, `Ctrl+Alt+${i + 1}`])));
 const STREAM_DECK_KEYS = Object.freeze(Object.fromEntries(ACTIONS.map((a, i) => [a.id, `F${13 + i}`])));
 const REPEAT_MS = 250;
+const RETRY_TAKEN_MS = 30000;      // a key another program holds is tried again this often while it is still wanted
 
 const isChoice = (k) => typeof k === 'string' && Object.prototype.hasOwnProperty.call(KEY_CHOICES, k);
 
@@ -59,6 +60,22 @@ function setKey(keys, id, key) {
   return { ok: true, keys: { ...cur, [id]: key } };
 }
 
+/**
+ * Should the keys be held right now? canControl = a v2 VTuber is listening and a TikTok LIVE is connected
+ * (vtuber-link.js); enabled = the site has not switched the VTuber card off; inApp = the VTuber runs inside LIVE Link;
+ * vt = its own state (vtuber-host.js: { character: 'mask' | 'ryo' | 'melanie' | null, ... }).
+ *  * In the app: only while the chosen character is the Mask.
+ *  * A desktop-shortcut VTuber (HTTP) does not tell LIVE Link which character is chosen: the keys are held as before.
+ *  * The VTuber's own "Puppet show" switch is not in the state it sends today, so LIVE Link cannot know it. If a
+ *    later VTuber sends `puppet: false` in its state, the keys are given back then.
+ */
+function puppetWanted({ canControl, enabled = true, inApp = false, vt = null } = {}) {
+  if (!canControl || !enabled) return false;
+  if (!inApp) return true;
+  if (!vt || vt.character !== 'mask') return false;
+  return vt.puppet !== false;
+}
+
 class PuppetKeys {
   /**
    * opts: register(accelerator, fn) -> bool, unregister(accelerator), send(action, name) -> bool (vtuber-link
@@ -70,6 +87,12 @@ class PuppetKeys {
     this.send = opts.send || (() => false);
     this.mono = opts.mono || (() => performance.now());
     this.log = opts.log || (() => {});
+    this.setTimeout = opts.setTimeout || setTimeout;
+    this.clearTimeout = opts.clearTimeout || clearTimeout;
+    this.retryMs = opts.retryMs || RETRY_TAKEN_MS;
+    this.onChange = typeof opts.onChange === 'function' ? opts.onChange : null;   // a taken key came free (the card shows it)
+    this.retryTimer = null;
+    this.saidTaken = new Map();     // action id -> the accelerator already logged as taken (one line per key, not one per try)
     this.keys = cleanKeys(opts.keys);
     this.enabled = opts.enabled !== false;
     this.wanted = false;            // a v2 VTuber is listening and a LIVE is connected
@@ -89,7 +112,9 @@ class PuppetKeys {
   /** LIVE Link is quitting: every key back */
   release() { this.wanted = false; this._sync(); }
 
-  _sync() {
+  _sync(retry) {
+    this.clearTimeout(this.retryTimer); this.retryTimer = null;
+    const before = retry ? [...this.taken].join() : null;
     const want = new Map();
     if (this.active) for (const a of ACTIONS) { const acc = KEY_CHOICES[this.keys[a.id]]; if (acc) want.set(a.id, acc); }
     for (const [id, acc] of [...this.held]) {
@@ -102,9 +127,22 @@ class PuppetKeys {
       if (this.held.get(id) === acc) continue;
       let ok = false;
       try { ok = this.register(acc, () => this.press(id)) === true; } catch { ok = false; }
-      if (ok) this.held.set(id, acc);
-      else { this.taken.add(id); this.log('warn', `puppet key ${this.keys[id]} (${ACTIONS.find((a) => a.id === id).label}) is taken by another program`); }
+      if (ok) {
+        this.held.set(id, acc);
+        if (this.saidTaken.get(id) === acc) this.log('info', `puppet key ${this.keys[id]} (${ACTIONS.find((a) => a.id === id).label}) is free again: it works now`);
+        this.saidTaken.delete(id);
+      } else {
+        this.taken.add(id);
+        if (this.saidTaken.get(id) !== acc) { this.saidTaken.set(id, acc); this.log('warn', `puppet key ${this.keys[id]} (${ACTIONS.find((a) => a.id === id).label}) is taken by another program`); }
+      }
     }
+    if (this.active) for (const [id, acc] of [...this.saidTaken]) if (want.get(id) !== acc) this.saidTaken.delete(id);   // its key was changed or set to "No key"
+    // a taken key is tried again every 30 s for as long as it is wanted (the other program may have closed)
+    if (this.taken.size && this.active) {
+      this.retryTimer = this.setTimeout(() => { this.retryTimer = null; if (this.active && this.taken.size) this._sync(true); }, this.retryMs);
+      if (this.retryTimer && typeof this.retryTimer.unref === 'function') this.retryTimer.unref();
+    }
+    if (retry && this.onChange && [...this.taken].join() !== before) { try { this.onChange(); } catch {} }
   }
 
   /** a key was pressed (or the OS repeats a held one) */
@@ -132,4 +170,4 @@ class PuppetKeys {
   }
 }
 
-module.exports = { PuppetKeys, ACTIONS, KEY_CHOICES, DEFAULT_KEYS, STREAM_DECK_KEYS, REPEAT_MS, cleanKeys, setKey };
+module.exports = { PuppetKeys, puppetWanted, ACTIONS, KEY_CHOICES, DEFAULT_KEYS, STREAM_DECK_KEYS, REPEAT_MS, RETRY_TAKEN_MS, cleanKeys, setKey };

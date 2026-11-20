@@ -38,6 +38,7 @@
 const http = require('http');
 const { clip } = require('./tiktok-link');
 const { cleanPictureUrl, cleanUid, cleanHandle, TIKTOK_PICTURE_HOSTS } = require('./pictures');
+const { hypeOf } = require('./show-feed');
 
 const HOST = '127.0.0.1';
 const DEFAULT_PORT = 8791;
@@ -173,7 +174,15 @@ class VtuberLink {
     this.live = live;
     if (live) this._probeLoop();
     else {
-      this._idle();                // the LIVE ended or dropped: ask again when it is back (no log line)
+      // V8: the LIVE ended or dropped: a v2 VTuber is told "nothing is on air" at once (the last word it gets), so
+      // the Mask does not go on believing the last song for seconds. Sent before the sending is switched off.
+      try {
+        const inApp = !this.stopped ? this._inApp() : null;
+        if (!this.stopped && (inApp || this.ok) && this._v(inApp) >= 2 && (inApp || this.inFlight < MAX_IN_FLIGHT)) {
+          if (this._out({ v: 2, type: 'show', onAir: false, song: null, hype: hypeOf(0), score: null, at: this.now() }, inApp)) this.stats.show++;
+        }
+      } catch {}
+      this._idle();                // ask again when it is back (no log line)
       // V8: which picture-server families this LIVE's viewers used (family names and counts only: no address, no viewer)
       try { const line = this.pictures && this.pictures.line(); if (line) { this.log('info', `VTuber link: ${line}`); this.pictures.reset(); } } catch {}
     }

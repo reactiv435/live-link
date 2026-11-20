@@ -260,3 +260,24 @@ points for every verdict. Not touched; for the owner to decide.
 11. Three of the new tests watch real timers (the 5 s beat, the back-off waits, the tap turns). They were loosened
     after one failed on a busy computer (a timer 49 ms late); a very busy machine could still trip them.
 12. No end-to-end run of the packaged app; no run with the real v8 VTuber; the Mac was not tried.
+
+## Fix round (after the independent review; the one and only)
+
+1. **The keys only while the Mask is chosen.** In the app the VTuber's state says which character is chosen
+   (`character: 'mask' | 'ryo' | 'melanie'`): the keys are now held only for the Mask, on top of the earlier rules
+   (`puppetWanted` in `core/puppet-keys.js`). Two things LIVE Link cannot know: (a) the VTuber's own "Puppet show"
+   switch is not in the state it sends, so with the Mask chosen and that switch off the keys are still held (if a
+   later VTuber adds `puppet: false` to its state, LIVE Link already gives the keys back); (b) a desktop-shortcut
+   VTuber (HTTP) does not say which character is chosen, so there the keys are held as before.
+2. **A TAKEN key is tried again every 30 s** while it is still wanted. One log line when it is found taken, one when
+   it comes free; the card is redrawn only when something changed; no timer is left when the LIVE ends or on quit.
+3. **The LIVE drops: "nothing on air" at once.** `vtuber-link.js` sends
+   `{ onAir: false, song: null, hype 0, score: null }` to a v2 VTuber as its last word the moment the TikTok
+   connection leaves "live" (before, the Mask kept the last song until its own 15 s time-out). When the LIVE is back,
+   or a VTuber starts listening mid-LIVE, the current state is sent at once (`ShowFeed.nudge`), not at the next 5 s beat.
+
+Not changed here (STAGE's side or a joint call): the review's S2 (STAGE counts show + control in the viewers' 10 a
+second; LIVE Link gives them their own 6) and S4 (covers over 300 kB are dropped by the VTuber's picture door; LIVE
+Link passes the site's full-size artwork address).
+
+Tests after the fix round: `npm test` 256 tests, 252 pass, 4 skip, 0 fail (v8-events 13, v8-show-feed 18, v8-keys 9).

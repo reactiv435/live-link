@@ -312,7 +312,7 @@ test('v2 taps in a big room: viewers who waited too long go out summed with no v
   const n = got.length;
   link.set('offline', null);
   await wait(150);
-  assert.equal(got.length, n);
+  assert.deepEqual(got.slice(n).map((e) => [e.type, e.onAir]), [['show', false]], 'only the "nothing on air" word; no late taps');
   v.stop();
 });
 
@@ -355,4 +355,40 @@ test('C4 control: only the three actions and the five moves; its own cap of 6 a 
   assert.equal(v.sendShow({ v: 2, type: 'comment' }), false);
   v.stop();
   assert.equal(v.sendControl('fight'), false, 'stopped');
+});
+
+// ---------------------------------------------------------------- the fix round
+
+test('fix round: the TikTok LIVE drops: a v2 VTuber is told "nothing on air" at once, as the last message; a v1 VTuber is told nothing', async () => {
+  for (const peer of [2, 1]) {
+    const link = new FakeLink();
+    const got = [];
+    const fn = Object.assign((ev) => { got.push(ev); return true; }, { v: peer });
+    const v = new VtuberLink({ http: false, direct: () => fn }).attach(link);
+    link.set('live');
+    if (peer === 2) assert.equal(v.sendShow({ v: 2, type: 'show', onAir: true, song: { id: 'sub-1', title: 'Test Song', cover: null }, hype: { taps: 950, rank: 3, label: 'ON FIRE', mythic: 0 }, score: null, at: 5 }), true);
+    for (const drop of ['reconnecting', 'offline']) {
+      const n = got.length;
+      link.set(drop);                                                   // dropped (it is retried), or the LIVE ended
+      const more = got.slice(n);
+      if (peer === 2) assert.deepEqual(more.map((m) => ({ ...m, at: 0 })), [{ v: 2, type: 'show', onAir: false, song: null, hype: { taps: 0, rank: 0, label: 'Tap to hype it up', mythic: 0 }, score: null, at: 0 }], drop);
+      else assert.equal(more.length, 0);
+      link.set(drop);                                                   // said again: not sent twice
+      assert.equal(got.length, n + (peer === 2 ? 1 : 0));
+      link.set('live');
+    }
+    v.stop();
+  }
+  // over HTTP: one POST, sent before the sending is switched off
+  const srv = vtuberServer(2); await srv.listen();
+  const link = new FakeLink();
+  const v = new VtuberLink({ port: srv.port }).attach(link);
+  try {
+    link.set('live');
+    assert.ok(await until(() => v.ok));
+    link.set('offline', null);
+    assert.ok(await until(() => srv.events('show').length === 1), 'the last word reached the VTuber');
+    assert.equal(srv.events('show')[0].onAir, false);
+    assert.equal(v.sendShow({ v: 2, type: 'show', onAir: true }), false, 'after it: nothing more');
+  } finally { v.stop(); await srv.close(); }
 });

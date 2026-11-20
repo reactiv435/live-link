@@ -16,7 +16,7 @@ const { VtuberLink } = require('./core/vtuber-link');
 const { VtuberHost, vtuberCard, vtuberEnabled } = require('./core/vtuber-host');
 const { setupVtuberSession } = require('./core/vtuber-session');
 const { ShowFeed } = require('./core/show-feed');
-const { PuppetKeys, setKey: setPuppetKey, DEFAULT_KEYS: PUPPET_DEFAULT_KEYS, STREAM_DECK_KEYS } = require('./core/puppet-keys');
+const { PuppetKeys, puppetWanted, setKey: setPuppetKey, DEFAULT_KEYS: PUPPET_DEFAULT_KEYS, STREAM_DECK_KEYS } = require('./core/puppet-keys');
 const { coverHosts } = require('./core/pictures');
 const { EventEmitter } = require('events');
 const SITE = require('./site-config.json');
@@ -342,10 +342,12 @@ const vtuberOn = () => !(ctl && vtuberEnabled(ctl.cfg) === false);
 // V8: the card's "Puppet show keys" part: only when the VTuber in this install understands the keys (contract v2)
 const puppetNow = () => (puppetKeys && vtHost && vtHost.wire >= 2 ? puppetKeys.getState() : null);
 const vtuberCardNow = () => ({ ...vtuberCard(vtHost ? vtHost.getState() : null, { enabled: vtuberOn(), platform: process.platform }), open: !!(vtWin && !vtWin.isDestroyed()), puppet: puppetNow() });
-// the keys are held only while a VTuber that understands them is listening and a TikTok LIVE is connected
+// The keys are held only while a VTuber that understands them is listening, a TikTok LIVE is connected, AND the
+// chosen character is the Mask (the puppet moves are the Mask's: with Ryo or Melanie the keys would do nothing and
+// still be taken from every other program). core/puppet-keys.js puppetWanted has the rule.
 function syncPuppetKeys() {
   if (!puppetKeys) return;
-  puppetKeys.setWanted(!!(vtuber && vtuber.canControl) && vtuberOn());
+  puppetKeys.setWanted(puppetWanted({ canControl: !!(vtuber && vtuber.canControl), enabled: vtuberOn(), inApp: !!(vtHost && vtHost.running), vt: vtHost ? vtHost.vt : null }));
   sendVtuber();
 }
 let vtCardKey = '';
@@ -542,7 +544,7 @@ app.whenReady().then(async () => {
   const vtDirect = (ev) => vtHost.event(ev);
   Object.defineProperty(vtDirect, 'v', { get: () => (vtHost ? vtHost.wire : 1) });
   vtuber = new VtuberLink({
-    log, direct: () => (vtHost && vtHost.running ? vtDirect : null), onChange: () => syncPuppetKeys(),
+    log, direct: () => (vtHost && vtHost.running ? vtDirect : null), onChange: () => { syncPuppetKeys(); if (showFeed && vtuber && vtuber.canControl) showFeed.nudge(); },
     // a test run never asks the real VTuber's place (8791) on this computer: HTTP only to a place the test names
     ...(TEST_RUN ? (testHttpPort && testHttpPort !== 8791 ? { port: testHttpPort } : { http: false }) : {}),
   });
@@ -555,7 +557,7 @@ app.whenReady().then(async () => {
     send: (m) => vtuber.sendShow(m), wanted: () => vtuber.canControl });
   // V8: the puppet keys. A test run never takes a real key from this computer.
   puppetKeys = new PuppetKeys({
-    keys: store.get('puppetKeys'), enabled: store.get('puppetKeysOn') !== false, log,
+    keys: store.get('puppetKeys'), enabled: store.get('puppetKeysOn') !== false, log, onChange: () => sendVtuber(),
     send: (action, name) => vtuber.sendControl(action, name),
     register: TEST_RUN ? () => true : (acc, fn) => globalShortcut.register(acc, fn),
     unregister: TEST_RUN ? () => {} : (acc) => globalShortcut.unregister(acc),

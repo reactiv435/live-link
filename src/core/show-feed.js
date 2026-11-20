@@ -202,6 +202,9 @@ class ShowFeed {
     } else if (this.song && t && text(t.title, 80) !== this.song.title) { this.song.title = text(t.title, 80); this._emit(true); }
   }
 
+  /** A VTuber just started listening (or the LIVE is back after a drop): the state is sent again now, not at the next 5 s beat. */
+  nudge() { if (this.stopped || !this.connected) return; this.lastSentKey = ''; this.lastSentAt = -Infinity; this._emit(true); }
+
   stop() { this.stopped = true; this.connected = false; this._offAir(false); this._stopTick(); }
 
   // ---------------------------------------------------------------- the message

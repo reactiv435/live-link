@@ -7,7 +7,7 @@ const EventEmitter = require('events');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { PuppetKeys, ACTIONS, KEY_CHOICES, DEFAULT_KEYS, STREAM_DECK_KEYS, REPEAT_MS, cleanKeys, setKey } = require('../src/core/puppet-keys');
+const { PuppetKeys, ACTIONS, KEY_CHOICES, DEFAULT_KEYS, STREAM_DECK_KEYS, REPEAT_MS, RETRY_TAKEN_MS, cleanKeys, setKey } = require('../src/core/puppet-keys');
 const { VtuberLink } = require('../src/core/vtuber-link');
 const { VtuberHost } = require('../src/core/vtuber-host');
 
@@ -185,4 +185,58 @@ test('which contract the VTuber in this install speaks: 2 when its files know th
   // show and control ride the same in-app message as the viewers' events
   assert.equal(host.event({ v: 2, type: 'control', action: 'fight', name: '', at: 1 }), true);
   assert.deepEqual(posts, [{ t: 'event', ev: { v: 2, type: 'control', action: 'fight', name: '', at: 1 } }]);
+});
+
+// ---------------------------------------------------------------- the fix round (the review's points)
+
+test('fix round: the keys are held only while the Mask is the chosen character (in the app); a desktop-shortcut VTuber does not say, so there they are held as before', () => {
+  const { puppetWanted } = require('../src/core/puppet-keys');
+  const on = { canControl: true, enabled: true, inApp: true };
+  assert.equal(puppetWanted({ ...on, vt: { character: 'mask', on: true } }), true);
+  assert.equal(puppetWanted({ ...on, vt: { character: 'ryo', on: true } }), false, 'Ryo: the keys stay with the other programs');
+  assert.equal(puppetWanted({ ...on, vt: { character: 'melanie' } }), false);
+  assert.equal(puppetWanted({ ...on, vt: { character: null } }), false, 'no character chosen yet');
+  assert.equal(puppetWanted({ ...on, vt: null }), false, 'the VTuber has not said anything yet');
+  assert.equal(puppetWanted({ ...on, vt: { character: 'mask', puppet: false } }), false, 'a later VTuber that reports its Puppet show switch off');
+  assert.equal(puppetWanted({ ...on, canControl: false, vt: { character: 'mask' } }), false, 'no LIVE or no v2 VTuber');
+  assert.equal(puppetWanted({ ...on, enabled: false, vt: { character: 'mask' } }), false, 'the site switched the card off');
+  assert.equal(puppetWanted({ canControl: true, enabled: true, inApp: false, vt: null }), true, 'over HTTP the character is not known');
+  assert.equal(puppetWanted(), false);
+  // switching character during a LIVE takes the keys and gives them back
+  const { kb, pk } = keys();
+  for (const [character, held] of [['mask', 7], ['ryo', 0], ['mask', 7], ['melanie', 0]]) { pk.setWanted(puppetWanted({ ...on, vt: { character } })); assert.equal(kb.held.size, held, character); }
+});
+
+test('fix round: a TAKEN key is tried again every 30 s while it is still wanted; it works once the other program lets go; one log line, not one per try', () => {
+  const timers = [];
+  const kb = keyboard({ taken: ['Control+Alt+3'] });
+  const logs = [], changes = [];
+  const pk = new PuppetKeys({ register: kb.register, unregister: kb.unregister, send: () => true, log: (l, m) => logs.push(`${l} ${m}`), onChange: () => changes.push(1),
+    setTimeout: (fn, ms) => { const t = { fn, ms, dead: false }; timers.push(t); return t; }, clearTimeout: (t) => { if (t) t.dead = true; } });
+  const live = () => timers.filter((t) => !t.dead);
+  const fire = () => { const t = live()[0]; t.dead = true; t.fn(); };
+  assert.equal(RETRY_TAKEN_MS, 30000);
+  pk.setWanted(true);
+  assert.deepEqual(live().map((t) => t.ms), [30000], 'one retry is waiting');
+  const tries = () => kb.calls.filter((c) => c[0] === '+' && c[1] === 'Control+Alt+3').length;
+  assert.equal(tries(), 1);
+  for (let i = 0; i < 5; i++) fire();                                  // 2.5 minutes, still taken
+  assert.equal(tries(), 6);
+  assert.equal(kb.calls.filter((c) => c[0] === '+' && c[1] === 'Control+Alt+1').length, 1, 'the keys that work are not touched by a retry');
+  assert.deepEqual(logs, ['warn puppet key Ctrl+Alt+3 (Melt) is taken by another program'], 'said once');
+  assert.equal(changes.length, 0, 'nothing changed: the card is not redrawn');
+  kb.taken.delete('Control+Alt+3');                                    // the other program closed
+  fire();
+  assert.equal(pk.getState().rows.find((r) => r.id === 'melt').state, 'held');
+  assert.equal(changes.length, 1, 'the card is told');
+  assert.equal(live().length, 0, 'nothing left to retry: no timer');
+  assert.deepEqual(logs.slice(1), ['info puppet key Ctrl+Alt+3 (Melt) is free again: it works now']);
+  // no longer wanted (the LIVE ended): the retry stops
+  kb.taken.add('Control+Alt+5'); pk.setWanted(false); pk.setWanted(true);
+  assert.equal(live().length, 1);
+  pk.setWanted(false);
+  assert.equal(live().length, 0);
+  pk.setWanted(true); pk.release();
+  assert.equal(live().length, 0, 'quit: no timer left');
+  assert.equal(kb.held.size, 0);
 });
