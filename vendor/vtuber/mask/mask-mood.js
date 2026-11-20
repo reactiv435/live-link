@@ -106,5 +106,44 @@
     for (const key of ['shade', 'shade2', 'key', 'accent']) { const k = q.k || (bg === 'ice' ? 0.92 : 0.72), m = lerp3(p[key], q[key], k), s = Math.max(0.6, Math.min(1.5, lum(p[key]) / Math.max(0.05, lum(PAL.home[key])))); o[key] = [m[0] * (0.6 + 0.4 * s), m[1] * (0.6 + 0.4 * s), m[2] * (0.6 + 0.4 * s)]; }
     return o;
   }
-  return { create, tint, PAL, BG };
+  /**
+   * V7: A COLOUR HE PICKED. `c` = his colour in linear light [r, g, b]; `p` = what the song and his face made of the
+   * house palette this frame (mood.step). The face keeps its 3D look: the shade (shadow and rim) is his colour made
+   * deeper, the forehead end of the gradient is his colour as picked, the key light and the lines stay a white that
+   * only leans toward it (so the lit side still reads as light on a form, and lips, lids and iris still glow).
+   * music = true: the song and his face still move it AROUND his colour (hype lifts it toward its own white-hot, calm
+   * deepens it, the drop flashes in its tint, a smile brightens, a frown darkens). music = false: it holds.
+   */
+  function custom(p, c, music) {
+    const mx = Math.max(c[0], c[1], c[2], 1e-3), mn = Math.min(c[0], c[1], c[2]), n = [c[0] / mx, c[1] / mx, c[2] / mx], sat = 1 - mn / mx;
+    const W = [1, 1, 1], mul = (v, k) => [v[0] * k, v[1] * k, v[2] * k];
+    const deep = [Math.pow(n[0], 1.5), Math.pow(n[1], 1.5), Math.pow(n[2], 1.5)];
+    // a pale colour (chrome) as a shade must be dimmer, or the whole face is one white; a rich one may be full
+    const body = 0.62 + 0.38 * sat, value = 0.55 + 0.45 * Math.sqrt(mx);
+    let shade = mul(deep, 1.04 * body), shade2 = mul(lerp3(n, W, 0.06), 1.06 * (0.8 + 0.2 * body)), key = lerp3(W, n, 0.14 + 0.44 * sat), accent = lerp3(W, n, 0.18 + 0.30 * sat), gain = value, flash = [0, 0, 0, 0];
+    if (music && p) {
+      const hype = p.hype || 0, calm = p.calm || 0, smile = p.smile || 0, frown = p.frown || 0;
+      gain *= p.gain;                                                        // the brightness the song and the face give, as in Auto
+      // hype: brighter and a little toward its own white, but it stays HIS colour (a wash to white would be pastel)
+      const hot = mul(lerp3(n, W, 0.16), 1.35);
+      shade = lerp3(shade, hot, 0.5 * Math.min(1, hype * 1.7)); shade2 = lerp3(shade2, mul(lerp3(n, W, 0.28), 1.45), 0.5 * hype); key = mul(lerp3(key, W, 0.25 * hype), 1 + 0.3 * hype); accent = mul(accent, 1 + 0.4 * hype);
+      shade = mul(shade, 1 - 0.14 * calm);
+      shade2 = lerp3(shade2, mul(lerp3(n, W, 0.35), 1.25), 0.5 * smile);
+      shade = lerp3(shade, mul(deep, 0.36), 0.85 * frown); shade2 = lerp3(shade2, mul(deep, 0.42), 0.85 * frown); key = lerp3(key, shade, 0.8 * frown); accent = lerp3(accent, mul(n, 0.9), 0.6 * frown);
+      if (p.flash && p.flash[3] > 0) { const t = lerp3(W, n, 0.3); flash = [t[0], t[1], t[2], p.flash[3]]; }
+    }
+    return { shade, shade2, key, accent, gain, flash, calm: p ? p.calm : 0, hype: p ? p.hype : 0, smile: p ? p.smile : 0, frown: p ? p.frown : 0, custom: true };
+  }
+  /** the two colours of the Visualizer for a picked colour (its body, its light) */
+  function customViz(c) {
+    const mx = Math.max(c[0], c[1], c[2], 1e-3), n = [c[0] / mx, c[1] / mx, c[2] / mx];
+    return [[1.3 * Math.pow(n[0], 1.4), 1.3 * Math.pow(n[1], 1.4), 1.3 * Math.pow(n[2], 1.4)], lerp3([1.2, 1.2, 1.2], [1.2 * n[0], 1.2 * n[1], 1.2 * n[2]], 0.45)];
+  }
+  /** '#rrggbb' -> linear light [r, g, b] (null for anything else) */
+  function hexLinear(hex) {
+    if (typeof hex !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(hex)) return null;
+    const f = (i) => { const v = parseInt(hex.slice(i, i + 2), 16) / 255; return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+    return [f(1), f(3), f(5)];
+  }
+  return { create, tint, custom, customViz, hexLinear, PAL, BG };
 });

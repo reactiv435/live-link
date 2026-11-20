@@ -199,7 +199,7 @@ async function startOneClick(opts = {}) {
     on = !!on;
     if (on === S.mask) return;
     S.mask = on;
-    log(on ? 'the Mask is chosen' : 'the Mask is no longer chosen');
+    log(on ? 'the music is listened to (the Mask is chosen, or shuffle to the beat is on)' : 'the music is no longer listened to');
     sound.want(on);
     link.subscribe(on ? 65536 : 0);
     if (on) meterInputs();
@@ -713,7 +713,7 @@ async function startOneClick(opts = {}) {
     if (msg.t === 'perf' || msg.t === 'mic') { seen(); return; }
     if (msg.t !== 'avatar') return;
     S.lastAvatar = msg;
-    setMask(msg.mask === true);
+    setMask(msg.mask === true || (typeof msg.shuffle === 'string' && msg.shuffle !== ''));   // V7: shuffle to the beat on Ryo / Melanie needs the music too
     const on = msg.on === true;
     if (on !== S.on) queue(() => applyOn(on));
   }

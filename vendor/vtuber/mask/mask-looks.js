@@ -1311,14 +1311,20 @@
       cam[1] += hUp;
       const view = M4.lookAt(cam, [-KK[0] * 0.05, VIEW.targetY - KK[1] * 0.04 + hUp, 0], [0, 1, 0]);
       const proj = M4.perspective(VIEW.fov, G.W / G.H, 2, 60);
-      const vp = M4.mul(proj, view);
+      // V7: where the face sits and how big it is (S.place = { zoom, x, y }, x / y in parts of the picture, + = right / up).
+      // Done AFTER the camera, on the finished picture positions, so the face and everything that belongs to it (its
+      // points, missiles, rings, the Visualizer's formation) move and grow together; the background and the drifting
+      // dust are drawn with the plain camera (vp0) and stay full frame.
+      const vp0 = M4.mul(proj, view), PLC = S.place || null, ps = PLC ? PLC.zoom : 1, pox = PLC ? 2 * PLC.x : 0, poy = PLC ? 2 * PLC.y : 0;
+      let vp = vp0;
+      if (PLC && (ps !== 1 || pox || poy)) { vp = vp0.slice(); for (let c = 0; c < 4; c++) { vp[c * 4] = ps * vp0[c * 4] + pox * vp0[c * 4 + 3]; vp[c * 4 + 1] = ps * vp0[c * 4 + 1] + poy * vp0[c * 4 + 3]; } }
       const FX = S.fx || null, PAL = S.palette || null;
       const hx = S.head.x, hy = S.head.y, sc = S.head.scale * (FX ? FX.scale * (1 + 0.03 * FX.pulse) : 1);
       const model = M4.trs(S.head.R, sc, [hx, hy, 0]);
       const BGI = Math.max(0, BG_NAMES.indexOf(S.bg)), VIZ = FX ? FX.viz : 0;
       // the visualizer: which formation (and the one it is leaving), and how far the music has carried it
       const FORM = FX && FX.form ? FX.form : [S.viz || 'orb', S.viz || 'orb', 1];
-      const VZF = [Math.max(0, VIZ_NAMES.indexOf(FORM[0])), Math.max(0, VIZ_NAMES.indexOf(FORM[1]))], VZK = FORM[2], VC = VIZ_COL[BGI];
+      const VZF = [Math.max(0, VIZ_NAMES.indexOf(FORM[0])), Math.max(0, VIZ_NAMES.indexOf(FORM[1]))], VZK = FORM[2], VC = S.vizCol || VIZ_COL[BGI];
       vizStep(t, A, S.kicks, S.hits);
       const fa = FX ? FX.flash : [0, 0, 0, 0], fb = PAL && PAL.flash ? PAL.flash : [0, 0, 0, 0], flashU = fa[3] >= fb[3] ? fa : fb;
       const envRot = 0.22 * Math.sin(t * 0.19) + 0.10 * Math.sin(t * 0.43 + 2.0);
@@ -1331,7 +1337,7 @@
       const hc = [hx, hy - 0.45 * sc, 0];
       const cw = vp[3] * hc[0] + vp[7] * hc[1] + vp[11] * hc[2] + vp[15];
       const hs = [(vp[0] * hc[0] + vp[4] * hc[1] + vp[8] * hc[2] + vp[12]) / cw, (vp[1] * hc[0] + vp[5] * hc[1] + vp[9] * hc[2] + vp[13]) / cw];
-      const headR = 1.15 * sc / VIEW.halfH;
+      const headR = 1.15 * sc * ps / VIEW.halfH;
 
       gl.bindBuffer(gl.ARRAY_BUFFER, bPos); gl.bufferSubData(gl.ARRAY_BUFFER, 0, core.pos);
       gl.bindBuffer(gl.ARRAY_BUFFER, bNrm); gl.bufferSubData(gl.ARRAY_BUFFER, 0, core.nrm);
@@ -1351,7 +1357,7 @@
       const bgStyle = look === 'chrome' ? 0 : look === 'particles' || V2[look] ? 1 : look === 'obsidian' ? 2 : 1;
       // where the black hole's dark is in the picture (its middle is the formations' middle), and how much of it is there
       const bc = [0, -0.55, 0], bw = vp[3] * bc[0] + vp[7] * bc[1] + vp[11] * bc[2] + vp[15], holeW = VIZ * ((VZF[0] === 4 ? VZK : 0) + (VZF[1] === 4 && VZF[0] !== 4 ? 1 - VZK : 0));
-      const hole = [(vp[0] * bc[0] + vp[4] * bc[1] + vp[8] * bc[2] + vp[12]) / bw, (vp[1] * bc[0] + vp[5] * bc[1] + vp[9] * bc[2] + vp[13]) / bw, 0.50 * (1.0 + 0.05 * A.bass - 0.10 * VZ.env[0]) * proj[5] / bw, Math.max(0, Math.min(1, holeW * 1.6 - 0.6))];
+      const hole = [(vp[0] * bc[0] + vp[4] * bc[1] + vp[8] * bc[2] + vp[12]) / bw, (vp[1] * bc[0] + vp[5] * bc[1] + vp[9] * bc[2] + vp[13]) / bw, 0.50 * (1.0 + 0.05 * A.bass - 0.10 * VZ.env[0]) * ps * proj[5] / bw, Math.max(0, Math.min(1, holeW * 1.6 - 0.6))];
       common(pBg).u('uHead', hs).u('uAspect', G.W / G.H).u('uHeadR', headR).ui('uStyle', bgStyle).u('uHole', hole);
       G.fsTri();
       gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LEQUAL); gl.depthMask(true);
@@ -1374,8 +1380,8 @@
         common(pPart); G.bindTex(0, part.posTex.tex); G.bindTex(1, part.nrmTex.tex);
         pPart.ui('uPosTex', 0).ui('uNrmTex', 1).u('uPx', G.H * 0.017).u('uFocus', VIEW.dist - 0.35 * sc).u('uDof', G.H * 0.0032);
         pPart.ui('uMode', 2); gl.bindVertexArray(part.dust.vao);
-        pPart.u('uModel', M4.trs([1, 0, 0, 0, 1, 0, 0, 0, 1], 1, [0, 0, 0])); gl.drawArrays(gl.POINTS, 0, part.dust.n);
-        pPart.u('uModel', model);
+        pPart.u('uViewProj', vp0).u('uModel', M4.trs([1, 0, 0, 0, 1, 0, 0, 0, 1], 1, [0, 0, 0])); gl.drawArrays(gl.POINTS, 0, part.dust.n);
+        pPart.u('uViewProj', vp).u('uModel', model).u('uPx', G.H * 0.017 * ps).u('uDof', G.H * 0.0032 * ps);
         pPart.ui('uMode', 0); gl.bindVertexArray(part.face.vao); gl.drawArrays(gl.POINTS, 0, part.face.n);
         pPart.ui('uMode', 1); gl.bindVertexArray(part.eye.vao);
         for (const e of core.eyes) { pPart.u('uEyeC', e.c).u('uEyeR', e.r).u('uGaze', e.gaze).u('uEyeOpen', e.open); gl.drawArrays(gl.POINTS, 0, part.eye.n); }
@@ -1390,8 +1396,8 @@
         common(pPart2); G.bindTex(0, pt.posTex.tex); G.bindTex(1, pt.nrmTex.tex);
         pPart2.ui('uPosTex', 0).ui('uNrmTex', 1).u('uPx', G.H * v2.px).u('uFocus', VIEW.dist - 0.35 * sc).u('uDof', G.H * v2.dof)
           .u('uKey', v2.key).u('uAmb', v2.amb).u('uRim', v2.rim).u('uLine', v2.line).u('uLineWhite', v2.lineWhite).u('uBurst', v2.burst).u('uKickAmt', v2.kick).u('uSparkle', v2.sparkle).u('uWave', v2.wave);
-        pPart2.ui('uMode', 2).u('uModel', M4.trs([1, 0, 0, 0, 1, 0, 0, 0, 1], 1, [0, 0, 0])); gl.bindVertexArray(pt.dust.vao); gl.drawArrays(gl.POINTS, 0, pt.dust.n);
-        pPart2.u('uModel', model);
+        pPart2.ui('uMode', 2).u('uViewProj', vp0).u('uModel', M4.trs([1, 0, 0, 0, 1, 0, 0, 0, 1], 1, [0, 0, 0])); gl.bindVertexArray(pt.dust.vao); gl.drawArrays(gl.POINTS, 0, pt.dust.n);
+        pPart2.u('uViewProj', vp).u('uModel', model).u('uPx', G.H * v2.px * ps).u('uDof', G.H * v2.dof * ps);
         pPart2.ui('uMode', 3); gl.bindVertexArray(pt.tail.vao); gl.drawArrays(gl.POINTS, 0, pt.tail.n);
         pPart2.ui('uMode', 4);
         for (const k of HEADP) { const hs = headSets[k] || (headSets[k] = buildHeadSet(k)); gl.bindVertexArray(hs.vao); gl.drawArrays(gl.POINTS, 0, hs.n); }
@@ -1459,13 +1465,16 @@
           // lock-on / build-up: a glint at the edge of the picture: a hard point of light with a thin flare through it
           for (const gz of FX.glints) {
             const e = Math.sin(Math.PI * Math.min(1, gz.k)), k2 = e * e * (0.75 + 0.25 * Math.sin(gz.k * 40)), c = gz.col;
-            const gx = gz.side * 1.12 * back, gy = VIEW.targetY + gz.y * back, gzz = 1.0;
-            put(gx, gy, gzz, (c[0] * 0.3 + 0.7) * 16 * k2, (c[1] * 0.3 + 0.7) * 16 * k2, (c[2] * 0.3 + 0.7) * 16 * k2, gz.size * 3.2);
-            put(gx, gy, gzz, c[0] * 2.2 * k2, c[1] * 2.2 * k2, c[2] * 2.2 * k2, gz.size * 13);
-            for (let j = 1; j <= 16; j++) { const f = 1 - j / 17, br = 3.2 * f * f * k2, o2 = j * 0.028 * gz.size * (0.6 + 0.4 * e); put(gx + o2, gy, gzz, c[0] * br, c[1] * br, c[2] * br, 1.5 * f + 0.5); put(gx - o2, gy, gzz, c[0] * br, c[1] * br, c[2] * br, 1.5 * f + 0.5); if (j <= 6) { put(gx, gy + o2 * 0.6, gzz, c[0] * br, c[1] * br, c[2] * br, 1.2 * f + 0.4); put(gx, gy - o2 * 0.6, gzz, c[0] * br, c[1] * br, c[2] * br, 1.2 * f + 0.4); } }
+            // the glint sits at the EDGE OF THE PICTURE wherever the face has been moved to: its place is worked back
+            // through the move (hw / hh: half the picture's width / height at the glint's depth), its size is not scaled
+            const gzz = 1.0, hh = Math.tan(VIEW.fov / 2) * (cam[2] - gzz), hw = hh * G.W / G.H;
+            const gx = (gz.side * 1.12 * back - pox * hw) / ps, gy = VIEW.targetY + (gz.y * back - poy * hh) / ps, gsz = gz.size / ps;
+            put(gx, gy, gzz, (c[0] * 0.3 + 0.7) * 16 * k2, (c[1] * 0.3 + 0.7) * 16 * k2, (c[2] * 0.3 + 0.7) * 16 * k2, gsz * 3.2);
+            put(gx, gy, gzz, c[0] * 2.2 * k2, c[1] * 2.2 * k2, c[2] * 2.2 * k2, gsz * 13);
+            for (let j = 1; j <= 16; j++) { const f = 1 - j / 17, br = 3.2 * f * f * k2, o2 = j * 0.028 * gsz * (0.6 + 0.4 * e); put(gx + o2, gy, gzz, c[0] * br, c[1] * br, c[2] * br, (1.5 * f + 0.5) / ps); put(gx - o2, gy, gzz, c[0] * br, c[1] * br, c[2] * br, (1.5 * f + 0.5) / ps); if (j <= 6) { put(gx, gy + o2 * 0.6, gzz, c[0] * br, c[1] * br, c[2] * br, (1.2 * f + 0.4) / ps); put(gx, gy - o2 * 0.6, gzz, c[0] * br, c[1] * br, c[2] * br, (1.2 * f + 0.4) / ps); } }
           }
           gl.bindBuffer(gl.ARRAY_BUFFER, fxBuf); gl.bufferSubData(gl.ARRAY_BUFFER, 0, fxData.subarray(0, n * 7));
-          pFx.use().u('uViewProj', vp).u('uPx', G.H * 0.066); gl.bindVertexArray(fxVao); gl.disable(gl.DEPTH_TEST); gl.drawArrays(gl.POINTS, 0, n); gl.enable(gl.DEPTH_TEST);
+          pFx.use().u('uViewProj', vp).u('uPx', G.H * 0.066 * ps); gl.bindVertexArray(fxVao); gl.disable(gl.DEPTH_TEST); gl.drawArrays(gl.POINTS, 0, n); gl.enable(gl.DEPTH_TEST);
         }
         gl.disable(gl.BLEND); gl.depthMask(true);
       }

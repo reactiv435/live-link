@@ -136,6 +136,23 @@
     gestBeat: 0.075, gestDrift: 0.025,     // shares of the arm's reach: the bob on a syllable, the slow wander
     gestPointEvery: 6000,                 // an emphasis may bring a point at most this often (ms)
     fadeInMs: 140,        // a returning arm eases in over this long (up to 2.5 times longer when the hand has far to travel)
+    // --- V7: his hands at the edge of the picture, and his torso.
+    //     edgeArms: an arm the tracker reports with src 'edge' (a hand half out of the picture, a wrist half seen at the
+    //     bottom edge) is followed, with a softer spring (its place is rougher) and a longer hold (it comes and goes).
+    //     torsoCue: with no hand of his in the picture, a talk gesture may also start when his TORSO moves (tilt, twist,
+    //     lean, shrug), not only on an emphasis in his voice: on his footage torso motion is the one cue above chance for
+    //     "his hands are moving under the picture" (0.60 against 0.47 for the voice; review/V7-TRACKING-NOTES.md).
+    //     shrugLiftArm: a shrug of BOTH his shoulders swings the resting arms forward a little, by his own shrug amount
+    //     (degrees at a full shrug). One raised shoulder alone does nothing: that is him drinking or leaning (fix B4).
+    //     avatar.html?v7arms=0 (or body.params.edgeArms / torsoCue = false, shrugLiftArm = 0) switches all three off.
+    edgeArms: true, edgeMix: 0.55, edgeHoldMs: 450,
+    torsoCue: true, torsoCueAt: 0.55, torsoCueRestS: 0.9,
+    // fix round (review S4): the cue is the START of a torso move, not motion as such. A host who nods along to a song or
+    // rocks in the chair moves all the time: as a level the cue was on 67 - 100 % of his talk and an invented arm was up
+    // half of it (33 % with a still torso). Now the motion must rise torsoOnset over its own running level (about
+    // torsoSlowS seconds), from a level under torsoCalm, and one start counts once in torsoEveryS seconds.
+    torsoOnset: 0.4, torsoCalm: 0.4, torsoSlowS: 4, torsoEveryS: 7,
+    shrugLiftArm: 14,
     poleDefault: [0.4, -0.88, -0.25],   // where the elbow points when his elbow is not seen: down, a little out and back (x is mirrored per side)
     poleFromElbow: 0.45,  // how much of his real elbow direction is used when it is seen
     minReach: 0.38,       // the hand never comes closer to the shoulder than this share of the arm length
@@ -207,6 +224,9 @@
   function create(scene, hero, opts) {
     if (!hero || !hero.root) throw new Error('VTBody.create: hero.root is missing');
     const P = Object.assign({}, DEFAULTS, opts || {});
+    try {
+      if (typeof location !== 'undefined' && location && new URLSearchParams(location.search || '').get('v7arms') === '0') { P.edgeArms = false; P.torsoCue = false; P.shrugLiftArm = 0; }
+    } catch (e) { /* no page: the defaults */ }
     const rig = findRig(hero);
     const random = rng(hero.id === 'melanie' ? 7411 : 2903);
 
@@ -379,6 +399,7 @@
         tail: rig.tails.map(() => ({ a: { x: 0, v: 0 }, b: { x: 0, v: 0 }, y: { x: 0, v: 0 } })),
         vel: { p: null, v: [0, 0, 0], twist: 0, twistV: 0 },
         gest: { on: false, speakT: 0, quietT: 1e9, nextAt: 0, pointAt: -1e9, handAt: -1e9, arm: { l: gestArm(), r: gestArm() } },
+        move: { prev: null, act: 0, side: 0, slow: 0, onsetAt: -1e9, cue: false },
         frames: 0,
       };
     }
@@ -389,7 +410,8 @@
     // ---- perf -> a flat sample
     function readArm(a) {
       if (!a || !vec3ok(a.wrist)) return null;
-      return { w: [a.wrist[0], a.wrist[1], a.wrist[2]], e: vec3ok(a.elbow) ? [a.elbow[0], a.elbow[1], a.elbow[2]] : null };
+      if (a.src === 'edge' && !P.edgeArms) return null;
+      return { w: [a.wrist[0], a.wrist[1], a.wrist[2]], e: vec3ok(a.elbow) ? [a.elbow[0], a.elbow[1], a.elbow[2]] : null, edge: a.src === 'edge' };
     }
     function readHand(h) {
       if (!h || !vec3ok(h.palm) || !vec3ok(h.dir)) return null;
@@ -435,7 +457,7 @@
     }
     const mixArm = (a, b, u) => {
       if (!b) return null; if (!a) return b;
-      return { w: lerp3(a.w, b.w, u), e: b.e ? (a.e ? lerp3(a.e, b.e, u) : b.e) : null };
+      return { w: lerp3(a.w, b.w, u), e: b.e ? (a.e ? lerp3(a.e, b.e, u) : b.e) : null, edge: b.edge };
     };
     const mixHand = (a, b, u) => {
       if (!b) return null; if (!a) return b;
@@ -633,6 +655,21 @@
       }
       fkFrom(0);
 
+      // 4a. V7: how much his torso is moving right now (0 = still .. 1 = clearly moving), and to which side
+      {
+        const Mv = S.move, now = bodySeen ? [sig.tilt, sig.twist, sig.lx * 30, sig.lz * 30, (sig.shrug[0] + sig.shrug[1]) * 12] : null;
+        let sp = 0;
+        if (now && Mv.prev && dt > 0) { for (let k = 0; k < 5; k++) sp += Math.abs(now[k] - Mv.prev[k]); sp /= dt; }       // about degrees a second
+        Mv.prev = now;
+        Mv.act += (clamp(sp / 26, 0, 1.5) - Mv.act) * (1 - Math.exp(-dt * (sp / 26 > Mv.act ? 9 : 2.2)));
+        if (bodySeen) Mv.side += ((sig.lx * 2 + sig.twist / 25 + sig.shrug[1] - sig.shrug[0]) - Mv.side) * (1 - Math.exp(-dt * 4));
+        // the start of a move: the motion rises over its own running level, out of calm; steady motion never does
+        const rise = Mv.act - Mv.slow, start = Mv.act > P.torsoCueAt && rise > P.torsoOnset && Mv.slow < P.torsoCalm && sec - Mv.onsetAt > P.torsoEveryS;
+        if (start) Mv.onsetAt = sec;
+        Mv.cue = sec - Mv.onsetAt < 0.6;                 // the start stands for a moment (a gesture may be finishing its rest)
+        Mv.slow += (Math.min(Mv.act, 1.5) - Mv.slow) * (1 - Math.exp(-dt / P.torsoSlowS));
+        debug.move = Mv.act; debug.moveCue = Mv.cue;
+      }
       // 4b. B1: talk gestures (what each arm would do if no hand of his is seen)
       gestures(ctx, sig, talk, tMs, dt, sec);
 
@@ -691,8 +728,12 @@
           G.resting = true; G.armed = false; G.nextAt = sec + rest;
         } else G.armed = true;                            // rested: the next emphasis starts a gesture
       }
-      if (G.armed && sec >= G.nextAt && (jump > P.gestCue || sec - G.nextAt > P.gestCueWaitS)) {
-        const hold = lerp(P.gestPhrase[0], P.gestPhrase[1], random()), r = random();
+      // V7: his torso moving is a cue too (and cuts the rest short), and it says which arm: the side he leans or turns to
+      const torso = P.torsoCue && S.move.cue;
+      if (torso && G.resting && !G.armed && sec >= G.nextAt - Math.max(0, P.gestRest[0] - P.torsoCueRestS)) { G.armed = true; G.nextAt = Math.min(G.nextAt, sec); }
+      if (G.armed && sec >= G.nextAt && (jump > P.gestCue || torso || sec - G.nextAt > P.gestCueWaitS)) {
+        const hold = lerp(P.gestPhrase[0], P.gestPhrase[1], random()), r0 = random();
+        const r = P.torsoCue && Math.abs(S.move.side) > 0.25 ? (S.move.side < 0 ? 0.2 : 0.6) : r0;      // the side he leans or turns to (fix round: on every gesture; it adds none)
         const names = ['rise', 'rise', 'open', 'beat', 'beat'];
         const one = (g) => { let n = names[Math.floor(random() * names.length)]; if (n === g.last) n = names[Math.floor(random() * names.length)]; return n; };
         if (r < 0.40) { pick(G.arm.l, one(G.arm.l), hold); pick(G.arm.r, null, hold); }
@@ -743,7 +784,9 @@
       const swayAng = (breath * P.breathArm + P.armSway * Math.sin(TAU * sec / 9.7 + (s === 'l' ? 0 : 2.1))) * RAD;
       // the chest's roll and the raised shoulder's turn, taken back at the shoulder joint of an arm that rests
       const hang = (clamp(-(S.roll || 0) * P.armHang, -P.armHangMax, P.armHangMax) - a.out * (a.shrugNow || 0) * P.shrugAngle * P.armHangShrug) * RAD;
-      const idleA = qnorm(qmul(qconj(N[nA.par].mq), qmul(qaxis([0, 0, 1], a.out * swayAng + hang), qmul(N[nA.par].mq, baseA))));
+      // V7: a shrug of both shoulders swings the resting arms forward a little (the "what can I say" of a shrug)
+      const lift = Math.min(sides.l.shrugNow || 0, sides.r.shrugNow || 0) * P.shrugLiftArm * RAD;
+      const idleA = qnorm(qmul(qconj(N[nA.par].mq), qmul(qmul(qaxis([1, 0, 0], -lift), qaxis([0, 0, 1], a.out * swayAng + hang)), qmul(N[nA.par].mq, baseA))));
       const shoulder = nA.mp;
       const sa = sig ? sig.arm[s] : null, sh = sig ? sig.hand[s] : null;
       if (sa) {
@@ -784,8 +827,9 @@
           }
         }
         goal = constrain(a, shoulder, goal, col, null, sh ? sh.dir : null);
+        st.edge = !!sa.edge;
         if (!st.have || st.lin <= 0) {
-          st.mix = 1;                                    // a fresh tracked arm: the quick spring at once
+          st.mix = sa.edge ? P.edgeMix : 1;              // a fresh tracked arm: the quick spring at once (an edge arm: the softer one)
           // a fresh arm: start the spring at the goal; the blend from the idle pose is the motion. The farther the
           // hand has to travel from where it hangs, the longer the blend (an arm cannot teleport overhead).
           st.pos = newSpring3(goal); st.pole = null; st.prevGoal = null; st.gv = [0, 0, 0];
@@ -803,7 +847,7 @@
         st.pole = st.pole ? norm(lerp3(st.pole, pole, 1 - Math.exp(-dt * 14))) : pole;
       }
       // how long a lost arm is held: 200 ms, or a little over one body check when those come slowly
-      const holdMs = Math.max(P.holdMs, Math.min(P.holdMaxMs, P.holdChecks * S.buf.gap));
+      const holdMs = Math.max(st.edge ? P.edgeHoldMs : P.holdMs, Math.min(P.holdMaxMs, P.holdChecks * S.buf.gap));
       const held = st.have && st.src === 'real' && tMs - st.seenAt < holdMs;
       // --- B1: no hand of his for this arm: a talk gesture, if one is wanted. The same spring carries the hand, so a
       //     tracked hand takes over (and hands back) without a jump.
@@ -821,7 +865,10 @@
       }
       const gesturing = st.src === 'gest' && tMs - st.gestAt < 120;
       const tracked = !!sa || held || gesturing;
-      st.mix = clamp(st.mix + (sa || held ? dt / 0.35 : -dt / 0.4), 0, 1);     // 1 = a tracked hand's quick spring, 0 = a gesture's soft one
+      {     // 1 = a tracked hand's quick spring, 0 = a gesture's soft one; an edge arm sits between (V7)
+        const top = st.edge ? P.edgeMix : 1;
+        st.mix = sa || held ? (st.mix > top ? Math.max(top, st.mix - dt / 0.35) : Math.min(top, st.mix + dt / 0.35)) : clamp(st.mix - dt / 0.4, 0, 1);
+      }
       st.lin = clamp(st.lin + (tracked ? dt * 1000 / (st.fadeIn || P.fadeInMs) : -dt * 1000 / (st.src === 'gest' ? P.gestFadeOutMs : P.fadeOutMs)), 0, 1);
       const g3 = gesture[s]; g3.w = gesturing ? smooth(st.lin) * (1 - st.mix) : 0; g3.name = gesturing ? S.gest.arm[s].name : null; g3.pose = gesturing && g3.name ? GEST[g3.name].pose : null;
       if (st.lin <= 0) st.have = false;
@@ -894,7 +941,7 @@
         if (tb) { q = tb; moved = true; }
         if (moved) { ikTo(a, q, st.pole, col); debug.pushes++; }
       }
-      debug.arms[s] = { src: st.have ? st.src : null, mix: st.mix, w, hand: st.handLin, goal: st.goal, target: st.target, wrist: nH.mp.slice(), elbow: nF.mp.slice(), shoulder: shoulder.slice(), pushed: st.pushed, curl: st.curl.x };
+      debug.arms[s] = { edge: !!(st.have && st.src === 'real' && st.edge), src: st.have ? st.src : null, mix: st.mix, w, hand: st.handLin, goal: st.goal, target: st.target, wrist: nH.mp.slice(), elbow: nF.mp.slice(), shoulder: shoulder.slice(), pushed: st.pushed, curl: st.curl.x };
     }
 
     function tails(tMs, dt, twist) {

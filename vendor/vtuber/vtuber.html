@@ -57,6 +57,31 @@
     .rest { grid-template-columns: 96px minmax(0, 1fr); } #pv { width: 96px; height: 170px; }
     #sentence { font-size: 18px; }
   }
+  /* V7: where you sit in the picture (drag + sliders), the Mask's colour, shuffle to the beat: in plain sight */
+  .card { margin-top: 14px; border: 1px solid var(--line); border-radius: 14px; background: #130e0c; padding: 12px 14px 14px; }
+  .card h2 { margin: 0 0 8px; font-size: 13px; letter-spacing: .14em; text-transform: uppercase; color: var(--chrome); font-weight: 700; }
+  .place { display: grid; grid-template-columns: 162px minmax(0, 1fr); gap: 14px; align-items: start; }
+  #stage { width: 162px; height: 288px; border-radius: 10px; background: #000; border: 1px solid var(--line2); display: block; touch-action: none; cursor: grab; }
+  #stage.drag { cursor: grabbing; border-color: var(--crimson2); }
+  #stageNote { font-size: 12px; color: var(--dim); margin-top: 4px; width: 162px; line-height: 1.3; }
+  .place .field { margin: 10px 0 4px; } .place .field:first-of-type { margin-top: 8px; }
+  .place .field span { color: var(--chrome); letter-spacing: 0; }
+  #placeReset { margin-top: 12px; width: 100%; }
+  .swatches { display: grid; grid-template-columns: repeat(9, minmax(0, 1fr)); gap: 6px; }
+  .sw { position: relative; aspect-ratio: 1; min-height: 34px; border-radius: 10px; border: 2px solid var(--line2); padding: 0; background: #120d0b; font-size: 11px; font-weight: 700; color: var(--text); }
+  .sw.sel { border-color: #fff; box-shadow: 0 0 0 2px var(--crimson2); }
+  .sw.auto { background: conic-gradient(from 210deg, #e01f3d, #ffb224, #efe6df, #e01f3d); text-shadow: 0 1px 3px #000, 0 0 6px #000; }
+  #swName { font-size: 14px; color: var(--chrome); margin: 8px 0 0; min-height: 20px; }
+  #wheelBox { display: grid; grid-template-columns: 170px minmax(0, 1fr); gap: 14px; align-items: center; margin-top: 10px; }
+  #wheel { width: 170px; height: 170px; touch-action: none; cursor: crosshair; display: block; }
+  .amt { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 10px; }
+  .amt .opt { min-height: 44px; text-shadow: none; }
+  #shuffleNow { font-size: 14px; color: var(--chrome); margin: 8px 0 0; min-height: 20px; }
+  @media (max-width: 480px) {
+    .place { grid-template-columns: 118px minmax(0, 1fr); gap: 10px; } #stage { width: 118px; height: 210px; } #stageNote { width: 118px; }
+    .swatches { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+    #wheelBox { grid-template-columns: 130px minmax(0, 1fr); } #wheel { width: 130px; height: 130px; }
+  }
   .mic { height: 12px; border-radius: 6px; background: #0e0a08; border: 1px solid var(--line2); overflow: hidden; margin-top: 8px; }
   .mic i { display: block; height: 100%; width: 0%; background: linear-gradient(90deg, #8f8880, #d9d2cb 60%, #ff3b57); }
   .miclabel { font-size: 12px; color: var(--dim); margin-top: 4px; }
@@ -105,6 +130,50 @@
     <div id="sound"></div>
   </div>
 
+  <!-- V7: move and size (all three). The picture is what OBS shows; he drags the character in it. -->
+  <div class="card" id="placeCard">
+    <h2 id="placeTitle">Where you sit in the picture</h2>
+    <div class="place">
+      <div><canvas id="stage" width="324" height="576" aria-label="The picture OBS shows. Drag the character to move it."></canvas><div id="stageNote"></div></div>
+      <div>
+        <p class="hint" id="placeHint" style="margin-top:0"></p>
+        <div class="field">Size <span id="zoomVal"></span></div><input type="range" id="zoom" min="0.5" max="2" step="0.01" aria-label="Size">
+        <div class="field">Left - right <span id="offxVal"></span></div><input type="range" id="offx" min="-0.5" max="0.5" step="0.005" aria-label="Left - right">
+        <div class="field">Down - up <span id="offyVal"></span></div><input type="range" id="offy" min="-0.5" max="0.5" step="0.005" aria-label="Down - up">
+        <button class="plain" id="placeReset">Reset: back to the middle</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- V7: the Mask's colour (only while the Mask is picked) -->
+  <div class="card" id="colourCard" hidden>
+    <h2>Mask colour</h2>
+    <div class="swatches" id="swatches"></div>
+    <p id="swName"></p>
+    <p class="hint" id="colourHint">Auto is crimson, and the music and your face shift it. Tap a colour to pick your own.</p>
+    <button class="plain" id="wheelToggle" style="margin-top:10px">Any other colour ...</button>
+    <div id="wheelBox" hidden>
+      <canvas id="wheel" width="340" height="340" aria-label="Colour wheel"></canvas>
+      <div>
+        <p class="hint" style="margin-top:0">Tap or drag in the wheel. Round the ring is the colour; the edge is rich, the middle is pale.</p>
+        <div class="field">Brightness</div><input type="range" id="bright" min="0.35" max="1" step="0.01" aria-label="Brightness">
+      </div>
+    </div>
+    <div id="colourMusicBox" hidden>
+      <button class="plain switch" id="colourMusic"><span>Music moves the colour</span><i></i></button>
+      <p class="hint" id="colourMusicHint"></p>
+    </div>
+  </div>
+
+  <!-- V7: shuffle to the beat (all three) -->
+  <div class="card" id="shuffleCard">
+    <h2>Shuffle to the beat</h2>
+    <button class="plain switch" id="shuffle" style="margin-top:0"><span id="shuffleText">Change the look by itself, on the music</span><i></i></button>
+    <div class="amt" id="shuffleAmt"></div>
+    <p class="hint" id="shuffleHint"></p>
+    <p id="shuffleNow"></p>
+  </div>
+
   <div class="rest">
     <div><canvas id="pv" width="150" height="266"></canvas><div class="mic"><i id="micBar"></i></div><div class="miclabel" id="micLabel">Microphone</div></div>
     <div>
@@ -118,8 +187,6 @@
     <summary>More</summary>
     <div id="heroMore">
     <div class="field">Background</div><div class="row" id="bgs"></div>
-    <div class="field">Size <span id="zoomVal"></span></div><input type="range" id="zoom" min="0.6" max="1.8" step="0.02">
-    <div class="field">Height <span id="offyVal"></span></div><input type="range" id="offy" min="-0.3" max="0.3" step="0.01">
     </div>
     <div id="maskMore" hidden>
     <div class="field">Mask background</div><div class="row" id="maskBgs"></div>

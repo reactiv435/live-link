@@ -24,6 +24,13 @@
   const HANDS3D_ON = new URLSearchParams(location.search).get('hands3d') !== '0';
   const GESTURES_ON = new URLSearchParams(location.search).get('gestures') !== '0';   // ?gestures=0: no talk gestures (fix round B1; on by default)   // ?hands3d=0: the model's own hands (no fingers)
   const GIFTS_ON = new URLSearchParams(location.search).get('gifts') !== '0';         // ?gifts=0: no gift missiles on the heroes (round 5; on by default)
+  // V7 (js/v7-stage.js): ?place=0 the character sits at home, ?shuffle=0 no shuffle to the beat and no beat light, ?pv=0 no small picture
+  const Stage = window.VTStage || { KILL: {}, picture: () => null, preload() {}, fadeTo(el, paint) { paint(); } }, Beat = window.VTBeat || null;
+  /** where the character sits: size, left-right (+ = right in the picture), up-down (+ = up), in parts of the picture */
+  const placeOf = (a) => (Stage.KILL.place ? { zoom: 1, x: 0, y: 0 } : { zoom: a.zoom, x: a.offsetX || 0, y: Math.min(a.offsetY, L.placeUp ? L.placeUp('hero') : 0.36) });   // (up: the middle of the face stays in the picture)
+  // shuffle to the beat on the heroes: the backgrounds change on the phrase lines, and a rim of light pulses on the beat
+  const SH = { sh: null, amount: '', bg: null, pick: 0, pulse: 0, pulseAt: -1e9, changes: 0 };
+  const LIGHT = { calm: 0.45, normal: 0.75, wild: 1.0, rim: 1.5, key: 0.16, minGapMs: 340, fallMs: 170 };   // minGapMs: never more than 3 pulses a second
   const canvas = document.getElementById('stage');
   const RAD = Math.PI / 180;
   const errors = [];
@@ -82,6 +89,10 @@
   sky.intensity = 0.9; sky.diffuse = new B.Color3(1, 0.98, 0.96); sky.groundColor = new B.Color3(0.8, 0.76, 0.74); sky.specular = new B.Color3(0, 0, 0);
   const key = new B.DirectionalLight('key', new B.Vector3(0.35, -0.55, -1), scene);
   key.intensity = 0.55; key.diffuse = new B.Color3(1, 0.97, 0.93); key.specular = new B.Color3(0.25, 0.25, 0.25);
+  // V7: the beat light. A warm crimson light from behind one shoulder: it only shows on the edge of the character, and
+  // only for the moment of a beat (intensity 0 otherwise, and always 0 when shuffle is off).
+  const rim = new B.DirectionalLight('rim', new B.Vector3(-0.85, -0.15, 0.5), scene);
+  rim.intensity = 0; rim.diffuse = new B.Color3(1, 0.30, 0.22); rim.specular = new B.Color3(0, 0, 0);
   scene.imageProcessingConfiguration.toneMappingEnabled = false;
   scene.imageProcessingConfiguration.exposure = 1;
 
@@ -221,10 +232,11 @@
    */
   function frame(hero) {
     const an = hero.anchor, headH = an.crown - an.chin;
-    const zoom = state.avatar.zoom;
+    const pl = placeOf(state.avatar), zoom = pl.zoom;
     let viewH = headH / FRAME.head / zoom;
-    let cy = an.eye - (0.5 - FRAME.eyes) * viewH - state.avatar.offsetY * viewH;   // offsetY > 0 moves the avatar up
-    let cx = an.x;
+    let cy = an.eye - (0.5 - FRAME.eyes) * viewH - pl.y * viewH;   // y > 0 moves the avatar up
+    // V7 left-right: the camera slides the other way (model +x is picture LEFT), the background does not move
+    let cx = an.x + pl.x * viewH * engine.getRenderWidth() / Math.max(1, engine.getRenderHeight());
     if (debug.closeUp) { const b = hero.box; viewH = (b.y1 - b.y0) * debug.closeUp; cy = b.y0 + (b.y1 - b.y0) * debug.closeUpAt; cx = -(b.x0 + b.x1) / 2; }   // review close-up of the face
     const dist = (viewH / 2) / Math.tan(camera.fov / 2);
     camera.position.set(cx, cy, dist);     // the heroes face +z
@@ -331,10 +343,14 @@
     if (!debug.closeUp) {
       for (const n of hero.nodes) n.computeWorldMatrix(true);
       B.Vector3.TransformCoordinatesToRef(hero.faceLocal, hero.nodes[hero.nodes.length - 1].getWorldMatrix(), tmpT);
-      const an = hero.anchor, viewH = (an.crown - an.chin) / FRAME.head / a.zoom, viewW = viewH * engine.getRenderWidth() / Math.max(1, engine.getRenderHeight());
+      const pl = placeOf(a);
+      const an = hero.anchor, viewH = (an.crown - an.chin) / FRAME.head / pl.zoom, viewW = viewH * engine.getRenderWidth() / Math.max(1, engine.getRenderHeight());
       const dx = tmpT.x - an.x, dy = tmpT.y - an.eye;
-      const maxX = Math.max(LIMIT.minX * viewW, viewW / 2 - LIMIT.faceHalf * headW);
-      const upRoom = Math.max(0.05, FRAME.eyes + a.offsetY - LIMIT.top) * viewH, downRoom = LIMIT.down * viewH;
+      // V7: the room to each side is counted from where he PUT the character (dx > 0 = toward picture left). A character
+      // he pushed to an edge keeps the small room (minX) on that side, so his own head moves still show.
+      const half = LIMIT.faceHalf * headW, roomL = Math.max(LIMIT.minX * viewW, (0.5 + pl.x) * viewW - half), roomR = Math.max(LIMIT.minX * viewW, (0.5 - pl.x) * viewW - half);
+      const maxX = dx >= 0 ? roomL : roomR;
+      const upRoom = Math.max(0.05, FRAME.eyes - pl.y - LIMIT.top) * viewH, downRoom = LIMIT.down * viewH;
       const lx = softLimit(dx, maxX), ly = dy >= 0 ? softLimit(dy, upRoom) : softLimit(dy, downRoom);
       if (Number.isFinite(lx) && Number.isFinite(ly)) { hero.holder.position.x += lx - dx; hero.holder.position.y += ly - dy; }
       debug.frameLimit = { dx: lx - dx, dy: ly - dy, maxX, upRoom };
@@ -359,7 +375,13 @@
     // --- 6. the face picture follows the head; draw (a failure in the face drawing must not stop the avatar)
     try { hero.face.update(); } catch (e) { if (!debug.faceError) { debug.faceError = String(e && e.message || e); errors.push('face: ' + debug.faceError); } }
     frame(hero);
+    // V7: the beat light falls off within a fifth of a second (0 when shuffle is off)
+    SH.pulse *= Math.exp(-dt / LIGHT.fallMs);
+    const lk = SH.sh ? (LIGHT[SH.amount] || 0) * SH.pulse : 0;
+    rim.intensity = LIGHT.rim * lk; key.intensity = 0.55 + LIGHT.key * lk;
     scene.render();
+    // V7: the small picture for the VTuber window (only while it asks for it; never in a capture script)
+    if (a.pv && !MANUAL) { const d = Stage.picture([{ bg: SH.bg || a.bg }, { canvas }], t); if (d) Boot.send({ ...ackBody(), pv: d }); }
     Boot.uncover();   // the avatar is on screen: the loading cover (if any) goes in the same frame
     frames++;
     debug.base = anim.preset || (tracked ? 'tracked' : 'idle'); debug.mouth = null;
@@ -398,9 +420,18 @@
       if (next.face !== state.avatar.face || next.character !== state.avatar.character) state.faceSince = now();
       const bgChanged = next.bg !== state.avatar.bg || next.on !== state.avatar.on || !!next.mask !== !!state.avatar.mask;
       const cameOn = next.on && !state.avatar.on;
+      const prev = state.avatar;
       state.avatar = next;
       if (gifts) { gifts.setSounds(next.sounds !== false); if (cameOn) askGifts(); }
-      if (bgChanged) Boot.paint(next);
+      // V7 shuffle to the beat (heroes): switched on / off / to another amount; and a background he picked himself, or
+      // any pick of his while it runs, shows his own background again at once
+      const want = !Stage.KILL.shuffle && Beat && next.on && !next.mask && next.shuffle ? next.shuffle : '';
+      let repaint = bgChanged;
+      if (want !== SH.amount) { SH.amount = want; SH.sh = want ? Beat.createShuffle({ amount: want, seed: (Date.now() & 0xffff) || 1 }) : null; if (SH.bg) repaint = true; SH.bg = null; SH.pulse = 0; if (want) Stage.preload(Beat.HERO_BGS); }
+      if (next.bg !== prev.bg || (next.pick || 0) !== SH.pick) { SH.pick = next.pick || 0; if (SH.bg) repaint = true; SH.bg = null; }
+      if (repaint) Boot.paint(next);
+    } else if (msg.t === 'mask-audio') {
+      heroMusic(msg);
     } else if (msg.t === 'mask-event') {
       // a viewer event (LIVE Link, or a "Try the effects" button). The Mask takes its own in js/mask-page.js; these are the heroes'.
       const a = state.avatar;
@@ -420,17 +451,42 @@
     }
   }
 
+  /**
+   * V7 SHUFFLE TO THE BEAT on Ryo / Melanie: the music the app hears (the same numbers the Mask gets) goes through the
+   * beat clock. On a phrase line the background changes to another of the three painted places (only when he is on a
+   * painted place himself: see-through, green and black are for people who cut the character out, and stay); on every
+   * beat a rim of light pulses on the character (never the whole picture, never more than 3 a second). Nothing changes
+   * while a gift is in the air, and nothing while the music is silent.
+   */
+  function heroMusic(m) {
+    const a = state.avatar;
+    if (!SH.sh || !a.on || a.mask || !Array.isArray(m.f) || m.f.length < 8 || (m.s !== 'pc' && m.s !== 'obs')) return;
+    const f = { bass: m.f[0], mid: m.f[1], high: m.f[2], beat: m.f[3], kick: m.f[4], hit: m.f[5], level: m.f[6], bright: m.f[7] }, t = now();
+    const paintedPlace = Beat.HERO_BGS.includes(a.bg);
+    let acts = null;
+    try { acts = SH.sh.push(f, t / 1000, { kind: 'hero', busy: !!(gifts && gifts.sample && gifts.sample.busy > 0), bg: SH.bg || a.bg, bgs: paintedPlace ? Beat.HERO_BGS : null }); } catch (e) { acts = null; }
+    const k = SH.sh.beat;
+    if (k && !k.silent && (k.locked ? k.beat : f.kick > 0.6) && t - SH.pulseAt >= LIGHT.minGapMs) { SH.pulseAt = t; SH.pulse = Math.max(SH.pulse, k.boundary === 'drop' ? 1.6 : k.locked && k.inBar === 0 ? 1 : 0.7); }
+    if (!acts) return;
+    for (const x of acts) if (x.set === 'bg') { SH.bg = x.value; SH.changes++; debug.shuffleLast = { at: t, why: acts.why, bg: x.value }; Stage.fadeTo(document.getElementById('bg'), () => Boot.paint({ ...state.avatar, bg: SH.bg })); }
+  }
+  /** what this page tells the app once a second (and with every small picture) */
+  function ackBody() {
+    const a = state.avatar, k = SH.sh ? SH.sh.beat : null;
+    return { t: 'avatar-ack', ready: debug.ready, on: a.on, character: a.character, fps, w: engine.getRenderWidth(), h: engine.getRenderHeight(), at: Date.now(),
+      ...(SH.sh ? { shuffle: SH.amount, look: { bg: SH.bg || a.bg }, changes: SH.changes, bpm: k && k.locked ? Math.round(k.bpm) : 0 } : null) };
+  }
   function ack() {
     const a = state.avatar;
     if (a.mask && window.VTMaskPage) return;       // the Mask is shown: js/mask-page.js answers for it
     if (a.on) askGifts(20000);                     // a gift list saved meanwhile counts within 20 s
-    Boot.send({ t: 'avatar-ack', ready: debug.ready, on: a.on, character: a.character, fps, w: engine.getRenderWidth(), h: engine.getRenderHeight(), at: Date.now() });
+    Boot.send(ackBody());
   }
 
   // ------------------------------------------------------------------ start
   const debug = { closeUp: 0, closeUpAt: 0.3, params0: null, ready: false, base: null, mouth: null, blink: false, mouthState: 'closed', tracker: false, params: null, faceMs: 0, head: null, bodyError: null, faceError: null, frameLimit: null };
   window.__vt = {
-    errors, debug, state, heroes, apply, anim, HEAD, EYES, get gifts() { return gifts; },
+    errors, debug, state, heroes, apply, anim, HEAD, EYES, SH, LIGHT, rim, get gifts() { return gifts; },
     /** manual mode: advance the clock by `ms` and draw one frame */
     step(ms) { clock += ms; tick(ms); },
     setSize() { engine.resize(); },

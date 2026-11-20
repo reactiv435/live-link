@@ -21,6 +21,11 @@
 //   mask.setBackground('black' | 'summer' | 'ice' | 'forge' | 'nebula' | 'studio' | 'street')   the list is stats().backgrounds
 //   mask.setHead('none' | 'head' | 'hair' | 'horns' | 'flames' | 'demon')   what is round the face (none = the mask alone)
 //   mask.setEyeLock(true | false)                     eyes on camera (default true): the eyes point at the lens; stats().eyeLock
+//   mask.setPlace({ zoom, x, y })                     V7: where the face sits (x / y in parts of the picture, + = right / up) and how
+//                                                     big; the background stays full frame. null = home
+//   mask.setColour('#rrggbb' | null, music = true)    V7: a colour he picked (null = Auto: crimson home, the moods move it);
+//                                                     music false = the colour holds, true = the song still moves it round his colour
+//   mask.busy()                                       true while the effect of a gift is playing (shuffle to the beat waits for it)
 //   mask.setGiftSounds(true | false)                  procedural gift sounds through this page's own audio output
 //   mask.sfxOutput()                                  the gift sounds' output node (a GainNode on the mask's own AudioContext) or null;
 //                                                     stats().sfxLevel = 0..1, how loud the gift sounds are right now (0 = none)
@@ -141,6 +146,9 @@
     function setGiftSounds(on) { S.sounds = !!on; if (S.sounds && core) audioOut(true); }
     /** eyes on camera (round 5): true = the eyes point at the lens whatever he looks at; blinks and the head are still his */
     function setEyeLock(on) { S.eyeLock = !!on; if (core) core.eyeLock = S.eyeLock; return true; }
+    function setPlace(p) { S.place = p && typeof p === 'object' ? { zoom: Math.min(2, Math.max(0.5, Number(p.zoom) || 1)), x: Math.min(0.5, Math.max(-0.5, Number(p.x) || 0)), y: Math.min(0.5, Math.max(-0.5, Number(p.y) || 0)) } : null; return true; }
+    function setColour(hex, music) { const c = Mood.hexLinear(hex); S.colour = c ? { hex: hex.toLowerCase(), c, music: music !== false, viz: Mood.customViz(c) } : null; return !!c || hex === null || hex === ''; }
+    function busy() { const s = fx.sample(now()); return !!(s.busy > 0 || s.missiles.length || s.glints.length || s.lock || Math.abs(s.scale - 1) > 0.02 || s.shatter > 0.05 || s.brace > 0.05 || s.rainbow > 0.05); }
     function setHead(h) { if (!['none', 'head', 'hair', 'horns', 'flames', 'demon'].includes(h)) return false; S.head = h; return true; }
     function setGiftMap(rows) {
       // a new list takes effect for the next gift; what is in the air finishes with the old one
@@ -180,9 +188,11 @@
       for (let k = kicks.length - 1; k >= 0 && ks.length < 8; k--) ks.push([t - kicks[k][0], kicks[k][1]]);
       for (let k = kicks.length - 1; k >= 0 && hs.length < 4; k--) if (kicks[k][2]) hs.push([t - kicks[k][0], kicks[k][2]]);
       const hitNow = live ? S.hit || 0 : 0; S.hit = 0;
-      palette = Mood.tint(mood.step({ level: au.level, bass: au.bass, beat: au.beat, bright: au.bright, hit: hitNow }, t - lastSeen < 0.5 ? lastBs : null, bsNames, dt), S.bg);
+      const moodNow = mood.step({ level: au.level, bass: au.bass, beat: au.beat, bright: au.bright, hit: hitNow }, t - lastSeen < 0.5 ? lastBs : null, bsNames, dt);
+      // a colour he picked wins over the light of the background (the background still shows, in its own colours)
+      palette = S.colour ? Mood.custom(moodNow, S.colour.c, S.colour.music) : Mood.tint(moodNow, S.bg);
       sounds(t);
-      looks.draw(look, { time: t, audio: au, kicks: live ? ks : [], hits: live ? hs : [], head, palette, fx: fx.sample(t), eyeStyle: 1, bg: S.bg, headPart: S.head || 'none' });
+      looks.draw(look, { time: t, audio: au, kicks: live ? ks : [], hits: live ? hs : [], head, palette, fx: fx.sample(t), eyeStyle: 1, bg: S.bg, headPart: S.head || 'none', place: S.place || null, vizCol: S.colour ? S.colour.viz : null });
       S.drawMs += (performance.now() - b - S.drawMs) * 0.05;
       return true;
     }
@@ -190,10 +200,10 @@
       /** The gift sounds' output: a GainNode on the mask's own AudioContext (`node.context`), connected to that context's
        *  destination. The page may connect it on to an analyser of its own. null when this page has no audio output. */
       sfxOutput: () => (S.sounds ? audioOut(false) : sfxOut),
-      frame, audio, fire, setMode, setVisualizer, setBackground, setHead, setGiftSounds, setGiftMap, setNeutral, learnNeutral, draw, setEyeLock,
+      frame, audio, fire, setMode, setVisualizer, setBackground, setHead, setPlace, setColour, busy, setGiftSounds, setGiftMap, setNeutral, learnNeutral, draw, setEyeLock,
       /** the short-lived names to show right now: [{ text, kind: 'follow' | 'share' | 'gift', age (s, of 2.5) }], at most two. The page draws them. */
       names: () => fx.sample(now()).names,
-      stats: () => ({ drawMs: S.drawMs, coreMs: S.coreMs, frames: S.frames, faces: S.faces, mode: S.mode, visualizer: S.viz, visualizers: Fx.VISUALIZERS.slice(), background: S.bg, backgrounds: BACKGROUNDS.slice(), audio: now() - S.audioAt < 1.5, warm: !!S.warm, eyeLock: S.eyeLock, sfxLevel: sfxLevel(), neutral: core ? (provisional ? 'provisional' : 'set') : 'none', renderer: G.info.renderer }),
+      stats: () => ({ drawMs: S.drawMs, coreMs: S.coreMs, frames: S.frames, faces: S.faces, mode: S.mode, visualizer: S.viz, visualizers: Fx.VISUALIZERS.slice(), background: S.bg, backgrounds: BACKGROUNDS.slice(), audio: now() - S.audioAt < 1.5, warm: !!S.warm, eyeLock: S.eyeLock, place: S.place || null, colour: S.colour ? S.colour.hex : '', colourMusic: S.colour ? S.colour.music : true, sfxLevel: sfxLevel(), neutral: core ? (provisional ? 'provisional' : 'set') : 'none', renderer: G.info.renderer }),
       destroy() { try { if (actx) actx.close(); } catch (e) { /* ignore */ } const lose = G.gl.getExtension('WEBGL_lose_context'); if (lose) lose.loseContext(); },
     };
   }

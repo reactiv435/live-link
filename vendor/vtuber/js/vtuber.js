@@ -87,6 +87,33 @@
     restSaved: ' The Mask uses it too.',
     restCalmest: ' The Mask took the calmest moment of it for now.',
   };
+  // V7: move and size, the Mask's colour, shuffle to the beat (every sentence a first-time host reads)
+  const PLACE = {
+    title: (who) => 'Where ' + who + ' sits in the picture',
+    hint: (who) => 'Drag ' + who + ' in the picture to move. To make ' + who + ' bigger or smaller, click the picture first, then scroll on it (or pinch). The background stays where it is.',
+    real: 'This is the picture OBS shows right now.',
+    stale: 'The picture from a moment ago. Move the mouse over it to see it live.',
+    ghost: (who) => 'The circle shows where ' + who + ' will sit. Press ON to see the real picture here.',
+    reset: 'Reset: back to the middle',
+  };
+  const COLOUR = {
+    auto: 'Auto', autoName: 'Auto: crimson; the music and your face shift it.',
+    picked: (name) => name + '.', own: 'Your own colour',
+    hint: 'Auto is crimson, and the music and your face shift it. Tap a colour to pick your own.',
+    musicOn: 'On: your colour still gets brighter on the drop, flashes when the music is wild, and warms with a smile.',
+    musicOff: 'Off: your colour holds still. (The mask still moves to the music.)',
+    wheelOpen: 'Any other colour ...', wheelClose: 'Hide the colour wheel',
+  };
+  const SHUFFLE = {
+    amounts: { calm: 'Calm', normal: 'Normal', wild: 'Wild' },
+    mask: 'When the music changes, the look changes with it: the background, the visualizer style, the colour (while it is on Auto), and Face / Visualizer. Calm = now and then, Wild = often. Never in the middle of a gift.',
+    hero: (who) => 'When the music changes, the background changes with it (Sunset Courtyard, Jungle Grove, Moonlit Citadel), and a light pulses on ' + who + ' to the beat. Calm = now and then, Wild = often.',
+    heroOwnBg: (who) => 'A light pulses on ' + who + ' to the beat. To let the background change too, pick one of the three places under More.',
+    off: '', needOn: 'It starts when you press ON.',
+    waiting: 'Listening for music from this computer ...',
+    beat: (bpm) => 'Following the beat: ' + bpm + ' a minute.',
+    voice: 'I hear no music from this computer, so nothing changes. Play music on this computer.',
+  };
   const FACE = {
     idle: 'Optional, only if the face looks off: look at the camera with a relaxed face and your mouth closed, press the button and hold still for two seconds.',
     hold: 'Hold still, relaxed face, mouth closed ...',
@@ -106,11 +133,23 @@
 
   // ------------------------------------------------------------------ settings (kept between visits)
   // mask: the Mask is the chosen character (character keeps the hero picked last); maskBg / maskSounds: its background and gift sounds
-  const settings = { character: 'ryo', bg: 'preset:courtyard', mirror: false, handsLine: false, sens: 6, gate: 0.06, zoom: 1, offsetY: 0, deviceId: '', mask: false, maskBg: 'black', maskSounds: true, maskViz: '', eyes: true };
+  // V7: place = where each of the three sits and how big (each keeps its own); maskColour '' = Auto, else '#rrggbb';
+  // maskColourMusic = the music still moves a picked colour; shuffle / shuffleAmount = shuffle to the beat
+  const settings = { character: 'ryo', bg: 'preset:courtyard', mirror: false, handsLine: false, sens: 6, gate: 0.06, zoom: 1, offsetY: 0, deviceId: '', mask: false, maskBg: 'black', maskSounds: true, maskViz: '', eyes: true,
+    place: { ryo: { zoom: 1, x: 0, y: 0 }, melanie: { zoom: 1, x: 0, y: 0 }, mask: { zoom: 1, x: 0, y: 0 } }, maskColour: '', maskColourMusic: true, shuffle: false, shuffleAmount: 'normal', wheelOpen: false };
+  // the kill switches of this round, as on the avatar page: ?place=0 ?colour=0 ?shuffle=0 (the control is not shown and nothing of it is sent)
+  const QS = new URLSearchParams(location.search), KILL = { place: QS.get('place') === '0', colour: QS.get('colour') === '0', shuffle: QS.get('shuffle') === '0' };
   try {
     const saved = JSON.parse(localStorage.getItem(STORE) || 'null');
-    if (saved && typeof saved === 'object') for (const k of Object.keys(settings)) if (typeof saved[k] === typeof settings[k]) settings[k] = saved[k];
+    if (saved && typeof saved === 'object') {
+      for (const k of Object.keys(settings)) if (typeof saved[k] === typeof settings[k]) settings[k] = saved[k];
+      // settings saved before V7 had one Size / Height for both heroes: both start from it
+      if (!saved.place || typeof saved.place !== 'object') settings.place = { ryo: { zoom: settings.zoom, x: 0, y: settings.offsetY }, melanie: { zoom: settings.zoom, x: 0, y: settings.offsetY }, mask: { zoom: 1, x: 0, y: 0 } };
+    }
   } catch (e) { /* defaults */ }
+  { const p = settings.place && typeof settings.place === 'object' ? settings.place : {}; settings.place = { ryo: L.cleanPlace(p.ryo, 'hero'), melanie: L.cleanPlace(p.melanie, 'hero'), mask: L.cleanPlace(p.mask, 'mask') }; }   // a place saved beyond the limits is pulled back
+  settings.maskColour = L.cleanHex(settings.maskColour);
+  if (!L.SHUFFLE_LEVELS.includes(settings.shuffleAmount)) settings.shuffleAmount = 'normal';
   if (!L.isCharacter(settings.character)) settings.character = 'ryo';
   if (!L.BACKGROUNDS.includes(settings.bg)) settings.bg = 'preset:courtyard';
   settings.handsLine = settings.handsLine === true;
@@ -118,7 +157,24 @@
   if (!L.MASK_VISUALIZERS.includes(settings.maskViz)) settings.maskViz = '';
   const save = () => { try { localStorage.setItem(STORE, JSON.stringify(settings)); } catch (e) { /* not saved */ } };
 
-  const live = { on: false, mode: 'face' };          // mode: the Mask as his face, or as a visualizer (not kept between starts)
+  const live = { on: false, mode: 'face', pick: 0 }; // mode: the Mask as his face, or as a visualizer (not kept between starts); pick: see avatarMessage
+  /** which of the three is picked ('ryo' | 'melanie' | 'mask') and where it sits */
+  const who = () => (settings.mask ? 'mask' : settings.character);
+  const placeNow = () => (KILL.place ? L.PLACE_HOME : settings.place[who()]);
+  const shuffleOn = () => settings.shuffle && !KILL.shuffle;
+  // Fix round S2: the avatar page makes the small picture only while he is AT THE CARD: a press, a drag, a slider, the
+  // wheel, the mouse moving over the picture, and five seconds after. With the window open and untouched none is made
+  // (the last one stays on the page). Making one costs the avatar page part of a frame.
+  const CARD_MS = 5000;
+  let cardAt = -1e9, cardTimer = null;
+  const atCard = () => !KILL.place && document.visibilityState === 'visible' && performance.now() - cardAt < CARD_MS;
+  function touchCard() {
+    const was = atCard();
+    cardAt = performance.now();
+    if (!was && adopted && panel.active) sendAvatar();                          // the picture is wanted from now
+    clearTimeout(cardTimer);
+    cardTimer = setTimeout(() => { if (adopted && panel.active) sendAvatar(); }, CARD_MS + 50);   // and no longer after five quiet seconds
+  }
   const st = {
     srv: null, srvFails: 0, srvEver: false, relay: false, ackAt: -1e9, micOn: false, micFailed: false, level: 0,
     applied: '', forceShots: false, badSince: 0, recoveries: [], recovering: false, pictureWaitSince: performance.now(),
@@ -132,12 +188,17 @@
   const panel = { id: Math.random().toString(36).slice(2, 10), active: false, since: 0, otherAt: -1e9 };
   const announce = () => send({ t: 'panel', id: panel.id, since: panel.since });
   const avatarMessage = () => {
-    const m = { t: 'avatar', on: live.on, character: settings.character, bg: settings.bg, face: 'auto', faceHoldMs: 0, mirror: settings.mirror, zoom: settings.zoom, offsetY: settings.offsetY };
+    const pl = placeNow();
+    const m = { t: 'avatar', on: live.on, character: settings.character, bg: settings.bg, face: 'auto', faceHoldMs: 0, mirror: settings.mirror, zoom: pl.zoom, offsetY: pl.y };
+    if (pl.x) m.offsetX = pl.x;                           // V7: left-right (a message without it = the middle, as before)
+    if (shuffleOn()) { m.shuffle = settings.shuffleAmount; if (live.pick) m.pick = live.pick; }   // pick: he chose a look himself while shuffle runs: shown at once
+    if (atCard()) m.pv = true;                            // the small picture: only while he is at the card (fix round S2), never all show
     if (!settings.eyes) m.eyes = false;                   // eyes on camera (round 5): on unless switched off under More
     if (!settings.mask && !settings.maskSounds) m.sounds = false;   // gift sounds for the heroes' missiles: the same switch as the Mask's
     if (settings.mask) {                                  // the Mask instead of a hero: its mode, background, gift sounds, and the stamps of its two files
       const sm = st.srv && st.srv.mask;
       Object.assign(m, { mask: true, maskMode: live.mode, maskBg: settings.maskBg, maskSounds: settings.maskSounds, maskViz: settings.maskViz, maskGifts: sm ? sm.gifts : 0, maskRest: sm ? sm.rest : 0 });
+      if (settings.maskColour && !KILL.colour) { m.maskColour = settings.maskColour; if (!settings.maskColourMusic) m.maskColourMusic = false; }
     }
     return m;
   };
@@ -178,6 +239,9 @@
         // with the Mask chosen only an answer about the Mask counts (and the other way round)
         if (settings.mask ? !!(m.mask && m.mask.drawn) : !m.mask) st.ackAt = performance.now();   // the Mask: only once it is really on screen
         if (m.mask && typeof m.mask === 'object') { st.maskAck = m.mask; st.maskAckAt = performance.now(); }
+        else { st.heroAck = m; st.heroAckAt = performance.now(); }
+        // V7: the small picture of what OBS shows (a tiny JPEG made by the avatar page on this PC)
+        if (typeof m.pv === 'string' && m.pv.length < 80000 && m.pv.startsWith('data:image/jpeg;base64,')) { const im = new Image(), of = who(); st.pvCount = (st.pvCount || 0) + 1; im.onload = () => { st.pvImg = im; st.pvAt = performance.now(); st.pvWho = of; }; im.src = m.pv; }
       }
       else if (m.t === 'panel') onPanel(m);
       else if (m.t === 'avatar') {
@@ -188,9 +252,11 @@
         // e.g. its window restarted): it is taken over whole, so an ON stays ON. Later: the v2 control page in charge,
         // or the server switching OFF.
         if (!adopted || !panel.active) {
-          settings.character = a.character; settings.bg = a.bg; settings.mirror = a.mirror; settings.zoom = a.zoom; settings.offsetY = a.offsetY; settings.eyes = a.eyes !== false;
+          settings.character = a.character; settings.bg = a.bg; settings.mirror = a.mirror; settings.eyes = a.eyes !== false;
           settings.mask = a.mask === true;
-          if (a.mask) { settings.maskBg = a.maskBg; settings.maskSounds = a.maskSounds; settings.maskViz = a.maskViz; live.mode = a.maskMode; }
+          if (!KILL.place) settings.place[who()] = L.cleanPlace({ zoom: a.zoom, x: a.offsetX || 0, y: a.offsetY }, settings.mask ? 'mask' : 'hero');   // (?place=0 never saves "home" over his place)
+          settings.shuffle = !!a.shuffle; if (a.shuffle) settings.shuffleAmount = a.shuffle;
+          if (a.mask) { settings.maskBg = a.maskBg; settings.maskSounds = a.maskSounds; settings.maskViz = a.maskViz; live.mode = a.maskMode; settings.maskColour = a.maskColour || ''; settings.maskColourMusic = a.maskColourMusic !== false; }
           save();
         }
         render();
@@ -201,16 +267,50 @@
   }
 
   // ------------------------------------------------------------------ actions
-  function setOn(on) { claim(); live.on = !!on; sendAvatar(); render(); }
+  function setOn(on) { claim(); live.on = !!on; if (live.on) touchCard(); sendAvatar(); render(); }   // (ON: a fresh small picture for a few seconds)
   function setCharacter(id) {
-    if (id === 'mask') { claim(); settings.mask = true; live.mode = 'face'; save(); sendAvatar(); render(); loadGifts(); return; }
+    if (id === 'mask') { claim(); settings.mask = true; live.mode = 'face'; save(); touchCard(); sendAvatar(); render(); loadGifts(); return; }
     if (!L.isCharacter(id)) return;
-    claim(); settings.character = id; settings.mask = false; save(); sendAvatar(); render();
+    claim(); settings.character = id; settings.mask = false; save(); touchCard(); sendAvatar(); render();
   }
   // ------------------------------------------------------------------ the Mask: Visualizer / Face, background, sounds, the test buttons, the gift list
-  function setMode(mode) { if (!settings.mask) return; claim(); live.mode = mode === 'visualizer' ? 'visualizer' : 'face'; sendAvatar(); render(); }
-  function setMaskBg(bg) { if (!L.MASK_BACKGROUNDS.includes(bg)) return; claim(); settings.maskBg = bg; save(); sendAvatar(); render(); }
-  function setMaskViz(v) { if (!L.MASK_VISUALIZERS.includes(v)) return; claim(); settings.maskViz = v; save(); sendAvatar(); render(); }
+  // (V7: `picked()` = while shuffle runs, a look he chooses himself is shown at once; shuffle goes on from there)
+  const picked = () => { if (shuffleOn()) { live.pick++; st.pickAt = performance.now(); } };
+  function setMode(mode) { if (!settings.mask) return; claim(); live.mode = mode === 'visualizer' ? 'visualizer' : 'face'; picked(); sendAvatar(); render(); }
+  function setMaskBg(bg) { if (!L.MASK_BACKGROUNDS.includes(bg)) return; claim(); settings.maskBg = bg; picked(); save(); sendAvatar(); render(); }
+  function setMaskViz(v) { if (!L.MASK_VISUALIZERS.includes(v)) return; claim(); settings.maskViz = v; picked(); save(); sendAvatar(); render(); }
+  // ------------------------------------------------------------------ V7: where it sits, the Mask's colour, shuffle to the beat
+  let placeSendAt = 0, placeTimer = null;
+  /** move / size the picked character (each of the three keeps its own). The OBS picture follows at once (at most 30 messages a second). */
+  function setPlace(p, quiet) {
+    if (KILL.place) return;
+    claim();
+    settings.place[who()] = L.cleanPlace({ ...settings.place[who()], ...p }, settings.mask ? 'mask' : 'hero');
+    touchCard();
+    save();
+    const now = performance.now();
+    clearTimeout(placeTimer);
+    if (now - placeSendAt >= 33) { placeSendAt = now; sendAvatar(); } else placeTimer = setTimeout(() => { placeSendAt = performance.now(); sendAvatar(); }, 34);
+    if (!quiet) render(); else renderPlace();
+  }
+  function resetPlace() { setPlace({ zoom: 1, x: 0, y: 0 }); }
+  /** '' = Auto, or '#rrggbb' */
+  function setMaskColour(hex) { claim(); settings.maskColour = L.cleanHex(hex); save(); sendAvatar(); render(); }
+  function setColourMusic(on) { claim(); settings.maskColourMusic = !!on; save(); sendAvatar(); render(); }
+  function setShuffle(on, amount) {
+    claim();
+    settings.shuffle = !!on; if (L.SHUFFLE_LEVELS.includes(amount)) settings.shuffleAmount = amount;
+    live.pick = 0; save(); sendAvatar(); render();
+  }
+  /** what shows right now: while shuffle runs the avatar page says so (it changes the look by itself), else his own picks */
+  function shown() {
+    const fresh = (at) => performance.now() - (at || -1e9) < 3500, held = performance.now() - (st.pickAt || -1e9) < 1500;   // right after his own pick: his pick
+    const out = { mode: live.mode, maskBg: settings.maskBg, viz: settings.maskViz, bg: settings.bg, bpm: 0, running: false };
+    if (!shuffleOn() || !live.on) return out;
+    if (settings.mask) { const k = st.maskAck; if (k && k.shuffle && fresh(st.maskAckAt)) { out.running = true; out.bpm = k.bpm || 0; if (k.look && !held) { out.mode = k.look.mode === 'visualizer' ? 'visualizer' : 'face'; if (L.MASK_BACKGROUNDS.includes(k.look.bg)) out.maskBg = k.look.bg; if (L.MASK_VISUALIZERS.includes(k.look.viz)) out.viz = k.look.viz; } } }
+    else { const k = st.heroAck; if (k && k.shuffle && fresh(st.heroAckAt)) { out.running = true; out.bpm = k.bpm || 0; if (k.look && !held && L.BACKGROUNDS.includes(k.look.bg)) out.bg = k.look.bg; } }
+    return out;
+  }
   function setGiftSounds(on) { claim(); settings.maskSounds = !!on; save(); sendAvatar(); render(); }
   // the Mask's backgrounds: the full known list from the start (js/logic.js); once the mask itself has told its own
   // (stats().backgrounds, by the avatar page in OBS), that one. Only names this page knows how to send are shown.
@@ -229,7 +329,8 @@
         box.appendChild(b);
       }
     }
-    for (const b of box.children) b.classList.toggle('sel', b.dataset.bg === settings.maskBg);
+    const cur = shown().maskBg;
+    for (const b of box.children) b.classList.toggle('sel', b.dataset.bg === cur);
   }
   // the Visualizer's styles: the full known list from the start (js/logic.js); once the mask has told its own, that one
   let vizShown = '';
@@ -247,7 +348,7 @@
         box.appendChild(b);
       }
     }
-    const cur = settings.maskViz || list[0];
+    const cur = shown().viz || list[0];
     for (const b of box.children) b.classList.toggle('sel', b.dataset.viz === cur);
   }
   const MASK_ONLY_TRY = { comment: true, boom: true };   // these two do nothing on the heroes: their buttons are hidden while a hero is picked
@@ -325,7 +426,7 @@
     } catch (e) { /* the Mask keeps the resting face it had */ }
   }
   function hookTracker() { try { const w = frame.contentWindow; if (w && w.__trackerMaskRest !== onMaskRest) w.__trackerMaskRest = onMaskRest; } catch (e) { /* not there yet */ } }
-  function setBg(bg) { claim(); settings.bg = bg; save(); sendAvatar(); render(); }
+  function setBg(bg) { claim(); settings.bg = bg; picked(); save(); sendAvatar(); render(); }
   const post = (what, body) => fetch('/api/vt/' + what, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) }).then((r) => (r.ok ? r.json() : null), () => null);
 
   // ------------------------------------------------------------------ microphone (moves the mouth); starts by itself
@@ -664,6 +765,23 @@
       box.appendChild(b);
     }
     renderMaskBgs();
+    // V7: the colour buttons (Auto first, then the one-tap colours; Hot Pink is one of them) and the shuffle amounts
+    const sw = $('swatches');
+    const swatch = (id, label, hex) => {
+      const b = document.createElement('button');
+      b.className = 'sw' + (hex ? '' : ' auto'); b.dataset.hex = hex; b.title = label; b.setAttribute('aria-label', label);
+      if (hex) b.style.background = 'radial-gradient(circle at 35% 30%, #fff8 0%, ' + hex + ' 38%, ' + hex + ' 62%, #0008 130%)'; else b.textContent = 'Auto';
+      b.addEventListener('click', () => { setMaskColour(hex); b.blur(); });
+      sw.appendChild(b);
+    };
+    swatch('auto', COLOUR.auto, '');
+    for (const s of L.MASK_SWATCHES) swatch(s.id, s.label, s.hex);
+    for (const a of L.SHUFFLE_LEVELS) {
+      const b = document.createElement('button');
+      b.className = 'opt'; b.dataset.amount = a; b.textContent = SHUFFLE.amounts[a];
+      b.addEventListener('click', () => { setShuffle(true, a); b.blur(); });
+      $('shuffleAmt').appendChild(b);
+    }
     for (const kind of Object.keys(W.TRY_EVENTS)) {
       const b = document.createElement('button');
       b.className = 'plain'; b.dataset.kind = kind; b.textContent = W.TRY_LABEL[kind];
@@ -718,7 +836,8 @@
     for (const b of $('heroes').children) b.classList.toggle('sel', settings.mask ? b.dataset.id === 'mask' : b.dataset.id === settings.character);
     // the Mask's own controls show only while the Mask is chosen (the heroes' framing only while a hero is)
     $('maskMain').hidden = !settings.mask; $('maskMore').hidden = !settings.mask; $('heroMore').hidden = settings.mask;
-    const viz = live.mode === 'visualizer';
+    const now = shown(), viz = now.mode === 'visualizer';
+    renderPlace(); renderColour(); renderShuffle(now);
     $('mode').classList.toggle('viz', viz);
     $('modeText').textContent = viz ? MODE.toFace : MODE.toViz; $('modeHint').textContent = viz ? MODE.toFaceHint : MODE.toVizHint;
     const snd = st.srv && st.srv.mask ? st.srv.mask.sound : null;
@@ -728,20 +847,161 @@
     renderViz();
     for (const b of $('tries').children) b.hidden = !settings.mask && !!MASK_ONLY_TRY[b.dataset.kind];
     $('tryHint').textContent = st.tryNote || MASK.tryIdle; $('giftsNote').textContent = st.giftsNote;
-    for (const b of $('bgs').children) b.classList.toggle('sel', b.dataset.bg === settings.bg);
+    for (const b of $('bgs').children) b.classList.toggle('sel', b.dataset.bg === now.bg);
     $('power').classList.toggle('on', live.on);
     $('powerText').textContent = live.on ? 'ON' : 'OFF';
     $('powerHint').textContent = live.on ? SAY.onHint : SAY.offHint;
     $('mirror').classList.toggle('sel', settings.mirror);
     $('eyes').classList.toggle('sel', settings.eyes);
     $('hands').classList.toggle('sel', settings.handsLine);
-    $('zoom').value = settings.zoom; $('zoomVal').textContent = Math.round(settings.zoom * 100) + '%';
-    $('offy').value = settings.offsetY; $('offyVal').textContent = (settings.offsetY > 0 ? '+' : '') + Math.round(settings.offsetY * 100);
     $('micLabel').textContent = st.micOn ? 'Microphone' : st.micFailed ? 'Microphone: not heard' : 'Microphone ...';
     const removed = st.srv && st.srv.avatar.removed;
     $('remove').textContent = removed ? REMOVE.back : performance.now() < st.removeArmed ? REMOVE.sure : REMOVE.ask;
     renderFace();
   }
+
+  // ------------------------------------------------------------------ V7: drawing the three cards
+  const label = () => (settings.mask ? 'the Mask' : L.CHARACTERS[settings.character].label);
+  function renderPlace() {
+    $('placeCard').hidden = KILL.place;
+    if (KILL.place) return;
+    const p = placeNow(), n = label(), pct = (v) => (v > 0.0005 ? '+' : '') + Math.round(v * 100);
+    $('placeTitle').textContent = PLACE.title(n); $('placeHint').textContent = PLACE.hint(n);
+    if (document.activeElement !== $('zoom')) $('zoom').value = p.zoom;
+    if (document.activeElement !== $('offx')) $('offx').value = p.x;
+    $('offy').max = String(L.placeUp(who() === 'mask' ? 'mask' : 'hero'));        // as far up as the middle of the face stays in the picture
+    if (document.activeElement !== $('offy')) $('offy').value = p.y;
+    $('zoomVal').textContent = Math.round(p.zoom * 100) + '%'; $('offxVal').textContent = pct(p.x); $('offyVal').textContent = pct(p.y);
+    $('placeReset').disabled = p.zoom === 1 && p.x === 0 && p.y === 0;
+  }
+  function renderColour() {
+    const showIt = settings.mask && !KILL.colour;
+    $('colourCard').hidden = !showIt;
+    if (!showIt) return;
+    const hex = settings.maskColour, known = L.MASK_SWATCHES.find((s) => s.hex === hex);
+    for (const b of $('swatches').children) b.classList.toggle('sel', b.dataset.hex === hex);
+    $('swName').textContent = !hex ? COLOUR.autoName : COLOUR.picked(known ? known.label : COLOUR.own);
+    $('swName').style.color = hex || '';
+    $('wheelBox').hidden = !settings.wheelOpen; $('wheelToggle').textContent = settings.wheelOpen ? COLOUR.wheelClose : COLOUR.wheelOpen;
+    $('colourMusicBox').hidden = !hex;
+    $('colourMusic').classList.toggle('sel', settings.maskColourMusic);
+    $('colourMusicHint').textContent = settings.maskColourMusic ? COLOUR.musicOn : COLOUR.musicOff;
+    if (settings.wheelOpen) drawWheel();
+  }
+  function renderShuffle(now) {
+    $('shuffleCard').hidden = KILL.shuffle;
+    if (KILL.shuffle) return;
+    const on = settings.shuffle, n = label();
+    $('shuffle').classList.toggle('sel', on);
+    $('shuffleAmt').hidden = !on;
+    for (const b of $('shuffleAmt').children) b.classList.toggle('sel', b.dataset.amount === settings.shuffleAmount);
+    $('shuffleHint').textContent = settings.mask ? SHUFFLE.mask : L.BACKGROUNDS.indexOf(settings.bg) >= 3 ? SHUFFLE.hero(n) : SHUFFLE.heroOwnBg(n);
+    const snd = st.srv && st.srv.mask ? st.srv.mask.sound : null;
+    // (the number is shown to the nearest 2 and only changes when the beat moved by 3: it must not flicker)
+    if (!now.bpm) st.bpmShown = 0; else if (!st.bpmShown || Math.abs(now.bpm - st.bpmShown) >= 3) st.bpmShown = Math.round(now.bpm / 2) * 2;
+    $('shuffleNow').textContent = !on ? SHUFFLE.off : !live.on ? SHUFFLE.needOn : now.bpm ? SHUFFLE.beat(st.bpmShown) : snd && snd.src === 'voice' && snd.pc !== 'starting' ? SHUFFLE.voice : SHUFFLE.waiting;
+  }
+
+  // ---- the colour wheel: round the ring is the colour (hue), the edge is rich and the middle pale (saturation); the
+  // slider next to it is the brightness. Drawn once per brightness into the canvas; the ring marks his colour.
+  const wheel = $('wheel'), wctx = wheel.getContext('2d');
+  let wheelV = -1, wheelImg = null;
+  const hsvNow = () => L.hexToHsv(settings.maskColour) || { h: 350, s: 0.86, v: 0.9 };
+  function drawWheel() {
+    const W2 = wheel.width, R = W2 / 2 - 6, c = W2 / 2, hsv = hsvNow(), v = Math.max(0.35, hsv.v);
+    if (document.activeElement !== $('bright')) $('bright').value = v;
+    if (wheelV !== v || !wheelImg) {
+      wheelV = v; wheelImg = wctx.createImageData(W2, W2);
+      const d = wheelImg.data;
+      for (let y = 0; y < W2; y++) for (let x = 0; x < W2; x++) {
+        const dx = x - c, dy = y - c, r = Math.hypot(dx, dy), i = (y * W2 + x) * 4;
+        if (r > R + 1) { d[i + 3] = 0; continue; }
+        const hex = L.hsvToHex(Math.atan2(dy, dx) * 180 / Math.PI + 90, Math.min(1, r / R), v);
+        d[i] = parseInt(hex.slice(1, 3), 16); d[i + 1] = parseInt(hex.slice(3, 5), 16); d[i + 2] = parseInt(hex.slice(5, 7), 16); d[i + 3] = r > R ? Math.round(255 * (R + 1 - r)) : 255;
+      }
+    }
+    wctx.clearRect(0, 0, W2, W2); wctx.putImageData(wheelImg, 0, 0);
+    if (settings.maskColour) {
+      const a = (hsv.h - 90) * Math.PI / 180, r = hsv.s * R, mx = c + Math.cos(a) * r, my = c + Math.sin(a) * r;
+      wctx.lineWidth = 4; wctx.strokeStyle = '#000'; wctx.beginPath(); wctx.arc(mx, my, 11, 0, Math.PI * 2); wctx.stroke();
+      wctx.lineWidth = 2.5; wctx.strokeStyle = '#fff'; wctx.beginPath(); wctx.arc(mx, my, 11, 0, Math.PI * 2); wctx.stroke();
+    }
+  }
+  function wheelPick(e) {
+    const b = wheel.getBoundingClientRect(), R = b.width / 2 - 6 * b.width / wheel.width, dx = e.clientX - (b.left + b.width / 2), dy = e.clientY - (b.top + b.height / 2);
+    setMaskColour(L.hsvToHex(Math.atan2(dy, dx) * 180 / Math.PI + 90, Math.min(1, Math.hypot(dx, dy) / R), Number($('bright').value) || 0.9));
+  }
+  let wheelDown = false;
+  wheel.addEventListener('pointerdown', (e) => { wheelDown = true; e.preventDefault(); wheelPick(e); });
+  window.addEventListener('pointermove', (e) => { if (wheelDown) wheelPick(e); });
+  window.addEventListener('pointerup', () => { wheelDown = false; });
+  window.addEventListener('pointercancel', () => { wheelDown = false; });
+
+  // ---- the picture he drags in. It shows what OBS shows (the small picture the avatar page sends while ON); when that
+  // is not there (OFF, or OBS is not showing the source) a circle with the character's picture shows where it will sit.
+  // The same numbers place the circle and the real character, so what he drags is where it lands.
+  const stage = $('stage'), sctx = stage.getContext('2d'), tiles = {};
+  // where the face is in the 9:16 picture at home (parts of the picture): its middle and its height; measured on the renders
+  const FACE_AT = { ryo: { cx: 0.5, cy: 0.36, h: 0.40 }, melanie: { cx: 0.5, cy: 0.36, h: 0.40 }, mask: { cx: 0.5, cy: 0.45, h: 0.56 } };
+  function tile(id) { if (!tiles[id]) { const im = new Image(); im.src = id === 'mask' ? 'assets/ui/mask.svg' : 'assets/ui/' + id + '.jpg'; tiles[id] = im; } return tiles[id].complete && tiles[id].naturalWidth ? tiles[id] : null; }
+  function drawStage() {
+    requestAnimationFrame(drawStage);
+    if (KILL.place || document.visibilityState !== 'visible') return;
+    const Wp = stage.width, Hp = stage.height, id = who(), p = placeNow(), f = FACE_AT[id], fresh = performance.now() - (st.pvAt || -1e9) < 1500, real = live.on && st.pvImg && st.pvWho === id && (fresh || performance.now() - st.pvAt < 600000);
+    sctx.fillStyle = '#0a0706'; sctx.fillRect(0, 0, Wp, Hp);
+    const cx = (f.cx + p.x) * Wp, cy = (f.cy - p.y) * Hp, r = f.h * p.zoom * Hp / 2;
+    if (real) { sctx.imageSmoothingQuality = 'high'; sctx.drawImage(st.pvImg, 0, 0, Wp, Hp); }
+    else {
+      // the stand-in: a soft floor, and the character's picture in a circle where the face will be
+      const g = sctx.createRadialGradient(Wp / 2, Hp * 0.42, 10, Wp / 2, Hp * 0.42, Hp * 0.7); g.addColorStop(0, '#2a1512'); g.addColorStop(1, '#0a0706'); sctx.fillStyle = g; sctx.fillRect(0, 0, Wp, Hp);
+      const im = tile(id);
+      sctx.save(); sctx.beginPath(); sctx.arc(cx, cy, r, 0, Math.PI * 2); sctx.clip();
+      if (im) sctx.drawImage(im, cx - r, cy - r, 2 * r, 2 * r); else { sctx.fillStyle = '#3a0f17'; sctx.fillRect(cx - r, cy - r, 2 * r, 2 * r); }
+      sctx.restore();
+      sctx.lineWidth = 3; sctx.strokeStyle = '#ff3b57'; sctx.beginPath(); sctx.arc(cx, cy, r, 0, Math.PI * 2); sctx.stroke();
+    }
+    // while he drags or sizes: corner marks round the face, so the hand has something to hold on to
+    if (drag.on || performance.now() - drag.touchedAt < 900) {
+      const k = r * 1.08, c = Math.max(10, k * 0.28);
+      sctx.lineWidth = 3; sctx.strokeStyle = '#fff'; sctx.beginPath();
+      for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) { sctx.moveTo(cx + sx * k, cy + sy * (k - c)); sctx.lineTo(cx + sx * k, cy + sy * k); sctx.lineTo(cx + sx * (k - c), cy + sy * k); }
+      sctx.stroke();
+    }
+    const note = real ? (fresh ? PLACE.real : PLACE.stale) : PLACE.ghost(label());
+    if ($('stageNote').textContent !== note) $('stageNote').textContent = note;
+  }
+  // drag = move, wheel = size, two fingers = size. Window listeners (not pointer capture): the drag goes on outside the picture.
+  const drag = { on: false, id: -1, x: 0, y: 0, px: 0, py: 0, touchedAt: -1e9, pts: new Map(), pinch: 0, zoom0: 1 };
+  stage.addEventListener('pointerdown', (e) => {
+    if (KILL.place) return;
+    e.preventDefault();
+    drag.armedAt = performance.now(); touchCard();
+    drag.pts.set(e.pointerId, [e.clientX, e.clientY]);
+    const p = placeNow();
+    if (drag.pts.size === 2) { const [a, b] = [...drag.pts.values()]; drag.pinch = Math.hypot(a[0] - b[0], a[1] - b[1]) || 1; drag.zoom0 = p.zoom; drag.on = false; return; }
+    drag.on = true; drag.id = e.pointerId; drag.x = e.clientX; drag.y = e.clientY; drag.px = p.x; drag.py = p.y; drag.touchedAt = performance.now();
+    stage.classList.add('drag');
+  });
+  window.addEventListener('pointermove', (e) => {
+    if (!drag.pts.has(e.pointerId)) return;
+    drag.pts.set(e.pointerId, [e.clientX, e.clientY]); drag.touchedAt = performance.now();
+    const b = stage.getBoundingClientRect();
+    if (drag.pts.size >= 2 && drag.pinch) { const [a, c] = [...drag.pts.values()]; setPlace({ zoom: drag.zoom0 * Math.hypot(a[0] - c[0], a[1] - c[1]) / drag.pinch }, true); return; }
+    if (drag.on && e.pointerId === drag.id) setPlace({ x: drag.px + (e.clientX - drag.x) / b.width, y: drag.py - (e.clientY - drag.y) / b.height }, true);
+  });
+  const dragEnd = (e) => { drag.pts.delete(e.pointerId); if (drag.pts.size < 2) drag.pinch = 0; if (e.pointerId === drag.id || !drag.pts.size) { drag.on = false; stage.classList.remove('drag'); render(); } };
+  window.addEventListener('pointerup', dragEnd); window.addEventListener('pointercancel', dragEnd);
+  // Fix round S1: the wheel over the picture SCROLLS THE PAGE, as everywhere else. It only sizes the character when he
+  // pressed in the picture just before (within 4 s; each sizing turn keeps it going). A host scrolling down the page
+  // with the mouse over the picture never resizes the character on stream by accident.
+  const WHEEL_ARM_MS = 4000;
+  stage.addEventListener('wheel', (e) => {
+    if (KILL.place || performance.now() - (drag.armedAt || -1e9) > WHEEL_ARM_MS) return;      // not armed: the page scrolls
+    e.preventDefault(); drag.armedAt = drag.touchedAt = performance.now();
+    setPlace({ zoom: placeNow().zoom * Math.exp(-e.deltaY * 0.0012) });
+  }, { passive: false });
+  stage.addEventListener('pointermove', touchCard);
+  for (const id of ['zoom', 'offx', 'offy', 'placeReset']) $(id).addEventListener('pointerdown', touchCard);
 
   // ------------------------------------------------------------------ wiring
   build();
@@ -749,7 +1009,7 @@
   window.addEventListener('keydown', claim, true);
   $('power').addEventListener('click', () => { setOn(!live.on); $('power').blur(); });
   $('face').addEventListener('click', () => { readFace(); $('face').blur(); });
-  $('mode').addEventListener('click', () => { setMode(live.mode === 'visualizer' ? 'face' : 'visualizer'); $('mode').blur(); });
+  $('mode').addEventListener('click', () => { setMode(shown().mode === 'visualizer' ? 'face' : 'visualizer'); $('mode').blur(); });
   $('giftSounds').addEventListener('click', () => { setGiftSounds(!settings.maskSounds); $('giftSounds').blur(); });
   $('giftAdd').addEventListener('click', () => { st.gifts = [{ gift: ' ', effect: 'barrage' }, ...giftRows()]; st.giftsDirty = true; renderGifts(); const f = $('gifts').querySelector('input[type=text]'); if (f) { f.value = ''; f.focus(); } });
   $('giftSave').addEventListener('click', () => { saveGifts(false); $('giftSave').blur(); });
@@ -758,8 +1018,15 @@
   $('eyes').addEventListener('click', () => { claim(); settings.eyes = !settings.eyes; save(); sendAvatar(); render(); $('eyes').blur(); });
   $('mirror').addEventListener('click', () => { claim(); settings.mirror = !settings.mirror; save(); sendAvatar(); render(); $('mirror').blur(); });
   $('hands').addEventListener('click', () => { claim(); settings.handsLine = !settings.handsLine; save(); sendHands(); render(); $('hands').blur(); });
-  $('zoom').addEventListener('input', (e) => { claim(); settings.zoom = Number(e.target.value); save(); sendAvatar(); render(); });
-  $('offy').addEventListener('input', (e) => { claim(); settings.offsetY = Number(e.target.value); save(); sendAvatar(); render(); });
+  $('zoom').addEventListener('input', (e) => { drag.touchedAt = performance.now(); setPlace({ zoom: Number(e.target.value) }); });
+  $('offx').addEventListener('input', (e) => { drag.touchedAt = performance.now(); setPlace({ x: Number(e.target.value) }); });
+  $('offy').addEventListener('input', (e) => { drag.touchedAt = performance.now(); setPlace({ y: Number(e.target.value) }); });
+  $('placeReset').addEventListener('click', () => { drag.touchedAt = performance.now(); resetPlace(); $('placeReset').blur(); });
+  $('wheelToggle').addEventListener('click', () => { settings.wheelOpen = !settings.wheelOpen; save(); render(); $('wheelToggle').blur(); });
+  $('bright').addEventListener('input', (e) => { const h = hsvNow(); setMaskColour(L.hsvToHex(h.h, settings.maskColour ? h.s : 0.86, Number(e.target.value))); });
+  $('colourMusic').addEventListener('click', () => { setColourMusic(!settings.maskColourMusic); $('colourMusic').blur(); });
+  $('shuffle').addEventListener('click', () => { setShuffle(!settings.shuffle); $('shuffle').blur(); });
+
   $('micDevice').addEventListener('change', (e) => { settings.deviceId = e.target.value; save(); startMic(); });
   $('more').addEventListener('toggle', renderCams);
   $('more').addEventListener('toggle', () => { if ($('more').open) loadGifts(); });
@@ -808,6 +1075,8 @@
   setInterval(() => { $('micBar').style.width = (st.level * 100).toFixed(1) + '%'; }, 50);
   setInterval(renderCams, 2000);
   requestAnimationFrame(drawPreview);
+  requestAnimationFrame(drawStage);
+  setInterval(() => { if (shuffleOn() && live.on) render(); }, 1000);   // while shuffle runs the buttons follow what shows
   loadGifts();
-  window.__vt = { settings, live, st, panel, SAY, NOTE, FACE, REMOVE, SOUND, MODE, MASK, setMode, setMaskBg, setMaskViz, setGiftSounds, tryEffect, saveGifts, giftRows, onMaskRest, setOn, setCharacter, setBg, readFace, sentence: () => sentence()[1], cls: () => sentence()[0], notes, tracker: tstate };
+  window.__vt = { settings, live, st, panel, SAY, NOTE, FACE, REMOVE, SOUND, MODE, MASK, setMode, setMaskBg, setMaskViz, setGiftSounds, tryEffect, saveGifts, giftRows, onMaskRest, setOn, setCharacter, setBg, readFace, setPlace, resetPlace, setMaskColour, setColourMusic, setShuffle, shown, placeNow, who, atCard, touchCard, KILL, PLACE, COLOUR, SHUFFLE, sentence: () => sentence()[1], cls: () => sentence()[0], notes, tracker: tstate };
 })();

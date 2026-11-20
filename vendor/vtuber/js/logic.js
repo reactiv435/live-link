@@ -51,6 +51,47 @@
   // every name the Mask's Visualizer style may have (the same list as mask/mask-fx.js VISUALIZERS; a test keeps them
   // equal). A name that is not in it is never kept and never sent on, exactly as with the backgrounds.
   const MASK_VISUALIZERS = ['orb', 'tunnel', 'yinyang', 'ridges', 'blackhole', 'helix'];
+  // ---- V7: where the character sits in the picture, the Mask's own colour, shuffle to the beat
+  // PLACE: Size (zoom) and where the middle of the face is against its usual place, in parts of the picture
+  // (x: + = to the right, y: + = up). The limits keep the face at least half inside the picture: never lost.
+  // Up: the middle of the face must stay in the picture. At home it sits 0.36 of the height under the top edge on the
+  // heroes and 0.45 on the Mask, so that is as far up as each may go (fix round S3: +0.5 lost a hero's whole head).
+  const PLACE = Object.freeze({ zoom: [0.5, 2], x: [-0.5, 0.5], y: [-0.5, 0.5], up: Object.freeze({ hero: 0.36, mask: 0.45 }) });
+  /** how far up this one may go ('mask', or a hero) */
+  const placeUp = (kind) => (kind === 'mask' ? PLACE.up.mask : PLACE.up.hero);
+  const PLACE_HOME = Object.freeze({ zoom: 1, x: 0, y: 0 });
+  /** any value -> a place inside the limits ({ zoom, x, y }; what is missing or not a number = home) */
+  function cleanPlace(p, kind) {
+    const n = (v, d, r) => (typeof v === 'number' && Number.isFinite(v) ? clamp(v, r[0], r[1]) : d);
+    const q = p && typeof p === 'object' ? p : {};
+    return { zoom: n(q.zoom, 1, PLACE.zoom), x: n(q.x, 0, PLACE.x), y: n(q.y, 0, [PLACE.y[0], kind ? placeUp(kind) : PLACE.y[1]]) };
+  }
+  /** '#rrggbb' (lower case) or '' for anything else */
+  function cleanHex(v) { return typeof v === 'string' && /^#[0-9a-fA-F]{6}$/.test(v) ? v.toLowerCase() : ''; }
+  // the one-tap colours of the Mask. Hot Pink is there by name (the owner's ask); crimson, gold and chrome are the house's.
+  const MASK_SWATCHES = Object.freeze([
+    { id: 'crimson', label: 'Crimson', hex: '#e01f3d' }, { id: 'hotpink', label: 'Hot Pink', hex: '#ff2d95' },
+    { id: 'gold', label: 'Gold', hex: '#ffb224' }, { id: 'chrome', label: 'Chrome', hex: '#efe6df' },
+    { id: 'ember', label: 'Ember', hex: '#ff5a1f' }, { id: 'ice', label: 'Ice', hex: '#35c8ff' },
+    { id: 'emerald', label: 'Emerald', hex: '#1fe08a' }, { id: 'violet', label: 'Violet', hex: '#9a55ff' },
+  ]);
+  const SHUFFLE_LEVELS = ['calm', 'normal', 'wild'];
+  /** h 0..360, s 0..1, v 0..1 -> '#rrggbb' */
+  function hsvToHex(h, s, v) {
+    h = ((Number(h) % 360) + 360) % 360; s = clamp(Number(s) || 0, 0, 1); v = clamp(Number(v) || 0, 0, 1);
+    const c = v * s, x = c * (1 - Math.abs((h / 60) % 2 - 1)), m = v - c, k = Math.floor(h / 60);
+    const rgb = k === 0 ? [c, x, 0] : k === 1 ? [x, c, 0] : k === 2 ? [0, c, x] : k === 3 ? [0, x, c] : k === 4 ? [x, 0, c] : [c, 0, x];
+    return '#' + rgb.map((u) => Math.round((u + m) * 255).toString(16).padStart(2, '0')).join('');
+  }
+  /** '#rrggbb' -> { h 0..360, s 0..1, v 0..1 } (null for anything else) */
+  function hexToHsv(hex) {
+    const c = cleanHex(hex); if (!c) return null;
+    const r = parseInt(c.slice(1, 3), 16) / 255, g = parseInt(c.slice(3, 5), 16) / 255, b = parseInt(c.slice(5, 7), 16) / 255;
+    const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
+    let h = 0;
+    if (d > 0) h = mx === r ? 60 * (((g - b) / d) % 6) : mx === g ? 60 * ((b - r) / d + 2) : 60 * ((r - g) / d + 4);
+    return { h: (h + 360) % 360, s: mx ? d / mx : 0, v: mx };
+  }
   // "Lift your hands into the camera ...": shown only when his hands are rarely in the picture. Judged over the last two
   // minutes of body checks (at least one minute of them, with his face there): a hand in under 3 % of the checks.
   const HANDS_HINT = { windowMs: 120000, minMs: 60000, minChecks: 300, rare: 0.03, faceShare: 0.5 };
@@ -241,6 +282,14 @@
       t: 'avatar', on: m.on === true, character, bg, face,
       faceHoldMs: num(m.faceHoldMs, 4000, 0, 600000), mirror: m.mirror === true,
       zoom: num(m.zoom, 1, 0.5, 2), offsetY: num(m.offsetY, 0, -0.5, 0.5),
+      // V7: left-right (only there when it is not 0: a message without it reads exactly as before), shuffle to the beat
+      // (only there when it is on), and `pv`: the page's small picture wants to see what OBS shows
+      ...(num(m.offsetX, 0, -0.5, 0.5) !== 0 ? { offsetX: num(m.offsetX, 0, -0.5, 0.5) } : null),
+      ...(SHUFFLE_LEVELS.includes(m.shuffle) ? { shuffle: m.shuffle } : null),
+      ...(m.pv === true ? { pv: true } : null),
+      // `pick`: a number the page raises each time he picks a look himself. While shuffle runs, a new number means
+      // "show exactly what the message says again" (his pick wins at once; shuffle goes on from there)
+      ...(num(m.pick, 0, 0, 1e9) > 0 ? { pick: num(m.pick, 0, 0, 1e9) } : null),
       // round 5: eyes on camera (the Mask and the heroes) is ON unless the message says `eyes: false`
       ...(m.eyes === false ? { eyes: false } : null),
       ...(m.sounds === false ? { sounds: false } : null),   // gift sounds off for the heroes (the Mask has maskSounds)
@@ -253,6 +302,8 @@
         maskBg: MASK_BACKGROUNDS.includes(m.maskBg) ? m.maskBg : 'black', maskSounds: m.maskSounds !== false,
         maskGifts: num(m.maskGifts, 0, 0, 1e15), maskRest: num(m.maskRest, 0, 0, 1e15),
         maskViz: MASK_VISUALIZERS.includes(m.maskViz) ? m.maskViz : '',   // the Visualizer's style ('' = the mask's own first one)
+        // V7: a colour he picked ('#rrggbb'; not there = Auto), and whether the music still moves it (not there = yes)
+        ...(cleanHex(m.maskColour) ? { maskColour: cleanHex(m.maskColour), ...(m.maskColourMusic === false ? { maskColourMusic: false } : null) } : null),
       } : null),
     };
   }
@@ -300,7 +351,7 @@
   }
 
   return {
-    clamp, seededRandom, CHARACTERS, FACE_KEYS, BACKGROUNDS, MASK_BACKGROUNDS, MASK_VISUALIZERS, HANDS_HINT, handsRarelySeen, isCharacter, validFace, moodFace,
+    clamp, seededRandom, CHARACTERS, FACE_KEYS, BACKGROUNDS, MASK_BACKGROUNDS, MASK_VISUALIZERS, PLACE, PLACE_HOME, placeUp, cleanPlace, cleanHex, MASK_SWATCHES, SHUFFLE_LEVELS, hsvToHex, hexToHsv, HANDS_HINT, handsRarelySeen, isCharacter, validFace, moodFace,
     MOUTH_DEFAULTS, MouthGate, BLINK, BlinkClock, TRACKED_BLINK, TrackedBlink, HEAD_LIMIT, headTarget, Damped, pickFace, readAvatarMessage,
     lumaOf, pictureLook, PictureWatch,
   };

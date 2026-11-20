@@ -40,6 +40,11 @@
     newFaceAt: 0, lat: [], log: null, events: 0, lastEventAt: 0, drawnOnce: false,
   };
   const follower = W.levelFollower();
+  // V7: the kill switches (?place=0, ?colour=0, ?shuffle=0, ?pv=0) and shuffle to the beat. `look` = what the Mask shows
+  // right now (his own picks, or what the shuffle changed them to); sh = the clock + director while shuffle is on.
+  const Stage = window.VTStage || { KILL: {}, picture: () => null }, Beat = window.VTBeat || null;
+  const look = { mode: 'face', bg: 'black', viz: 'orb', colour: 'auto' };
+  const SH = { sh: null, amount: '', pick: 0, changes: 0, last: null };
   const active = () => !!(S.a && S.a.on && S.a.mask);
 
   function size() {
@@ -107,12 +112,26 @@
     S.unchosenAt = 0;
     if (!m) { make(); return; }
     const ap = S.applied;
-    if (ap.mode !== a.maskMode) { ap.mode = a.maskMode; m.setMode(a.maskMode); }
-    if (ap.bg !== a.maskBg) { ap.bg = a.maskBg; m.setBackground(a.maskBg); }
+    // V7: he picked something himself while shuffle runs (`pick` went up), or shuffle was switched on / off: everything
+    // the message says is shown again (his picks), and shuffle goes on from there
+    const wantSh = !Stage.KILL.shuffle && Beat && a.on && a.shuffle ? a.shuffle : '';
+    if ((a.pick || 0) !== SH.pick || wantSh !== SH.amount) {
+      if (wantSh !== SH.amount) { SH.sh = wantSh ? Beat.createShuffle({ amount: wantSh, seed: (Date.now() & 0xffff) || 1 }) : null; SH.amount = wantSh; }
+      SH.pick = a.pick || 0;
+      ap.mode = ap.bg = ap.viz = ap.colour = undefined;
+    }
+    if (ap.mode !== a.maskMode) { ap.mode = a.maskMode; m.setMode(a.maskMode); look.mode = a.maskMode; }
+    if (ap.bg !== a.maskBg) { ap.bg = a.maskBg; m.setBackground(a.maskBg); look.bg = a.maskBg; }
+    // V7: where the face sits and how big (the canvas is flipped as a whole when Mirror is on, so left-right is flipped back)
+    const pz = Stage.KILL.place ? 1 : a.zoom, px = Stage.KILL.place ? 0 : (a.mirror ? -1 : 1) * (a.offsetX || 0), py = Stage.KILL.place ? 0 : Math.min(a.offsetY, L.placeUp ? L.placeUp('mask') : 0.45), pk = pz + '|' + px + '|' + py;
+    if (ap.place !== pk && typeof m.setPlace === 'function') { ap.place = pk; m.setPlace({ zoom: pz, x: px, y: py }); }
+    // V7: a colour he picked (not there = Auto) and whether the music still moves it
+    const col = Stage.KILL.colour ? '' : (a.maskColour || ''), ck = col + '|' + (a.maskColourMusic !== false);
+    if (ap.colour !== ck && typeof m.setColour === 'function') { ap.colour = ck; m.setColour(col || null, a.maskColourMusic !== false); look.colour = 'auto'; }
     if (ap.eyes !== (a.eyes !== false) && typeof m.setEyeLock === 'function') { ap.eyes = a.eyes !== false; m.setEyeLock(ap.eyes); }      // eyes on camera (round 5)
     if (ap.sounds !== a.maskSounds) { ap.sounds = a.maskSounds; m.setGiftSounds(a.maskSounds); }
     // the Visualizer's style (a newer hook of mask/*, used when it is there). The mask alone is shown: no head round it (his pick).
-    if (a.maskViz && ap.viz !== a.maskViz && typeof m.setVisualizer === 'function') { ap.viz = a.maskViz; try { m.setVisualizer(a.maskViz); } catch (e) { /* a name this mask does not have */ } }
+    if (a.maskViz && ap.viz !== a.maskViz && typeof m.setVisualizer === 'function') { ap.viz = a.maskViz; try { m.setVisualizer(a.maskViz); look.viz = a.maskViz; } catch (e) { /* a name this mask does not have */ } }
     if (a.maskGifts && a.maskGifts !== S.giftsRev) {
       S.giftsRev = a.maskGifts;
       getJson('/api/vt/gifts').then((g) => { if (g && Array.isArray(g.rows) && S.mask) { S.rows = g.rows; S.mask.setGiftMap(g.rows); } });
@@ -152,8 +171,35 @@
     S.src = m.s === 'pc' || m.s === 'obs' ? m.s : 'voice'; S.srcAt = now;
     if (!Array.isArray(m.f) || m.f.length < 8 || !S.mask || !active()) return;
     const f = guard(fromList(m.f), now);
+    shuffleStep(f, now);
     if (S.src === 'pc') { try { S.mask.audio(f); } catch (e) { /* the next one */ } }
     else { S.target = f; if (f.kick) S.kick = Math.max(S.kick, f.kick); }       // a level 20 times a second: eased in draw()
+  }
+  /**
+   * V7 SHUFFLE TO THE BEAT: the music numbers go through the beat clock; on a phrase line (or a drop) the director
+   * changes the look. Only from real music (what the PC plays, or the level OBS hears): never from his voice, never
+   * while a gift is playing (mask.busy()), never while the music is silent. A colour he picked is never changed.
+   */
+  function shuffleStep(f, now) {
+    const a = S.a, m = S.mask;
+    if (!SH.sh || !m || !a) return;
+    let acts = null;
+    try {
+      acts = SH.sh.push(f, now / 1000, {
+        kind: 'mask', busy: typeof m.busy === 'function' ? m.busy() : false, mode: look.mode, home: a.maskMode, viz: look.viz, bg: look.bg, colour: look.colour,
+        bgs: bgNames() || L.MASK_BACKGROUNDS, vizs: vizNames() || L.MASK_VISUALIZERS, colours: a.maskColour || Stage.KILL.colour || typeof m.setColour !== 'function' ? null : Beat.AUTO_COLOURS,
+      });
+    } catch (e) { acts = null; }
+    if (!acts) return;
+    for (const x of acts) {
+      try {
+        if (x.set === 'mode') m.setMode(x.value); else if (x.set === 'bg') m.setBackground(x.value); else if (x.set === 'viz') m.setVisualizer(x.value);
+        else if (x.set === 'colour') m.setColour(x.value === 'auto' ? null : x.value, true);
+        look[x.set] = x.value;
+      } catch (e) { /* a look this mask does not have */ }
+    }
+    SH.changes++; SH.last = { at: Date.now(), why: acts.why, acts: acts.map((x) => x.set + '=' + x.value) };
+    if (S.log && S.log.shuffles) S.log.shuffles.push([epoch(), acts.why, SH.last.acts.join(' ')]);
   }
   function onMic(m) {
     const now = performance.now();
@@ -203,6 +249,8 @@
     if (drew) {
       S.draws++; S.fpsN++;
       if (!S.drawnOnce) { S.drawnOnce = true; S.firstDrawAt = performance.now(); canvas.style.display = active() ? 'block' : 'none'; }
+      // V7: the small picture for the VTuber window (only while it asks for it)
+      if (S.a && S.a.pv && S.drawnOnce && active()) { const d = Stage.picture([{ canvas, mirror: !!S.a.mirror }], now); if (d) Boot.send({ t: 'avatar-ack', ready: true, on: S.a.on, character: S.a.character, mask: window.VTMaskPage.status(), fps: S.fps, w: canvas.width, h: canvas.height, at: Date.now(), pv: d }); }
       if (S.newFaceAt) { const d = epoch() - S.newFaceAt; S.lat.push(d); if (S.lat.length > 600) S.lat.splice(0, 300); if (S.log && S.log.draws.length < 20000) S.log.draws.push([S.newFaceAt, epoch()]); S.newFaceAt = 0; }
     }
     try { names(m.names()); } catch (e) { names(null); }
@@ -252,11 +300,14 @@
         mode: st ? st.mode : '', bg: st ? st.background : '', rest: st ? st.neutral : 'none', drawMs: st ? Math.round(st.drawMs * 100) / 100 : 0, coreMs: st ? Math.round(st.coreMs * 100) / 100 : 0,
         w: canvas.width, h: canvas.height, lagMs: q(S.lat, 0.5), events: S.events,
         viz: vizNames(), bgs: bgNames(),
+        // V7: what shows right now (shuffle may have changed it), and the shuffle's own state
+        vizNow: st ? st.visualizer : '', colour: st ? st.colour || '' : '', place: st && st.place ? [st.place.zoom, st.place.x, st.place.y] : null,
+        ...(SH.sh ? { shuffle: SH.amount, look: { ...look }, changes: SH.changes, bpm: SH.sh.beat && SH.sh.beat.locked ? Math.round(SH.sh.beat.bpm) : 0 } : null),
       };
     },
     fps: () => S.fps,
     /** for the proof tools only */
-    debug: { S, q, startLog() { S.log = { faces: [], draws: [] }; }, takeLog() { const l = S.log; S.log = null; return l; }, get mask() { return S.mask; }, get canvas() { return canvas; } },
+    debug: { S, q, SH, look, startLog() { S.log = { faces: [], draws: [], shuffles: [] }; }, takeLog() { const l = S.log; S.log = null; return l; }, get mask() { return S.mask; }, get canvas() { return canvas; } },
   };
   // the Mask answers the app by itself once a second (it does not wait for the heroes' big 3D files)
   setInterval(() => {

@@ -19,8 +19,12 @@
 //     tilt, twist,          degrees. tilt + = clockwise on screen (picture-right shoulder lower). twist + = the chest turns toward picture right.
 //     lean: [x, z],         chest shift against his own resting place: +x picture right, +z toward the camera
 //     shrug: [l, r],        0..1
-//     arms: { l: null | { wrist: [x,y,z], elbow: [x,y,z] | null, conf, src: 'hand' | 'pose' }, r: ... }
+//     arms: { l: null | { wrist: [x,y,z], elbow: [x,y,z] | null, conf, src: 'hand' | 'pose' | 'edge' }, r: ... }
 //                           origin = that side's shoulder. `elbow` is null when his elbow is not reliably in the picture.
+//                           V7: src 'edge' = a hand that is only partly in the picture, at its bottom or side edge (fingers
+//                           poking in, the wrist below the picture), or a wrist the pose model half sees right at the bottom
+//                           edge. The place is rougher than a whole hand's (the avatar follows it more softly) and there is
+//                           no hand shape with it unless most of the hand is inside. { edgeHands: false } switches both off.
 //     head: [x, y, w],      ADDED: his head centre from the middle of the shoulders, and his head width (for hands near the head)
 //     sw: number            ADDED: shoulder width as a share of the picture width (diagnostics)
 //   }
@@ -150,6 +154,22 @@
     fWristHand: [1.6, 4.0], fWristPose: [2.2, 3.0], fWristZ: [0.9, 1.0], fElbow: [1.6, 1.5],
     fPalm: [1.4, 2.0], fCurl: [2.5, 4.0], fTilt: [1.8, 0.08], fTwist: [1.0, 0.03], fLean: [1.5, 2.0], fShrug: [1.8, 1.5], fHead: [1.5, 1.0],
     poseHoldFrames: 3,     // a hand shape label must be seen this many frames in a row before it replaces the old one
+    // --- V7: hands at the picture edge. In his show framing (head to mid-chest) a gesturing hand is mostly BELOW the
+    //     picture and only grazes its bottom edge. Measured on 16 clips: "too few points inside" was the largest single
+    //     reason a hand the model saw moved no arm (328 of 588 such frames). Such a hand now drives the arm as `edge`.
+    edgeHands: true,
+    edgeInside: 5,         // of the 21 hand points at least this many inside the picture (under handInside = an edge hand)...
+    edgeTop: 2,            // ...and at most this many of the others beyond the TOP edge (a hand leaves by the bottom or a side)
+    edgeConfirm: 3,        // an edge hand must show on this many runs of the hand model running (a whole hand: confirmFrames)...
+    edgeWrist: 0.7, edgeWristVis: 0.3,   // ...or on confirmFrames when the pose model half sees that arm's wrist within this of it
+    edgeShape: 10,         // with this many points inside the fingers are passed on as well (no named pose); with fewer, no hand shape
+    edgeOut: 0.3,          // an edge wrist is never placed farther outside the picture than this (shoulder widths)
+    // a wrist the pose model sees in the bottom band of the picture with no hand model detection at all. It must be
+    // seen at edgePoseVis or more for edgePoseFrames checks running (0.27 s at full rate) and move smoothly (poseJump).
+    // Measured as qualifying frames: cropped clips with his hand really up under the picture 526 kept of 919, cropped
+    // clips with no hand 0 of 61; his show clips, where the model puts a jumpy, half-believed wrist under his visible
+    // elbows while he only talks (the "ghost arm" of the v2 review), 60 of 2,018 (0.55 and 4 checks let 871 through).
+    edgePoseVis: 0.7, edgePoseBand: [0.2, 0.22], edgePoseFrames: 8, edgePoseGapMs: 250,
   };
 
   const FINGERS = [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12], [13, 14, 15, 16], [17, 18, 19, 20]];
@@ -164,7 +184,7 @@
       palm: new Euro3(P.fPalm[0], P.fPalm[1]), dir: new Euro3(P.fPalm[0], P.fPalm[1]), curl: [0, 1, 2, 3, 4].map(() => new OneEuro(P.fCurl[0], P.fCurl[1])),
       shrug: new OneEuro(P.fShrug[0], P.fShrug[1]), shrugBase: new Baseline(P.baselineS, 1.0), shrugPic: new Baseline(P.baselineS, 1.0),
       prev: null, prevT: -1e9, pose: null, cand: null, candN: 0, streak: 0, lastHandT: null, lastHandRun: -9, outT: null,
-      supStreak: 0, lastSupT: -1e9, lastSupRun: -9, evT: null, armT: null, armPx: null,
+      supStreak: 0, lastSupT: -1e9, lastSupRun: -9, evT: null, armT: null, armPx: null, epN: 0, epT: -1e9, epPx: null,
     });
     function reset() {
       S = {
@@ -319,14 +339,16 @@
         const det = { k, pts, cand: null, out: false };
         dets.push(det);
         if (!hw[k] || hw[k].length < 21) continue;
-        let inside = 0, cx = 0, cy = 0;
-        for (const p of pts) { if (inPic(p, 0)) inside++; cx += p.x * W; cy += p.y * H; }
-        if (inside < P.handInside) continue;
+        let inside = 0, cx = 0, cy = 0, above = 0;
+        for (const p of pts) { if (inPic(p, 0)) inside++; else if (p.y < RG[1]) above++; cx += p.x * W; cy += p.y * H; }
+        // V7: a hand half out of the picture at its bottom or side edge is still his hand (see `edgeHands` in the tuning)
+        const edgeHand = inside < P.handInside;
+        if (edgeHand && !(P.edgeHands && inside >= P.edgeInside && above <= P.edgeTop)) continue;
         const cat = hh[k] && hh[k][0] || null;
         // cen = the middle of the 21 points; len = wrist to middle knuckle to middle fingertip
         let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
         for (const p of pts) { const x = p.x * W, y = p.y * H; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
-        det.cand = { k, wrist, mid, cen: [cx / 21, cy / 21], len: d2(wrist, mid) + d2(mid, px(pts[12])), box: [x0, y0, x1, y1], label: cat ? cat.categoryName : null, score: cat && cat.score != null ? cat.score : 0.5, pts, world: hw[k], det, twinOf: null };
+        det.cand = { k, wrist, mid, cen: [cx / 21, cy / 21], len: d2(wrist, mid) + d2(mid, px(pts[12])), box: [x0, y0, x1, y1], label: cat ? cat.categoryName : null, score: cat && cat.score != null ? cat.score : 0.5, pts, world: hw[k], det, twinOf: null, edge: edgeHand, inside };
         cands.push(det.cand);
       }
       // The same hand found twice: keep one. It happens when a hand is blurred or half out of the picture (two
@@ -353,7 +375,8 @@
           const alike = (dw < 0.14 && dm < 0.14) || (A.label === B.label && dw < P.twinDist && dm < P.twinDist);
           if (!stacked && !alike) continue;
           let lose;
-          if (!stacked) lose = A.score >= B.score ? B : A;
+          if (A.edge !== B.edge) lose = A.edge ? A : B;            // V7: the whole hand, not its copy at the edge
+          else if (!stacked) lose = A.score >= B.score ? B : A;
           else {
             const fa = fit(A), fb = fit(B);
             if (Math.abs(fa - fb) > 0.15) lose = fa < fb ? B : A;
@@ -433,18 +456,24 @@
           if (c) { st.streak = just ? st.streak + 1 : 1; st.lastHandT = tMs; st.lastHandRun = S.runN; }
           else if (st.lastHandT == null || tMs - st.lastHandT >= P.confirmWithinMs) st.streak = 0;
         }
-        if (c && (st.outT == null || tMs - st.outT > gapOk) && st.streak < P.confirmFrames) { st.prev = c.wrist; st.prevT = tMs; c = null; }
+        let needRuns = P.confirmFrames;
+        if (c && c.edge) {
+          // an edge hand is believed a run later, unless the pose model half sees this arm's wrist at it
+          const near = bodyOk && vis(wi) >= P.edgeWristVis && d2(c.wrist, px(lm[wi])) <= P.edgeWrist * unit;
+          if (!near) needRuns = P.edgeConfirm;
+        }
+        if (c && (st.outT == null || tMs - st.outT > gapOk) && st.streak < needRuns) { st.prev = c.wrist; st.prevT = tMs; c = null; }
         if (c) { st.outT = tMs; c.det.out = true; }
         if (c) {
           st.prev = c.wrist; st.prevT = tMs;
           const f = handFeatures(c.pts, c.world, side);
           const palm = norm(st.palm.filter(f.palm, tMs)), dir = norm(st.dir.filter(f.dir, tMs));
           const curl = f.curl.map((v, i) => clamp(st.curl[i].filter(v, tMs), 0, 1));
-          const lab = labelOf(curl, f.thumbOut);
+          const lab = c.edge ? null : labelOf(curl, f.thumbOut);      // V7: half a hand names no pose
           if (lab === st.pose) { st.cand = null; st.candN = 0; }
           else if (lab === st.cand) { if (++st.candN >= P.poseHoldFrames) { st.pose = lab; st.cand = null; st.candN = 0; } }
           else { st.cand = lab; st.candN = 1; }
-          o.hand = { palm, dir, curl, pose: st.pose, conf: c.score, open: 1 - (curl[1] + curl[2] + curl[3] + curl[4]) / 4 };
+          if (!c.edge || c.inside >= P.edgeShape) o.hand = { palm, dir, curl, pose: st.pose, conf: c.score, open: 1 - (curl[1] + curl[2] + curl[3] + curl[4]) / 4 };
         } else {
           st.palm.reset(); st.dir.reset(); st.curl.forEach((x) => x.reset()); st.pose = null; st.cand = null; st.candN = 0;
           if (tMs - st.prevT > gapOk) st.prev = null;
@@ -454,7 +483,15 @@
         const sh = side === 'L' ? sL : sR;
         // the wrist: from the hand when one is matched (precise), else from the pose when it is clearly in the picture
         let wp = null, src = null, conf = 0;
-        if (c) { wp = c.wrist; src = 'hand'; conf = c.score; st.evT = tMs; }
+        if (c && c.edge) {
+          // V7: an edge hand. Where the pose model clearly sees this wrist inside the picture, at the hand, that is the
+          // better place (as before this round: `pose`); else the hand model's own guess for a wrist that is outside
+          // the picture, kept close to the edge
+          const p = lm[wi], pw = px(p), lim = P.edgeOut * unit;
+          if (vis(wi) >= P.wristVis && inPic(p, P.edge) && d2(c.wrist, pw) <= P.edgeWrist * unit) { wp = pw; src = 'pose'; conf = vis(wi) * 0.6; }
+          else { wp = [clamp(c.wrist[0], RG[0] * W - lim, RG[2] * W + lim), Math.min(c.wrist[1], RG[3] * H + lim)]; src = 'edge'; conf = c.score * 0.6; }
+          st.evT = tMs;
+        } else if (c) { wp = c.wrist; src = 'hand'; conf = c.score; st.evT = tMs; }
         else {
           // No hand matched to this arm. The pose model's wrist may stand in for it (his raised fist half out of the
           // picture, a hand too blurred to match), but never on its own word: with his hands in his lap it still
@@ -487,6 +524,18 @@
           const carry = !evid && live && st.evT != null && tMs - st.evT <= P.poseCarryMs
             && d2(pw, st.armPx) / unit <= P.poseJump[0] + P.poseJump[1] * (tMs - st.armT) / 1000;
           if (sure && (evid || carry)) { wp = pw; src = 'pose'; conf = vis(wi) * 0.6; if (evid) st.evT = tMs; }
+          // V7: no hand model evidence at all, but the pose model half sees this wrist in the bottom band of the picture
+          // (his hand is just under it), check after check, moving smoothly: an edge arm
+          if (!wp && P.edgeHands) {
+            const yb = RG[3], inBand = p.y >= yb - P.edgePoseBand[0] * rh && p.y <= yb + P.edgePoseBand[1] * rh && p.x >= RG[0] && p.x <= RG[2];
+            const ok = inBand && vis(wi) >= P.edgePoseVis;
+            const gapMax = Math.max(P.edgePoseGapMs, 2.5 * dtB);
+            const smoothOk = st.epPx == null || d2(pw, st.epPx) / unit <= P.poseJump[0] + P.poseJump[1] * (tMs - st.epT) / 1000;
+            if (ok && smoothOk && tMs - st.epT <= gapMax) st.epN++;
+            else st.epN = ok ? 1 : 0;
+            if (ok) { st.epT = tMs; st.epPx = pw; } else if (tMs - st.epT > gapMax) st.epPx = null;
+            if (ok && st.epN >= P.edgePoseFrames) { const lim = P.edgeOut * unit; wp = [pw[0], Math.min(pw[1], RG[3] * H + lim)]; src = 'edge'; conf = vis(wi) * 0.4; }
+          } else st.epN = 0;
         }
         if (wp) { st.armT = tMs; st.armPx = wp; }
         if (!wp) { st.wrist.reset(); st.wz.reset(); st.elbow.reset(); st.wristSrc = null; continue; }
@@ -505,7 +554,7 @@
           z += P.handDepth * zh; zn += P.handDepth;
         }
         z = clamp(zn ? z / zn : 0, P.zRange[0], P.zRange[1]);
-        if (st.wristSrc !== src) { st.wrist = new Euro3(src === 'hand' ? P.fWristHand[0] : P.fWristPose[0], src === 'hand' ? P.fWristHand[1] : P.fWristPose[1]); if (st.wristSrc && st.lastWrist) st.wrist.filter(st.lastWrist, tMs - dt * 1000); st.wristSrc = src; }
+        if (st.wristSrc !== src) { st.wrist = new Euro3(src === 'hand' ? P.fWristHand[0] : P.fWristPose[0], src === 'hand' ? P.fWristHand[1] : src === 'edge' ? 1.5 : P.fWristPose[1]); if (st.wristSrc && st.lastWrist) st.wrist.filter(st.lastWrist, tMs - dt * 1000); st.wristSrc = src; }
         const wxy = st.wrist.filter([(wp[0] - sh[0]) / unit, -(wp[1] - sh[1]) / unit, 0], tMs);
         const wz = st.wz.filter(z, tMs);
         st.lastWrist = [wxy[0], wxy[1], 0];

@@ -63,6 +63,17 @@
   // `jumpRestMs`, and it is drawn milder than a real, wide-eyed surprise (SOFT_SURPRISE).
   const LATCH = { laughLatchMs: 1500, afterLaughMs: 1500, smirkAfterMs: 1200, stepDownMs: 250, familyMinMs: 1100, jumpRestMs: 1500 };
   const FAMILY = ['smile', 'grin', 'laugh'];
+  // V7 (the next refinement, each from a moment on his footage that read wrong ON THE MODEL; review/V7-TRACKING-NOTES.md):
+  //   - smileOpenDwellMs: a smile score that comes with a wide-open jaw is usually a syllable ("ah", "ee" pull the corners
+  //     for 150 ms): it must last this long before the smile snaps (a real open smile lasts; a laugh has its own rule).
+  //     Not within smileRecentMs of a smile, grin or laugh: there an open smile is the same feeling coming back;
+  //   - (tried and dropped: no surprise while he looks down / with lowered lids. He nods into his real brow raises, so
+  //     that rule took 5 of his 10 real surprises with the one false one. The switch is left in at "off": surDownCut 0.)
+  //   - a shocked "O" ends when his jaw has been shut for shockedShutMs (it was held 0.6 - 0.9 s over a closed mouth);
+  //   - an angry face that is ON stays on while he looks down or aside (those only block a START): it dropped out for
+  //     0.4 s at every glance; and it needs angryUnderMs under its level to go.
+  // avatar.html?expr7=0 (or VTExpr.create(hero, { v7: false })) = the rules and faces of round 5.
+  const V7 = { smileOpenJaw: 0.55, smileOpenDwellMs: 280, smileRecentMs: 2500, surDownCut: 0, shockedShutJaw: 0.35, shockedShutMs: 150, shockedMinMs: 280, angryUnderMs: 650 };
 
   /** The measurements the scores are made of, from one perf.face. */
   function features(f, voice) {
@@ -88,7 +99,7 @@
     };
   }
   /** The score of every expression (0..1) for those measurements. */
-  function scores(m, out) {
+  function scores(m, out, v7) {
     const s = out || {};
     const noSmile = 1 - sstep(0.15, 0.32, m.sm), shut = 1 - sstep(0.2, 0.42, m.jaw);
     // a laugh = a big smile with the jaw dropped, or with the eyes squeezed while the mouth is open (smiling talk is a smile)
@@ -100,12 +111,15 @@
     s.shocked = sstep(0.55, 0.8, m.jaw) * sstep(0.4, 0.7, m.browUp) * noSmile;
     // brows far up, or brows that JUMP up against where they have been riding (he talks with raised brows for whole
     // stretches: only the jump is a surprise)
-    const surOk = noSmile * (1 - sstep(0.3, 0.5, m.browDn));
+    let surOk = noSmile * (1 - sstep(0.3, 0.5, m.browDn));
+    if (v7 && V7.surDownCut > 0) surOk *= 1 - V7.surDownCut * num(m.down);
     m.surFar = sstep(0.78, 0.98, m.browUp) * surOk;                                             // brows far up: the full surprise
     m.surJump = m.noJump ? 0 : sstep(0.25, 0.42, m.browUp - num(m.browBase)) * sstep(0.55, 0.75, m.browUp) * surOk;   // a jump: the milder one
     s.surprise = Math.max(m.surFar, m.surJump);
     if (m.noSmirk) s.smirk = 0;
-    s.angry = sstep(0.55, 0.78, m.browDn) * sstep(0.25, 0.5, m.pinch + 0.5 * m.browDn) * noSmile * (1 - sstep(0.3, 0.6, m.browUp)) * (1 - num(m.down)) * (1 - 0.6 * num(m.aside));
+    const angryFace = sstep(0.55, 0.78, m.browDn) * sstep(0.25, 0.5, m.pinch + 0.5 * m.browDn) * noSmile * (1 - sstep(0.3, 0.6, m.browUp));
+    s.angry = angryFace * (1 - num(m.down)) * (1 - 0.6 * num(m.aside));
+    m.angryStay = v7 ? angryFace : s.angry;        // V7: what keeps an angry face that is already on
     s.sad = sstep(0.38, 0.6, m.frown) * sstep(0.35, 0.6, Math.max(m.browIn, m.tilt)) * (1 - sstep(0.3, 0.5, m.browDn)) * shut * noSmile;
     s.squint = sstep(0.7, 0.86, m.squint) * sstep(1.02, 0.86, m.eye) * (1 - sstep(0.5, 0.7, m.browDn)) * noSmile * (1 - sstep(0.5, 0.8, Math.max(m.blinkL, m.blinkR))) * (1 - num(m.down));     // lowered lids on a look down are not a squint
     const bh = Math.max(m.blinkL, m.blinkR), bl = Math.min(m.blinkL, m.blinkR);
@@ -115,8 +129,8 @@
   }
 
   class Classifier {
-    constructor(rules) {
-      this.rules = rules || RULES;
+    constructor(rules, v7) {
+      this.rules = rules || RULES; this.v7 = v7 !== false;
       this.t = {}; for (const n of NAMES) this.t[n] = { over: -1, under: -1, on: false, since: -1e9 };
       this.cur = null; this.side = 1; this.s = {}; this.m = null;
       this.soft = false; this.jumpEndAt = -1e9; this.familyAt = -1e9; this.laughEndAt = -1e9; this.laughSeenAt = -1e9; this.curSince = -1e9; this.lostAt = -1; this.now = 0;
@@ -136,22 +150,28 @@
       const dtB = this.browAt == null ? 0 : clamp(now - this.browAt, 0, 500); this.browAt = now;
       this.browBase = this.browBase == null ? m.browUp : this.browBase + (m.browUp - this.browBase) * (1 - Math.exp(-dtB / (m.browUp < this.browBase ? 1200 : 4000)));
       m.browBase = this.browBase;
+      if (m.jaw < V7.shockedShutJaw) { if (this.shutAt == null) this.shutAt = now; } else this.shutAt = null;
       m.noJump = !this.t.surprise.on && now - this.jumpEndAt < LATCH.jumpRestMs;                 // a brow-jump surprise just ended
       m.noSmirk = !this.t.smirk.on && now - this.familyAt < LATCH.smirkAfterMs;                  // inside / just after a smile, grin or laugh
-      const s = scores(m, this.s);
+      const s = scores(m, this.s, this.v7);
       if (s.laugh >= this.rules.laugh.exit) this.laughSeenAt = now;
       const smiling = this.t.smile.on || this.t.grin.on || s.smile >= this.rules.smile.exit;
       for (const n of NAMES) {
-        const R = this.rules[n], t = this.t[n], v = s[n];
+        const R = this.rules[n], t = this.t[n], v = n === 'angry' && t.on ? Math.max(s[n], num(m.angryStay)) : s[n];
+        const dwell = this.v7 && n === 'smile' && m.jaw > V7.smileOpenJaw && now - this.familyAt > V7.smileRecentMs ? Math.max(R.dwellMs, V7.smileOpenDwellMs) : R.dwellMs;
         if (!t.on) {
-          if (v >= R.enter) { if (t.over < 0) t.over = now; if (now - t.over >= R.dwellMs) { t.on = true; t.since = now; t.under = -1; if (n === 'wink') this.side = m.blinkL >= m.blinkR ? -1 : 1; if (n === 'smirk') this.side = m.smL >= m.smR ? -1 : 1; if (n === 'surprise') this.soft = m.surFar < R.enter; } }
+          if (v >= R.enter) { if (t.over < 0) t.over = now; if (now - t.over >= dwell) { t.on = true; t.since = now; t.under = -1; if (n === 'wink') this.side = m.blinkL >= m.blinkR ? -1 : 1; if (n === 'smirk') this.side = m.smL >= m.smR ? -1 : 1; if (n === 'surprise') this.soft = m.surFar < R.enter; } }
           else t.over = -1;
         } else if (v < R.exit) {
           if (t.under < 0) t.under = now;
           // the laugh's latch: while he still smiles, its own score must have been away for laughLatchMs
-          const under = n === 'laugh' && smiling ? Math.max(R.underMs || 120, LATCH.laughLatchMs) : (R.underMs || 120);
-          if (now - t.since >= R.holdMs && now - t.under >= under) {
+          let under = n === 'laugh' && smiling ? Math.max(R.underMs || 120, LATCH.laughLatchMs) : (R.underMs || 120);
+          if (this.v7 && n === 'angry') under = Math.max(under, V7.angryUnderMs);
+          // V7: a shocked "O" over a mouth he has shut is let go early
+          const shut = this.v7 && n === 'shocked' && this.shutAt != null && now - this.shutAt >= V7.shockedShutMs && now - t.since >= V7.shockedMinMs;
+          if (shut || (now - t.since >= R.holdMs && now - t.under >= under)) {
             t.on = false; t.over = -1;
+            if (shut) this.noKeep = true;                 // his mouth is shut: the "O" goes now, whatever is under it
             if (n === 'laugh') this.laughEndAt = now;
             if (n === 'surprise' && this.soft) this.jumpEndAt = now;
           }
@@ -173,8 +193,10 @@
         // inside the smile family it must have been shown for a while
         if (this.lostAt < 0) this.lostAt = now;
         const family = FAMILY.includes(cur) && FAMILY.includes(best);
-        if (now - this.lostAt < LATCH.stepDownMs || (family && now - this.curSince < LATCH.familyMinMs)) best = cur;
+        if (this.noKeep && cur === 'shocked') { /* V7: let go at once */ }
+        else if (now - this.lostAt < LATCH.stepDownMs || (family && now - this.curSince < LATCH.familyMinMs)) best = cur;
       } else this.lostAt = -1;
+      this.noKeep = false;
       // counts = how often the face CHANGED to that expression (what a viewer sees)
       if (best && best !== cur) this.counts[best]++;
       if (best !== cur) { this.curSince = now; this.lostAt = -1; }
@@ -239,6 +261,21 @@
     }
     return out;
   }
+  const SNAP6 = { ryo: build('ryo'), melanie: build('melanie') };        // the faces of round 5 (?expr7=0)
+  // V7: what read wrong on the model. Ryo's resting brows are stern, so his smile read as smug: the smile takes the
+  // brows of his approved "happy" face. Melanie's mouth is small and her brows sit under the fringe: her smile and grin
+  // are carried by the eyes as well (lower lids up, more blush), and her grin opens further.
+  const OVER7 = {
+    ryo: {
+      smile: { set: { browL_y: 0.42, browR_y: 0.42, browL_ang: 0.3, browR_ang: 0.3, browL_bend: 0.7, browR_bend: 0.7, blush: 0.5 } },
+      grin: { set: { browL_y: 0.5, browR_y: 0.5, browL_ang: 0.35, browR_ang: 0.35, browL_bend: 0.75, browR_bend: 0.75 } },
+    },
+    melanie: {
+      smile: { set: { eyeL_squint: 0.5, eyeR_squint: 0.5, blush: 0.75, browL_y: 0.3, browR_y: 0.3, browL_bend: 0.6, browR_bend: 0.6 }, open: 0.12 },
+      grin: { set: { eyeL_squint: 0.55, eyeR_squint: 0.55, blush: 0.8 }, open: 0.6 },
+    },
+  };
+  for (const h in OVER7) for (const n in OVER7[h]) { const o = OVER7[h][n], base = OVER[h][n] || (OVER[h][n] = {}); base.set = Object.assign({}, base.set || {}, o.set); if (o.open != null) base.open = o.open; }
   const SNAP = { ryo: build('ryo'), melanie: build('melanie') };
 
   // ------------------------------------------------------------------ the mouth: camera + voice
@@ -249,15 +286,18 @@
     noMicGain: 1.3,           // no microphone at all: the camera's small openings are drawn larger
   });
 
-  function create(hero) {
-    const cls = new Classifier(), voice = new Voice.Mouth();
+  function create(hero, opts) {
+    let v7 = !(opts && opts.v7 === false);
+    try { if (typeof location !== 'undefined' && location && new URLSearchParams(location.search || '').get('expr7') === '0') v7 = false; } catch (e) { /* no page */ }
+    const FACES = v7 ? SNAP : SNAP6;
+    const cls = new Classifier(null, v7), voice = new Voice.Mouth();
     const w = Object.fromEntries(NAMES.map((n) => [n, 0]));
-    let snap = SNAP[hero] || SNAP.ryo, heroId = hero;
+    let snap = FACES[hero] || FACES.ryo, heroId = hero;
     let camAct = 0, camPrev = 0, camAt = -1e9, liveBlink = [0, 0], gate = 0, lastFace = null, cur = null;
     const dbg = { expr: null, gate: 0, voiceOpen: 0, camOpen: 0, open: 0 };
     return {
       classifier: cls, voice, weights: w,
-      setHero(h) { if (h !== heroId) { heroId = h; snap = SNAP[h] || SNAP.ryo; } },
+      setHero(h) { if (h !== heroId) { heroId = h; snap = FACES[h] || FACES.ryo; } },
       mic(level, bands, now) { voice.update(level, Array.isArray(bands) ? bands : null, now); },
       push(face, now) {
         lastFace = face || null;
@@ -325,5 +365,5 @@
     };
   }
 
-  return { create, Classifier, features, scores, RULES, NAMES, SNAP, COMMON, OVER, MOUTH, EASE, LATCH, SOFT_SURPRISE };
+  return { create, Classifier, features, scores, RULES, NAMES, SNAP, SNAP6, COMMON, OVER, MOUTH, EASE, LATCH, SOFT_SURPRISE, V7 };
 });
