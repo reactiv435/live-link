@@ -281,3 +281,39 @@ second; LIVE Link gives them their own 6) and S4 (covers over 300 kB are dropped
 Link passes the site's full-size artwork address).
 
 Tests after the fix round: `npm test` 256 tests, 252 pass, 4 skip, 0 fail (v8-events 13, v8-show-feed 18, v8-keys 9).
+
+## 2.3.0: the vendor re-sync (Part 2 of the fix round)
+
+- `vendor/vtuber` re-synced with `node scripts/sync-vtuber.js --from D:\claude-cache\vtuber-v8 --commit b07a495` (the
+  same script and the same allow-list as every sync before: the VTuber repo's own `runtime-files.json` at that commit,
+  files read straight from git, so nothing git-ignored, no testdata, no tmp, no review media can come along; the pin
+  test checks it). Pin `b07a495f9fb6be272cc5839bbab6eb5c16ade1ee`, 124 files, 54.1 MB, 22 test helpers. New files:
+  `js/v8-show.js`, `js/v8/*` (5), `mask/mask-hud.js`, `mask/mask-v8.js`.
+- `package.json` version 2.3.0 (the pin test's version line follows).
+- v2 is ON with this copy: `VtuberHost.wire` = 2 from its files and from its `ready` message; its state carries
+  `puppet: true | false`, so the keys are now also given back when the Mask's Puppet show switch is off (the one thing
+  the fix round could not know).
+- `test/v8-vendor.test.js` (1 test, the REAL vendored VTuber in its own process, a pretend OBS, the stand-in site):
+  wire 2 from "ready"; seven keys held with the Mask + Puppet show on; a pressed key reaches the VTuber's page
+  (`v8-cmd` goo); Puppet show off = keys given back, on = held again; Ryo = given back; no song on air = zero reads of
+  the site while "nothing on air" still reaches the page; a song on air = reads begin and the page gets the song and
+  its hype (350 taps, rank 2); off air = reads stop; the LIVE drops = keys back and the page hears "nothing on air".
+- `npm test`: 257 tests, 253 pass, 4 skip, 0 fail.
+- The VTuber smoke on a PACKAGED app (`scripts/vtuber-smoke.js --app ... --video test/fixtures/synthetic-face.jpg
+  --characters ryo,mask --secs 30`; a fenced-in test run: own data folder, pretend OBS, a drawn face, made-up
+  viewers): no problem found, no missing file. App start 6.6 s, VTuber window 1.0 s, ready 11.2 s.
+  Ryo: 28.3 updates a second (face 28.3), picture to pose 53 ms median / 93 ms p95, avatar page 30 frames a second
+  (min 30), 0 errors. Mask: 29.5 updates a second (face 29.5), 51 ms / 79 ms, 30 frames a second median (min 1: one
+  slow second), 0 errors. Closing VTuber hid the avatar in OBS in 29 ms. The stand-in site saw only pair, config
+  and status (no read of the public tables: nothing was on air).
+- **How the packaged app was made, and what it is not:** `npx electron-builder --win --dir --publish never` with its
+  output in a folder of its own (`D:\claude-cache\livelink-v8-pack`, deleted afterwards), the way the Mac CI does it.
+  No installer, no `npm run dist`, no release script, no tag. Because this worktree's `node_modules` is a junction,
+  electron-builder could not follow tiktok-live-connector's own dependencies and left them out of that app; a test
+  run never connects to TikTok so the smoke is not affected, but **that folder was not a shippable app**. A build
+  from a normal checkout is not affected.
+- Seen in the smoke's own output, not changed: with a still picture as the camera the page says "ON, but the picture
+  ... is black or frozen" (a still picture does not move; as in 2.2.0), and the card text the smoke notes down for
+  each run is the one from a moment before the switch (it wrote "Ryo" for the Mask run).
+- Not confirmed by eye: the keys part of the card in the packaged app's own window (no screenshot of it was taken).
+  It follows from wire 2 (the packaged `resources/vtuber/js/mask-wire.js` has `cleanShow`) and the card code.
