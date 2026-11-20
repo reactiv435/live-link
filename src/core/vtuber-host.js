@@ -15,7 +15,10 @@ const fs = require('fs');
 const path = require('path');
 
 const STOP_WAIT_MS = 9000;       // the VTuber switches the avatar off in OBS (under 3 s) and closes its camera window first
-const START_WAIT_MS = 30000;
+// How long the VTuber's process gets to say "ready". It says so the moment its local server listens (before any OBS
+// work, which is reported on its own), so this only covers the process starting and loading its files; 90 s leaves
+// room for a weak or virus-scanned PC. A slow OBS, or a slow window list, can no longer run into this wait.
+const START_WAIT_MS = 90000;
 const NAMES = { ryo: 'Ryo', melanie: 'Melanie', mask: 'the Mask' };
 
 /**
@@ -42,7 +45,8 @@ function vtuberCard(h, { enabled = true, platform = process.platform } = {}) {
   if (s.obs === 'closed') return card('fix', 'VTuber needs OBS. Open OBS: it puts the character on top of your camera there.', show);
   if (s.obs === 'off') return card('fix', 'OBS has its remote control switched off. In OBS click Tools, then WebSocket Server Settings, tick "Enable WebSocket server" and click OK.', show);
   if (s.obs === 'password') return card('fix', 'OBS asks for its password. Paste it in the VTuber window: in OBS click Tools, WebSocket Server Settings, Show Connect Info, and copy the password.', show);
-  if (s.obs === 'ok' && !s.camera) return card('fix', 'OBS has no camera yet. Add your camera to a scene in OBS, then come back.', show);
+  if (s.obs === 'ok' && !s.camera && s.cameraAsk) return card('fix', 'OBS has more than one camera. In the VTuber window, click the picture that shows you.', show);
+  if (s.obs === 'ok' && !s.camera) return card('fix', 'VTuber could not find a camera it knows in OBS. It works with DroidCam and Video Capture Device sources.', show);
   const av = s.avatar || {};
   if (av.problem === 'name-taken') return card('fix', 'OBS already has something else called "VTuber Avatar". Rename or delete it in OBS, then press Open VTuber.', show);
   if (av.problem === 'not-visible') return card('fix', 'Your camera is hidden in every OBS scene. Show your camera in the scene you stream, and the character goes on top of it.', show);
