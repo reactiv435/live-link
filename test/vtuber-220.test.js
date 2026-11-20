@@ -242,7 +242,8 @@ test('2.2.0 the VTuber process: start, the card follows, events handed over in-a
 
   // a crash of the VTuber's process: the avatar page in OBS hides by itself (its own rule), LIVE Link says so and offers Open
   let exits = 0; host.on('exit', () => exits++);
-  children[0].kill();
+  // SIGKILL = a real crash on every system (on macOS a plain kill() is SIGTERM, which the VTuber answers with an orderly stop)
+  children[0].kill('SIGKILL');
   await until(() => host.status === 'idle', 5000, 'LIVE Link notices');
   assert.equal(host.problem, 'CRASH'); assert.equal(exits, 1); assert.equal(host.running, false); assert.equal(host.isOn, false);
   assert.deepEqual(vtuberCard(host.getState()), { show: true, tone: 'fix', title: 'VTuber', text: 'VTuber stopped. Press Open VTuber.', button: 'Open VTuber' });
