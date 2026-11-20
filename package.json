@@ -114,7 +114,7 @@
       ],
       "x64ArchFiles": "Contents/Resources/ffmpeg/**",
       "extendInfo": {
-        "NSMicrophoneUsageDescription": "LIVE Link listens to your microphone so your VTuber's mouth moves when you talk. Nothing is recorded or sent."
+        "NSMicrophoneUsageDescription": "LIVE Link uses your microphone to move your VTuber's mouth when you talk, and for the sound of your show when it records your stream window."
       }
     },
     "dmg": {
