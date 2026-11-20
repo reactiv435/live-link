@@ -15,7 +15,8 @@
 //            a combo finished (its end frame; count = the combo's final total) or a single gift arrived
 //   'comment' { name, handle, userId, text, at }      'follow' / 'share' { name, handle, userId, at }
 //   V8: every local event also carries `avatar` (the viewer's picture: an allowed https address or null, pictures.js);
-//   'like', 'gift' and 'giftEnd' carry `userId` (TikTok's id as digits, or null). None of it goes to the site.
+//   'like', 'gift' and 'giftEnd' carry `userId` (TikTok's id as digits, or null); 'gift' and 'giftEnd' carry `handle`
+//   (the real @id or null; `userHandle` falls back to the display name for the site). None of it goes to the site.
 //
 // Why these numbers (ported from tos crew live/server.js):
 //   * a LIVE room that dropped: retry after 10 s;
@@ -332,7 +333,7 @@ class TikTokLink extends EventEmitter {
       const s = this.giftStreaks.get(base) || { seq: 0, last: 0, ended: false, at: now };
       const endFrame = Number(d.repeatEnd) === 1;
       // 2.1.2 (local only): note the combo's end with its final total, for the 'giftEnd' event. Crediting is unchanged.
-      const noteEnd = () => { this._giftEnd = { key: `c:${base}:${s.seq}`, count: s.last, coins, giftId, name, userHandle, userName, userId: who.uid, avatar: who.avatar, at: this.now() }; };
+      const noteEnd = () => { this._giftEnd = { key: `c:${base}:${s.seq}`, count: s.last, coins, giftId, name, userHandle, userName, handle: rawHandle || null, userId: who.uid, avatar: who.avatar, at: this.now() }; };
       if (hasGroup) {
         // Real groupIds are unique per combo (millisecond stamps; 0 reuses in 124 real frames): a count at or below
         // what we have is a stale or repeated frame, never a new combo. The end frame usually repeats the last count.
@@ -361,9 +362,9 @@ class TikTokLink extends EventEmitter {
         key = `m:${sha([this.state.roomId || '', userId, rawGiftId, this.now(), Math.random()])}`;
       }
       units = count;
-      this._giftEnd = { key, count, coins, giftId, name, userHandle, userName, userId: who.uid, avatar: who.avatar, at: this.now() };   // a single gift is its own end
+      this._giftEnd = { key, count, coins, giftId, name, userHandle, userName, handle: rawHandle || null, userId: who.uid, avatar: who.avatar, at: this.now() };   // a single gift is its own end
     }
-    return { key, count, units, coins, giftId, name, imageUrl, userHandle, userName, userId: who.uid, avatar: who.avatar, at: this.now() };
+    return { key, count, units, coins, giftId, name, imageUrl, userHandle, userName, handle: rawHandle || null, userId: who.uid, avatar: who.avatar, at: this.now() };
   }
 
   // 2.1.2: who sent a comment, follow or share (the same cuts as for gifts). Local only: for the VTuber on this PC.

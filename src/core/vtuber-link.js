@@ -94,7 +94,8 @@ function buildControl(action, name, at = Date.now()) {
 }
 
 // who a local event is from, in the v2 event's words (a v1 event ignores them)
-const whoOf = (x) => ({ handle: x.handle || x.userHandle, uid: x.userId, avatar: x.avatar });
+// (a gift's `userHandle` may be the display name, a fallback the site needs: only a real @id is passed on as the handle)
+const whoOf = (x) => ({ handle: 'handle' in x ? x.handle : x.userHandle, uid: x.userId, avatar: x.avatar });
 
 class VtuberLink {
   constructor(opts = {}) {
@@ -346,8 +347,9 @@ class VtuberLink {
     // the waiting crowd and the named viewers take turns, so neither starves the other
     const crowdNow = this.crowd > 0 && (!top || this.lastTapNamed);
     this.lastLikeAt = now;
-    if (crowdNow) { const n = this.crowd; this.crowd = 0; this.lastTapNamed = false; this._send('like', { name: null, count: n }, this.now()); }
-    else { this.tappers.delete(topKey); this.lastTapNamed = true; this._send('like', { name: top.name, count: top.count, handle: top.handle, uid: top.uid, avatar: top.avatar }, this.now()); }
+    // a send the caps refused (10 other events a second, shared with comments) keeps its taps for the next turn
+    if (crowdNow) { this.lastTapNamed = false; if (this._send('like', { name: null, count: this.crowd }, this.now())) this.crowd = 0; }
+    else { this.lastTapNamed = true; if (this._send('like', { name: top.name, count: top.count, handle: top.handle, uid: top.uid, avatar: top.avatar }, this.now())) this.tappers.delete(topKey); }
     if ((this.tappers.size || this.crowd) && this.live) this.tapTimer = this._later(() => this._flushTaps(), this.likeEveryMs);
   }
 

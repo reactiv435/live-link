@@ -186,6 +186,11 @@ test('C1 through the real TikTok link: likes, comments, follows, shares and gift
   assert.deepEqual([by.follow.handle, by.follow.uid, by.follow.avatar], ['fan', '7000000000000000012', PIC('fan')]);
   assert.deepEqual([by.share.handle, by.share.uid, by.share.avatar], ['sharer', '7000000000000000013', null], 'a picture on an unknown server is not passed on');
   assert.deepEqual([by.gift.name, by.gift.handle, by.gift.uid, by.gift.avatar, by.gift.gift, by.gift.coins, by.gift.count], ['BEN', 'ben', '7000000000000000014', PIC('ben'), 'Galaxy', 1000, 1]);
+  // a gifter TikTok sent no @id for: the site still gets a name as its handle (it refuses an empty one); the VTuber gets no handle
+  c.emit('gift', { giftId: '5655', repeatCount: 1, repeatEnd: 0, groupId: '0', common: { msgId: '70000009002' },
+    gift: { id: '5655', name: 'Rose', type: 0, combo: false, diamondCount: 1 }, user: { userId: '7000000000000000015', nickname: 'No Handle' }, toUser: { displayId: 'test_host' } });
+  assert.ok(await until(() => got.length === 6));
+  assert.deepEqual([got[5].name, got[5].handle, got[5].uid], ['No Handle', '', '7000000000000000015']);
   // the site: the push carries the gift exactly as in 2.2.0, with no viewer id and no picture of the viewer in it
   assert.ok(await until(() => mock.state.pushes.some((p) => (p.gifts || []).length)), 'the gift reached the stand-in site');
   const sent = JSON.stringify(mock.state.calls.map((x) => x.body));
@@ -193,7 +198,7 @@ test('C1 through the real TikTok link: likes, comments, follows, shares and gift
   const g = mock.state.pushes.flatMap((p) => p.gifts || [])[0];
   assert.deepEqual(Object.keys(g).sort(), ['at', 'coins', 'count', 'gift_id', 'image_url', 'key', 'name', 'user_handle', 'user_name']);
   // the count of picture servers (family names only) is there for the log
-  assert.match(link.pictures.line(), /passed on: tiktokcdn\.com 4; not on the list \(no picture shown\): evil\.example 1/);
+  assert.match(link.pictures.line(), /passed on: tiktokcdn\.com 4; not on the list \(no picture shown\): evil\.example 1; viewers without a picture: 1/);
 });
 
 // ---------------------------------------------------------------- which VTuber gets what
@@ -290,16 +295,18 @@ test('v2 taps in a big room: viewers who waited too long go out summed with no v
   const link = new FakeLink();
   const got = [];
   const fn = Object.assign((ev) => { got.push(ev); return true; }, { v: 2 });
-  const v = new VtuberLink({ http: false, direct: () => fn, likeEveryMs: 40, crowdAfterMs: 120 }).attach(link);
+  const v = new VtuberLink({ http: false, direct: () => fn, likeEveryMs: 40, crowdAfterMs: 500 }).attach(link);
   link.set('live');
   let total = 0;
   for (let i = 0; i < 60; i++) { const n = 1 + (i % 4); total += n; link.emit('like', { count: n, name: 'V' + i, handle: 'v' + i, userId: (7000000000000000100n + BigInt(i)).toString(), avatar: PIC('v' + i) }); }
-  assert.ok(await until(() => got.reduce((n, e) => n + e.count, 0) === total, 4000), `sum ${got.reduce((n, e) => n + e.count, 0)} of ${total}`);
+  assert.ok(await until(() => got.reduce((n, e) => n + e.count, 0) === total, 8000), `sum ${got.reduce((n, e) => n + e.count, 0)} of ${total}`);
   const named = got.filter((e) => e.uid), crowd = got.filter((e) => !e.uid && !e.handle);
-  assert.ok(named.length >= 2 && named.length <= 6, `named ${named.length}`);
+  assert.ok(named.length >= 2 && named.length <= 16, `named ${named.length}`);
   assert.ok(crowd.length >= 1, 'the rest went out summed');
   for (const e of crowd) assert.deepEqual([e.name, e.handle, e.uid, e.avatar], ['Someone', '', null, null]);
-  assert.ok(got.length <= 12, `60 viewers became ${got.length} events`);
+  assert.ok(got.length <= 22, `60 viewers became ${got.length} events`);
+  for (let i = 1; i < named.length; i++) assert.ok(named[i].count <= named[i - 1].count, 'the biggest tappers got their own missiles first');
+  assert.equal(got.reduce((n, e) => n + e.count, 0), total, 'a send refused by the 10-a-second cap kept its taps for the next turn: every tap arrived once');
   // the LIVE ends with taps waiting: they are dropped, never sent late
   link.emit('like', { count: 9, name: 'Late', handle: 'late', userId: '7000000000000000999' });
   const n = got.length;

@@ -322,6 +322,10 @@ button:focus:not(:focus-visible) { outline: none; }
 .vtkeys.taken .vtkeys-sum { color: #fff; }
 .vtkeys-note { margin: 8px 0 6px; font-size: 12.5px; line-height: 1.45; color: #d6d6d6; text-wrap: pretty; }
 .vtkeys-switch { display: flex; align-items: center; justify-content: space-between; gap: 10px; font: 600 13px var(--font); color: var(--text); padding: 4px 0 8px; }
+.vtkeys-switch input[type=checkbox] { appearance: none; width: 42px; height: 24px; border-radius: 999px; background: #2a2a2a; position: relative; cursor: pointer; flex: none; transition: background .15s; }
+.vtkeys-switch input[type=checkbox]::after { content: ""; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; background: #cfcfcf; transition: transform .15s; }
+.vtkeys-switch input[type=checkbox]:checked { background: var(--crimson-deep); }
+.vtkeys-switch input[type=checkbox]:checked::after { transform: translateX(18px); background: #fff; }
 .vtkeys-rows { display: grid; grid-template-columns: 1fr auto auto; gap: 6px 10px; align-items: center; }
 .vtkeys-rows.off { opacity: .5; }
 .vtkeys-rows span.k-label { font: 600 13px var(--font); color: var(--text); }
