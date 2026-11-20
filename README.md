@@ -29,6 +29,9 @@ says what to do in one sentence. The one thing some hosts must do once: in OBS c
 Settings**, tick **Enable WebSocket server**, click **OK**. On a Mac, macOS asks once to allow the microphone (the
 character's mouth follows your voice). Your picture and your voice never leave your computer.
 
+Uninstalling LIVE Link leaves the hidden "VTuber Avatar" source in OBS. Take it out first with **More > Remove VTuber
+from OBS**, or delete it in OBS yourself.
+
 ### Recording (2.0+)
 LIVE Link records each TikTok LIVE on your computer and, after the LIVE, turns every song review into a clip for the
 artist. If TikTok won't hand LIVE Link your LIVE's video (the recording card turns red and says why), 2.0.8 gives you

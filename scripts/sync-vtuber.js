@@ -77,6 +77,9 @@ function sync(from, rev) {
   const r = spawnSync('git', ['-C', from, 'cat-file', '--batch'], { input: all.map(([f]) => `${commit}:${f}\n`).join(''), maxBuffer: 1024 * 1024 * 1024 });
   if (r.status !== 0) throw new Error('git cat-file failed: ' + String(r.stderr || '').slice(0, 300));
   const buf = r.stdout;
+  // what was there before, so the names that come and go are printed: a file added under js/**, mask/**, assets/** or
+  // vendor/** ships and is published without anyone listing it, so it must at least be seen
+  const before = { out: new Set(walk(OUT).filter((f) => f !== 'VTUBER_PIN.json')), dev: new Set(walk(DEV)) };
   fs.rmSync(OUT, { recursive: true, force: true });
   fs.rmSync(DEV, { recursive: true, force: true });
   const pin = { about: 'Written by scripts/sync-vtuber.js. Never edit vendor/vtuber or test/vtuber-dev by hand: change the VTuber repo, commit, sync again.', commit, date, bytes: 0, files: {}, dev: {} };
@@ -94,6 +97,9 @@ function sync(from, rev) {
     if (dir === OUT) { pin.files[f] = sha(body); pin.bytes += size; } else pin.dev[f] = sha(body);
   }
   fs.writeFileSync(PIN, JSON.stringify(pin, null, 1) + '\n');
+  const diff = (label, was, now) => [...now.filter((f) => !was.has(f)).map((f) => `+ ${label}/${f}`), ...[...was].filter((f) => !now.includes(f)).map((f) => `- ${label}/${f}`)];
+  // (not part of the pin file: only for the person running the sync)
+  Object.defineProperty(pin, 'changes', { value: [...diff('vendor/vtuber', before.out, files), ...diff('test/vtuber-dev', before.dev, dev)], enumerable: false });
   return pin;
 }
 
@@ -111,6 +117,8 @@ if (require.main === module) {
   if (!from) { console.error('Say where the VTuber repo is: node scripts/sync-vtuber.js --from <path> [--commit <commit>]'); process.exit(2); }
   try {
     const pin = sync(path.resolve(from), opt('commit') || 'HEAD');
+    const changes = pin.changes || [];
+    console.log(changes.length ? `files added (+) and removed (-) by this sync:\n${changes.join('\n')}` : 'no file was added or removed by this sync (same names as before)');
     const problems = check();
     if (problems.length) throw new Error('the copy does not match its own pin:\n' + problems.join('\n'));
     console.log(`vendor/vtuber = VTuber commit ${pin.commit} (${pin.date}): ${Object.keys(pin.files).length} files, ${(pin.bytes / 1048576).toFixed(1)} MB; test/vtuber-dev: ${Object.keys(pin.dev).length} files`);
