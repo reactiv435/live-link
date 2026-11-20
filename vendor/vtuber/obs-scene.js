@@ -167,8 +167,9 @@ function onCanvas(box, canvas) {
  * The camera that is him. `wanted` = the camera kept from before (picked by hand, or picked by itself once and saved;
  * kept while that input still exists). Otherwise: the droidcam_obs input visible in the scene on air (the bigger box if
  * two); none there: the droidcam_obs input with the biggest box on the canvas in any scene (a tie: the box in the scene
- * with more in it, his show scene). Other camera kinds only when there is no droidcam_obs input at all.
- * Returns { camera, why: 'chosen' | 'on-air' | 'biggest' | 'not-visible' } or null.
+ * with more in it, his show scene). Other camera kinds only when there is no droidcam_obs input at all: exactly one
+ * = that one; more than one = { camera: null, why: 'ask' } (he is asked once in the VTuber window).
+ * Returns { camera, why: 'chosen' | 'on-air' | 'biggest' | 'not-visible' | 'ask' } or null.
  */
 function chooseCamera(col, wanted) {
   const all = cameraList(col);
@@ -176,6 +177,9 @@ function chooseCamera(col, wanted) {
   const droid = all.filter((c) => CAMERA_KINDS.includes(c.kind));
   const pool = droid.length ? droid : all;
   if (!pool.length) return null;
+  // No DroidCam and more than one other camera (a webcam AND a capture card are the same kind to OBS): the biggest box
+  // on air may be the game, not him. Nothing is picked: the page asks once, and the answer is kept (`wanted`).
+  if (!droid.length && pool.length > 1) return { camera: null, why: 'ask' };
   const area = (c) => Math.max(0, ...c.placements.filter((p) => p.visible && p.scene === col.program).map((p) => onCanvas(p.box, col.canvas)));
   const onAir = pool.filter((c) => area(c) > 0).sort((a, b) => area(b) - area(a));
   if (onAir.length) return { camera: onAir[0], why: 'on-air' };

@@ -29,7 +29,10 @@ const DEFAULTS = {
 let settings = { ...DEFAULTS };
 try { settings = { ...DEFAULTS, ...JSON.parse(localStorage.getItem(LS_SETTINGS) || '{}') }; } catch (e) { /* keep defaults */ }
 const saveSettings = () => { try { localStorage.setItem(LS_SETTINGS, JSON.stringify(settings)); } catch (e) { /* ignore */ } };
-const getPw = () => { try { return localStorage.getItem(LS_PW) || ''; } catch (e) { return ''; } };
+// Inside the one-click page (and so inside LIVE Link) the OBS password never comes near this page: the app itself talks
+// to OBS. The box of the earlier, stand-alone tracker page is taken out there, and nothing is read from or kept in storage.
+const getPw = () => { if (EMBED) return ''; try { return localStorage.getItem(LS_PW) || ''; } catch (e) { return ''; } };
+if (EMBED) { try { localStorage.removeItem(LS_PW); } catch (e) { /* ignore */ } const pwBox = document.getElementById('password'); if (pwBox) pwBox.remove(); }
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 
 // ---------------------------------------------------------------- the saved calibration
@@ -673,7 +676,7 @@ function bindUi() {
   $('refresh').addEventListener('click', () => hub.postMessage({ t: 'obs-refresh' }));
   $('connect').addEventListener('click', () => {
     const pw = $('password');
-    if (pw.value) { try { localStorage.setItem(LS_PW, pw.value); } catch (e) { /* ignore */ } pw.value = ''; }
+    if (pw && pw.value && !EMBED) { try { localStorage.setItem(LS_PW, pw.value); } catch (e) { /* ignore */ } pw.value = ''; }
     settings.host = $('host').value.trim() || '127.0.0.1';
     settings.port = clamp(parseInt($('port').value, 10) || 4455, 1, 65535);
     saveSettings(); pushCfg();

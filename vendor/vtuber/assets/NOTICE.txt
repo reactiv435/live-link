@@ -1,0 +1,28 @@
+ReactivVibeAI character and brand art: ALL RIGHTS RESERVED
+==========================================================
+
+The files in this folder are brand art of ReactivVibeAI. They are not
+software and they are NOT open source. The AGPL-3.0 licence named in LIVE
+Link's package.json covers the program's code only. It does NOT cover these
+files, and no other open licence does either.
+
+What this notice covers (everything under assets/):
+
+  models/   ryo-arena.glb, melanie-arena.glb
+            (the Ryo and Melanie 3D models, with the textures inside them)
+  faces/    the Ryo and Melanie face and texture sheets and their data files
+            (ryo-*.webp, ryo-*.json, melanie-*.webp, melanie-*.json)
+  bg/       the backgrounds (courtyard.webp, frostkeep.webp, grove.webp)
+  ui/       the UI pictures (ryo.jpg, melanie.jpg, mask.svg)
+
+and the names and looks of Ryo, Melanie and the Mask.
+
+Copyright (c) ReactivVibeAI. All rights reserved.
+
+These files ship with LIVE Link only so that hosts can use the characters on
+their own streams through LIVE Link. They may not be copied out, changed,
+sold or used anywhere else without written permission from ReactivVibeAI.
+Finding them in a public source repository or in an installed copy of LIVE
+Link gives no licence to them.
+
+The full notes: docs/licenses/VTUBER.md in the LIVE Link repository.

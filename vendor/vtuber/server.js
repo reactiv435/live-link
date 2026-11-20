@@ -149,7 +149,11 @@ function start(port = PORT, opts = {}) {
   const PRIVATE = new Set(['mask-event']);
   server.on('upgrade', (req, socket, head) => {
     const okPath = (req.url || '').split('?')[0] === '/ws';
-    if (!originAllowed(req.headers.origin) || !hostAllowed(req.headers.host)) { socket.destroy(); return; }
+    // ownOriginOnly (inside LIVE Link): a page served from another local port gets nothing at all; only this server's
+    // own pages (the VTuber window, the avatar source in OBS) and local tools without an Origin may join
+    const o = req.headers.origin, p = server.address() && server.address().port;
+    const originOk = opts.ownOriginOnly ? (!o || o === 'http://127.0.0.1:' + p || o === 'http://localhost:' + p) : originAllowed(o);
+    if (!originOk || !hostAllowed(req.headers.host)) { socket.destroy(); return; }
     if (!okPath) { if (!opts.upgrade || !opts.upgrade(req, socket, head)) socket.destroy(); return; }
     wss.handleUpgrade(req, socket, head, ws => wss.emit('connection', ws, req));
   });

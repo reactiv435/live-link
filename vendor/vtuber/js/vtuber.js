@@ -16,7 +16,8 @@
     obsClosed: 'OBS is not open. Open OBS and I will connect by myself.',
     obsOff: 'OBS is not letting other programs in. In OBS open Tools, then WebSocket Server Settings, tick "Enable WebSocket server" and press OK. I will connect by myself.',
     obsPassword: 'OBS did not accept its password. In OBS open Tools, then WebSocket Server Settings, press "Show Connect Info", copy the Server Password and paste it here.',
-    noCamera: 'I cannot find a camera in OBS. Add your DroidCam camera to a scene and I will find it by myself.',
+    noCamera: 'I could not find a camera I know in OBS. I work with DroidCam and Video Capture Device sources. Add yours to a scene and I will find it by myself.',
+    pickCamera: 'OBS has more than one camera. Click the picture below that shows you. I only ask this once.',
     nameTaken: 'OBS already has something else named "VTuber Avatar". Rename or delete that one in OBS and I will try again by myself.',
     addFailed: 'I could not add the avatar to OBS. Close this window and double-click VTuber.bat again.',
     hidden: (cam) => 'Your camera (' + cam + ') is hidden in every scene. Show it in the scene you use and I will put the avatar on top of it by myself.',
@@ -40,13 +41,13 @@
     // the avatar page inside OBS never answered, even after its Refresh and a new address
     onSilent: (who) => 'ON, but OBS is not showing ' + who + ', so your real camera is still showing. Close OBS and open it again when you can; I connect again by myself.',
     // the Mask (the third choice): OBS's page could not draw it (its graphics are missing there)
-    onNoMask: 'ON, but OBS cannot draw the Mask on this PC, so your real camera is still showing. Pick Ryo or Melanie instead.',
+    onNoMask: 'ON, but OBS cannot draw the Mask on this computer, so your real camera is still showing. Pick Ryo or Melanie instead.',
     offHint: 'Your real camera is showing. Press to become the character.',
     onHint: 'The character covers your camera. Press to show your real camera.',
   };
   const NOTE = {
     slowPath: 'Reading the camera the slower way. It still works.',
-    busy: 'Your PC is very busy: the arms may lag behind.',               // Ryo / Melanie only: the Mask has no arms
+    busy: 'Your computer is very busy: the arms may lag behind.',               // Ryo / Melanie only: the Mask has no arms
     liftHands: (who) => 'Lift your hands into the camera and ' + who.charAt(0).toUpperCase() + who.slice(1) + ' copies them.',
     micBlocked: 'I cannot hear your microphone, so the mouth follows your face only.',
     otherPanel: 'The old control page is open too and is in charge. Click here to take over.',
@@ -54,11 +55,11 @@
   };
   // the Mask: where its music comes from, in plain words (one line under the Visualizer button)
   const SOUND = {
-    pc: 'Music: the mask moves to what this PC plays.',
+    pc: 'Music: the mask moves to what this computer plays.',
     obs: 'Music: the mask moves to the sound level OBS hears (loudness and beat only).',
-    voice: 'Music: I hear no music from this PC, so the mask moves to your voice.',
-    voiceNoMic: 'Music: I hear no music from this PC and no microphone, so the mask only follows your face.',
-    starting: 'Music: getting ready to listen to this PC ...',
+    voice: 'Music: I hear no music from this computer, so the mask moves to your voice.',
+    voiceNoMic: 'Music: I hear no music from this computer and no microphone, so the mask only follows your face.',
+    starting: 'Music: getting ready to listen to this computer ...',
   };
   const MODE = {
     toViz: 'VISUALIZER', toVizHint: 'Break the face apart into a music visualizer.',
@@ -605,7 +606,7 @@
     if (srv.obs === 'closed') return ['wait', SAY.obsClosed];
     if (srv.obs === 'off') return ['bad', SAY.obsOff];
     if (srv.obs === 'password') return ['bad', SAY.obsPassword];
-    if (!srv.camera) return ['bad', SAY.noCamera];
+    if (!srv.camera) return ['bad', srv.cameraWhy === 'ask' ? SAY.pickCamera : SAY.noCamera];
     const cam = srv.camera, ts = tstate();
     if (srv.avatar.removed) return ['wait', SAY.removed];
     if (srv.avatar.problem === 'name-taken') return ['bad', SAY.nameTaken];
@@ -681,12 +682,15 @@
   }
   let camsShown = '';
   function renderCams() {
-    const srv = st.srv, box = $('cams');
+    const srv = st.srv;
     if (!srv) return;
-    const key = srv.cameras.map((c) => c.name + ':' + (c.scenes || []).join(',')).join('\n') + '|' + srv.camera;
+    // more than one camera and no DroidCam: the same pictures are shown right under the sentence, once, until he clicks one
+    const ask = srv.obs === 'ok' && !srv.camera && srv.cameraWhy === 'ask', box = $(ask ? 'camAsk' : 'cams');
+    $('camAsk').hidden = !ask;
+    const key = (ask ? 'ask|' : '') + srv.cameras.map((c) => c.name + ':' + (c.scenes || []).join(',')).join('\n') + '|' + srv.camera;
     if (key !== camsShown) {
       camsShown = key;
-      box.textContent = '';
+      $('cams').textContent = ''; $('camAsk').textContent = '';
       for (const c of srv.cameras) {
         const b = document.createElement('button');
         b.className = 'plain cam' + (c.name === srv.camera ? ' opt sel' : ''); b.dataset.name = c.name;
@@ -697,12 +701,12 @@
         where.textContent = sc.length ? 'In: ' + sc.slice(0, 3).join(', ') + (sc.length > 3 ? ' and ' + (sc.length - 3) + ' more' : '') : 'Not shown in any scene';
         b.title = sc.length ? c.name + ' shows in: ' + sc.join(', ') : c.name;
         b.append(img, name, where);
-        b.addEventListener('click', async () => { b.blur(); const fresh = await post('camera', { name: c.name }); if (fresh) { st.srv = fresh; st.forceShots = false; st.recoveries = []; } render(); });
+        b.addEventListener('click', async () => { b.blur(); const fresh = await post('camera', { name: c.name }); if (fresh) { st.srv = fresh; st.forceShots = false; st.recoveries = []; } render(); renderCams(); });
         box.appendChild(b);
       }
       $('camHint').textContent = srv.camera ? 'Watching you through ' + srv.camera + '. Click another picture if that is not you.' : '';
     }
-    if ($('more').open && srv.obs === 'ok') for (const b of box.children) b.firstChild.src = '/api/vt/shot?name=' + encodeURIComponent(b.dataset.name) + '&t=' + Date.now();
+    if ((ask || $('more').open) && srv.obs === 'ok') for (const b of box.children) b.firstChild.src = '/api/vt/shot?name=' + encodeURIComponent(b.dataset.name) + '&t=' + Date.now();
   }
   function render() {
     const [cls, text] = sentence();

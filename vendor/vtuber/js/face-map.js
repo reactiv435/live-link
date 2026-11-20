@@ -128,7 +128,7 @@
    *              talking mouth lifts the corner landmarks too, but never that score (under 0.1 in 90 % of talk frames,
    *              0.3-0.9 in his smiles and laughs)
    */
-  const DEAD = { browUp: 0.3, browDown: 0.42, tilt: 0.35, eyeWide: 0.22, roundFromWidth: 0.3, eyeNarrow: 0.1, squint: 0.25, frown: 0.2, press: 0.3, mouthX: 0.2, open: 0.1, lidPair: [0.12, 0.4], squintPair: [0.2, 0.6], smileGate: [0.1, 0.35] };
+  const DEAD = { browUp: 0.3, browDown: 0.42, tilt: 0.35, eyeWide: 0.22, roundFromWidth: 0.3, eyeNarrow: 0.1, squint: 0.25, frown: 0.2, press: 0.3, mouthX: 0.2, open: 0.1, lidPair: [0.12, 0.4], blinkPair: [0.6, 0.85], squintPair: [0.2, 0.6], smileGate: [0.1, 0.35] };
   const num = (v) => (Number.isFinite(v) ? v : 0);
 
   /**
@@ -211,6 +211,10 @@
     // a blink in transit: one eye shut and the other well on its way = both shut (in a wink the open eye reads near 0)
     let bL = clamp(blinkL, 0, 1), bR = clamp(blinkR, 0, 1);
     if (Math.max(bL, bR) > 0.8 && Math.min(bL, bR) > 0.3) bL = bR = Math.max(bL, bR);
+    // one eye HALF shut and the other open is the camera too (a turned or tilted head: the tracker reads 0.5 - 0.7 on one
+    // eye for a few frames), and it draws as a half wink. A lone eye closes with the other until it is clearly shut
+    // (a real wink reads over 0.85 and is snapped by js/expr.js from the tracker's own numbers, not from these).
+    { const hi = Math.max(bL, bR), lo = Math.min(bL, bR), one = lo + (hi - lo) * sstep(DEAD.blinkPair[0], DEAD.blinkPair[1], hi); if (bL > bR) bL = one; else bR = one; }
     p.eyeL_open = clamp((lidMid + lidGap / 2 * lidKeep) * (1 - bL), 0, 1.4);
     p.eyeR_open = clamp((lidMid - lidGap / 2 * lidKeep) * (1 - bR), 0, 1.4);
     // the lower lids as well (one eye in shadow squinted more than the other in every frame of his stern face)
@@ -253,7 +257,7 @@
   // the whole 0.5 - 2 s: measured on body-close 1.4 - 3.3 s, show-mixed 22.5 - 23.0 s), and the avatar stood with its eyes
   // shut. A real blink is over in 0.3 s. So: both eyes 'shut' with the gaze far down for longer than `afterMs`, and the
   // lid gap not really closed (`minOpen`), is a look down: the lids come up to `lid` (lowered, not shut).
-  const LOOKDOWN = { gaze: -0.55, afterMs: 380, minOpen: 0.16, lid: 0.62 };
+  const LOOKDOWN = { gaze: -0.55, afterMs: 380, minOpen: 0.16, lid: 0.62, lockGaze: -0.5, lockEaseMs: 160 };   // lockGaze: where locked eyes go in a look down
   /** What a hand over the face freezes: mouth, brows, lids (not the gaze, not the head; idle blinks go on). */
   const HELD = PARAMS.map((q) => q[0]).filter((k) => /^mouth|^brow|^eye[LR]_|^blush/.test(k));
 
@@ -414,7 +418,10 @@
       // eyes on camera: where the eyes POINT is the lens, whatever he looks at (lids, squints, winks, brows and mouth are
       // still his; a held manual face keeps its own eyes)
       this.gazeLive[0] = aim.gazeX; this.gazeLive[1] = aim.gazeY;
-      if (this.lock && !this.presetParams) { aim.gazeX = clamp(this.lock.x, -1, 1); aim.gazeY = clamp(this.lock.y, -1, 1); }
+      // ... except in a long look down (LOOKDOWN): eyes held on the lens under lowered lids read as a heavy-lidded glance at
+      // the viewer, which is not what he is doing. There the eyes go most of the way down with him and come back as he does.
+      this.downW = (this.downW || 0) + ((this.downOn && tracked ? 1 : 0) - (this.downW || 0)) * (1 - Math.exp(-step / LOOKDOWN.lockEaseMs));
+      if (this.lock && !this.presetParams) { aim.gazeX = clamp(this.lock.x, -1, 1); aim.gazeY = clamp(this.lock.y, -1, 1); if (this.downW > 0.002) aim.gazeY = lerp(aim.gazeY, Math.min(aim.gazeY, LOOKDOWN.lockGaze), this.downW); }
       this.talk = Math.max(this.mic, tracked ? clamp(T.mouthOpen * 1.5, 0, 1) * 0.6 : 0);
       // springs (sub-stepped so a long frame cannot blow up)
       const o = this.out, v = this.vel;

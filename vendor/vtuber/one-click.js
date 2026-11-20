@@ -298,13 +298,15 @@ async function startOneClick(opts = {}) {
     // The camera that is him is picked ONCE (the phone in the scene on air; none there: the phone with the biggest box
     // in any scene) and SAVED: kept from show to show, whatever is on air at the start, until he picks another under
     // More. Never switched mid-show.
+    // (more than one camera and none of them a DroidCam: nothing is picked; the page asks him once, and that is saved)
     const pick = scene.chooseCamera(col, record.camera);
-    if (pick && pick.why !== 'chosen' && pick.why !== 'not-visible') {
+    if (pick && pick.why === 'ask' && S.cameraWhy !== 'ask') log('more than one camera in OBS and no DroidCam: the page asks which one is him (' + list.length + ' cameras)');
+    if (pick && pick.camera && pick.why !== 'chosen' && pick.why !== 'not-visible') {
       record.camera = pick.camera.name; record.cameraWhy = pick.why;
       log('camera picked by itself and kept from now on: ' + pick.camera.name + ' (' + pick.why + ', on air: ' + col.program + ')');
       saveRecord();
     }
-    camera = pick ? pick.camera : null;
+    camera = pick ? pick.camera || null : null;
     S.camera = camera ? camera.name : null;
     S.cameraWhy = !pick ? 'none' : pick.why === 'chosen' ? (record.cameraWhy || 'chosen') : pick.why;
     // ON, and the scene on air shows only his OTHER phone: a hint on the page (he may have picked the wrong one)
@@ -323,7 +325,7 @@ async function startOneClick(opts = {}) {
         log('avatar sync failed: ' + e.message);
       }
       saveRecord();
-    } else if (!camera) S.avatar = { placed: 0, scenes: [], problem: 'no-camera', removed: S.avatar.removed };
+    } else if (!camera) S.avatar = { placed: 0, scenes: [], problem: pick && pick.why === 'ask' ? 'pick-camera' : 'no-camera', removed: S.avatar.removed };
     await ensureProjector();
   }
 
@@ -745,9 +747,13 @@ async function startOneClick(opts = {}) {
     return true;
   };
 
-  app = await serverJs.start(port, { api, onRelay, upgrade, accept, headers, ...(dataDir ? { calibFile: path.join(dataDir, 'calib-saved.json') } : {}), ...(embedded ? { onMissing: (p) => log('a file the page asked for is not there: ' + p) } : {}) });
+  app = await serverJs.start(port, { api, onRelay, upgrade, accept, headers, ...(dataDir ? { calibFile: path.join(dataDir, 'calib-saved.json') } : {}), ...(embedded ? { ownOriginOnly: true, onMissing: (p) => log('a file the page asked for is not there: ' + p) } : {}) });
   if (!embedded) S.chromeMajor = chromeMajor(findChrome() || '');
   log('started on ' + base + (obsUrl ? ' (test OBS)' : ''));
+  // Inside LIVE Link: the parent hears "ready" NOW, the moment the page can be served. What follows (finding OBS, adding
+  // the avatar, opening the camera's window: on a slow PC the window listings alone can take minutes) is reported on its
+  // own through `state` and `camera-window`, so a slow first start is never taken for a dead one and ended half way.
+  if (embedded) host({ t: 'ready', port, test });
   if (recordMigrated) { log(recordMigrated); saveRecord(); }
 
   link.on('state', (state) => {
@@ -789,7 +795,7 @@ async function startOneClick(opts = {}) {
   function hostState() {
     const a = S.lastAvatar || {};
     return {
-      on: S.on, obs: S.obs, camera: S.camera, cameraKind: (S.cameras.find((c) => c.name === S.camera) || {}).kind || null,
+      on: S.on, obs: S.obs, camera: S.camera, cameraAsk: S.cameraWhy === 'ask', cameraKind: (S.cameras.find((c) => c.name === S.camera) || {}).kind || null,
       character: a.mask === true ? 'mask' : typeof a.character === 'string' ? a.character.slice(0, 24) : null,
       avatar: { placed: S.avatar.placed, problem: S.avatar.problem, removed: !!S.avatar.removed, silent: !!S.avatarSilent },
       capture: publicState().capture.mode, sound: sound.state().src, page: !!S.pageSeenAt, pageEver: S.pageEver,
