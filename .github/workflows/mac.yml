@@ -187,10 +187,10 @@ jobs:
           OUT="$RUNNER_TEMP/vtuber-smoke"
           set +e
           FFMPEG_DIR="$PWD/vendor/ffmpeg/darwin-arm64" node scripts/vtuber-smoke.js --app "$EXE" --video test/fixtures/synthetic-face.jpg \
-            --secs 20 --characters mask,ryo --feed 3 --need-face 1 --out "$OUT"
+            --secs 20 --characters mask,ryo --feed 3 --need-face 1 --min-face 0.5 --out "$OUT"
           CODE=$?
           set -e
-          node -e 'const fs=require("fs");let t="(no result file)";try{const r=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));t=JSON.stringify({platform:r.platform,ready:r.readySentence,readyMs:r.readyMs,capture:r.capture,avatar:r.avatar,runs:(r.runs||[]).map(x=>({character:x.character,on:x.onSentence,updatesPerSec:x.updatesPerSec,facePerSec:x.facePerSec,pictureToPoseMs:x.pictureToPoseMs,avatarFps:x.avatarFps,avatarErrors:x.avatarErrors,events:x.events,notes:x.pageErrors})),closeHidMs:r.closeHidMs,problems:r.problems},null,1)}catch{};console.log("::"+(process.argv[2]==="0"?"notice":"error")+" title=VTuber smoke::"+t.replace(/%/g,"%25").replace(/\r/g,"%0D").replace(/\n/g,"%0A"))' "$OUT/result.json" "$CODE"
+          node -e 'const fs=require("fs");let t="(no result file)";try{const r=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));t=JSON.stringify({platform:r.platform,ready:r.readySentence,readyMs:r.readyMs,capture:r.capture,avatar:r.avatar,runs:(r.runs||[]).map(x=>({character:x.character,on:x.onSentence,updatesPerSec:x.updatesPerSec,facePerSec:x.facePerSec,pictureToPoseMs:x.pictureToPoseMs,avatarFps:x.avatarFps,avatarErrors:x.avatarErrors,events:x.events,notes:x.pageErrors})),closeHidMs:r.closeHidMs,problems:r.problems,warnings:r.warnings},null,1)}catch{};console.log("::"+(process.argv[2]==="0"?"notice":"error")+" title=VTuber smoke::"+t.replace(/%/g,"%25").replace(/\r/g,"%0D").replace(/\n/g,"%0A"))' "$OUT/result.json" "$CODE"
           exit $CODE
 
       - uses: actions/upload-artifact@v4

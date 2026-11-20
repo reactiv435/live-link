@@ -8,7 +8,7 @@
 // a non-empty picture), that viewer events arrive, and that closing VTuber hides the avatar in OBS within 3 s.
 //
 //   node scripts/vtuber-smoke.js [--app <path to the packaged LIVE Link program>] [--video <clip or still picture>]
-//        [--secs 30] [--out <folder>] [--feed 5] [--characters ryo,mask] [--need-face 1] [--min-updates 0]
+//        [--secs 30] [--out <folder>] [--feed 5] [--characters ryo,mask] [--need-face 1] [--min-face 5] [--min-updates 0]
 //        [--soak-min 0] [--no-avatar] [--keep-data]
 // --video: what the pretend camera shows (a path; nothing is copied or uploaded). Without it: a plain grey picture
 // (no face to find: the run then only proves the road, not the tracking).
@@ -30,6 +30,9 @@ const SECS = Number(opt('secs', 30)), FEED = Number(opt('feed', 5)), SOAK_MIN = 
 const CHARACTERS = String(opt('characters', 'ryo,mask')).split(',').filter(Boolean);
 const NEED_FACE = opt('need-face', opt('video', '') ? '1' : '0') === '1';
 const MIN_UPDATES = Number(opt('min-updates', 0));
+// --min-face: the face rate below which the run fails (5 a second by default). GitHub's Macs have no graphics chip, so the
+// tracker runs there on the processor at ~1 a second: the Mac CI passes 0.5 (the face IS found) and slower than 5 is a warning.
+const MIN_FACE = Number(opt('min-face', 5));
 const OUT = path.resolve(opt('out', path.join(os.tmpdir(), 'll-vtuber-smoke-' + Date.now())));
 const APP = opt('app', '');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -216,7 +219,8 @@ async function main() {
     if (av) run.avatarPage = await av.eval('JSON.stringify({ hero: __vt.fps, mask: window.VTMaskPage ? (() => { const s = VTMaskPage.status(); return { fps: VTMaskPage.fps(), ok: s.ok, error: s.error, drawn: s.drawn, faceHz: s.faceHz, sound: s.sound, events: s.events, lagMs: s.lagMs }; })() : null, gifts: (() => { try { const g = __vt.gifts; return g ? { fired: g.fired || g.count || null } : null; } catch (e) { return null; } })() })').then(JSON.parse).catch((e) => ({ error: String(e && e.message) }));
     run.pageErrors = await page.eval('JSON.stringify({ notes: window.__vt ? __vt.notes() : [], tracker: (() => { const t = window.__vt && __vt.tracker(); return t ? { status: t.status, detail: t.detail } : null; })() })').then(JSON.parse).catch(() => null);
     console.log(who + ': ' + JSON.stringify({ updates: run.updatesPerSec, face: run.facePerSec, latency: run.pictureToPoseMs, avatarFps: run.avatarFps, errors: run.avatarErrors, events: run.events }));
-    if (NEED_FACE && run.facePerSec < 5) problem(who + ': the face was found only ' + run.facePerSec + ' times a second');
+    if (NEED_FACE && run.facePerSec < MIN_FACE) problem(who + ': the face was found only ' + run.facePerSec + ' times a second');
+    else if (NEED_FACE && run.facePerSec < 5) { (R.warnings = R.warnings || []).push(who + ': the face was found ' + run.facePerSec + ' times a second (slow on this machine; not a failure below 5 with --min-face ' + MIN_FACE + ')'); console.log('  WARNING: ' + R.warnings[R.warnings.length - 1]); }
     if (MIN_UPDATES && run.updatesPerSec < MIN_UPDATES) problem(who + ': ' + run.updatesPerSec + ' updates a second (wanted ' + MIN_UPDATES + ')');
     if (av && run.avatarErrors) problem(who + ': ' + run.avatarErrors + ' error(s) on the avatar page');
     if (av && shots.length && Math.max(...shots) < 3000) problem(who + ': the avatar page drew an empty picture');
