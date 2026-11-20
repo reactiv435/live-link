@@ -47,7 +47,9 @@ jobs:
           vendor/ffmpeg/darwin-arm64/ffmpeg -hide_banner -encoders 2>/dev/null | grep -q " libx264 " || { echo "::error title=FFmpeg::missing libx264"; exit 1; }
 
       - name: Tests
-        run: node --test "test/*.test.js"
+        run: |
+          set -o pipefail
+          node --test "test/*.test.js" 2>&1 | tee "$RUNNER_TEMP/tests.txt" || { node scripts/ci-test-report.js "$RUNNER_TEMP/tests.txt"; exit 1; }
 
       # 2.2.0: the VTuber. vendor/vtuber must be exactly the pinned commit, and its Node half (the local server, the OBS
       # link, scene sync, events, start / crash / stop) must work on a Mac against a pretend OBS. Named on its own so a
