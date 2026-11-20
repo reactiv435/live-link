@@ -24,8 +24,20 @@
 // HTTP. Every rule above stays: the same events, the same caps, only while a LIVE is connected. When no VTuber runs
 // inside the app, the HTTP way is used exactly as in 2.1.2 (the desktop-shortcut VTuber on the host's own computer).
 // opts.http === false (test runs) switches the HTTP way off altogether.
+// V8 (the puppet show; the VTuber repo's V8-PHASE2.md, section C): contract v2.
+//  * C1: an event also says who the viewer is: { v: 2, ..., handle, uid, avatar }. handle = the @id without '@'
+//    (<= 40, A-Z a-z 0-9 . _), uid = TikTok's user id as digits (<= 30) or null, avatar = an https picture address on an
+//    allowed TikTok picture server (pictures.js) or null. The picture address goes to the VTuber on this computer only.
+//  * C3 `show` (sendShow: the song on air, its cover, the hype rank, the host's grade; built by show-feed.js) and
+//    C4 `control` (sendControl: a global key pressed in LIVE Link) travel the same two ways, with their own small cap.
+//  * Only to a VTuber that speaks v2: the in-app one says so (direct().v >= 2), the HTTP one in its GET answer (v >= 2).
+//    A v1 VTuber (an older desktop-shortcut copy) gets exactly the 2.1.2 / 2.2.0 events and no show / control.
+//  * v2 taps: each like event names ONE viewer with their OWN taps (a boss-fight missile carries their picture, and the
+//    fight's top 3 must be true). Still at most 4 like sends a second: the viewer with the most waiting taps goes first;
+//    taps that waited 3 s (a big room) go out summed as one event with no viewer on it, so the total is never lost.
 const http = require('http');
 const { clip } = require('./tiktok-link');
+const { cleanPictureUrl, cleanUid, cleanHandle, TIKTOK_PICTURE_HOSTS } = require('./pictures');
 
 const HOST = '127.0.0.1';
 const DEFAULT_PORT = 8791;
@@ -40,9 +52,15 @@ const MAX_IN_FLIGHT = 8;
 const RATE_PER_S = { gift: 20, other: 10 };
 const FOLLOW_REPEAT_MS = 10 * 60000;    // a follow-unfollow-follow loop shows once
 const TOLD_MAX = 2000;
+const CROWD_AFTER_MS = 3000;            // v2 taps: a viewer's taps that waited this long go out summed, with no viewer on them
+const TAPPERS_MAX = 300;                // v2 taps: viewers with waiting taps kept at once (the rest are summed)
+const SIDE_PER_S = 6;                   // show + control messages a second (their own cap, never the viewers' events')
+const PUPPET_MOVES = ['goo', 'fire', 'melt', 'crack', 'eat'];
+const CONTROL_ACTIONS = ['puppet', 'fight', 'vote'];
 
 // One event in the contract's shape, every field clipped; null when there is nothing to send.
-function buildEvent(type, x = {}, at = Date.now()) {
+// v = 2 adds who the viewer is (handle, uid, avatar), each checked again here; v = 1 is the 2.1.2 event, field for field.
+function buildEvent(type, x = {}, at = Date.now(), v = 1) {
   if (!TYPES.includes(type)) return null;
   const int = (v, max) => { const n = Math.floor(Number(v)); return Number.isFinite(n) && n >= 1 ? Math.min(n, max) : null; };
   const t = Math.floor(Number(at));
@@ -58,8 +76,25 @@ function buildEvent(type, x = {}, at = Date.now()) {
     ev.text = clip(String(x.text || '').replace(/\s+/g, ' '), 150);
     if (!ev.text) return null;
   }
+  if (v === 2) {
+    ev.v = 2;
+    ev.handle = cleanHandle(x.handle);
+    ev.uid = cleanUid(x.uid);
+    ev.avatar = cleanPictureUrl(x.avatar, TIKTOK_PICTURE_HOSTS);
+  }
   return ev;
 }
+
+/** C4: { v: 2, type: 'control', action, name, at } or null. name = the move for 'puppet', '' otherwise. */
+function buildControl(action, name, at = Date.now()) {
+  if (!CONTROL_ACTIONS.includes(action)) return null;
+  if (action === 'puppet' && !PUPPET_MOVES.includes(name)) return null;
+  const t = Math.floor(Number(at));
+  return { v: 2, type: 'control', action, name: action === 'puppet' ? name : '', at: t > 0 ? t : Date.now() };
+}
+
+// who a local event is from, in the v2 event's words (a v1 event ignores them)
+const whoOf = (x) => ({ handle: x.handle || x.userHandle, uid: x.userId, avatar: x.avatar });
 
 class VtuberLink {
   constructor(opts = {}) {
@@ -76,10 +111,16 @@ class VtuberLink {
     this.sendTimeoutMs = opts.sendTimeoutMs || SEND_TIMEOUT_MS;
     this.likeEveryMs = opts.likeEveryMs || LIKE_EVERY_MS;
     this.comboQuietMs = opts.comboQuietMs || COMBO_QUIET_MS;
+    this.crowdAfterMs = opts.crowdAfterMs || CROWD_AFTER_MS;
     // No keep-alive (Node's default agent keeps sockets): a socket the VTuber closed must never fail the next send.
     this.agent = new http.Agent({ keepAlive: false, maxSockets: MAX_IN_FLIGHT });
     this.live = false;              // a TikTok LIVE is connected
     this.ok = false;                // the last ask found a VTuber listening: sends allowed
+    this.peerV = 1;                 // the contract version the HTTP VTuber said it speaks (its GET answer)
+    this.tappers = new Map();       // v2 taps: viewer key -> { count, name, handle, uid, avatar, at }
+    this.crowd = 0;                 // v2 taps: taps that waited too long, to go out summed
+    this.tapTimer = null; this.lastTapNamed = false;
+    this.side = { at: -Infinity, n: 0 };   // show + control: their own cap
     this.said = null;               // the last thing logged: 'found' | 'lost' | null (one line per change)
     this.probing = false;
     this.probeTimer = null;
@@ -91,7 +132,7 @@ class VtuberLink {
     this.sweepTimer = null;
     this.follows = new Map();       // viewer -> when their follow was sent (memory only)
     this.rate = { gift: { at: -Infinity, n: 0 }, other: { at: -Infinity, n: 0 } };
-    this.stats = { probes: 0, sent: 0, failed: 0, dropped: 0, direct: 0 };
+    this.stats = { probes: 0, sent: 0, failed: 0, dropped: 0, direct: 0, show: 0, control: 0 };
     this.failedListener = new Set();
     this.stopped = false;
   }
@@ -109,9 +150,10 @@ class VtuberLink {
     on('gift', (g) => this._giftFrame(g));
     on('giftEnd', (g) => this._giftEnd(g));
     on('like', (l) => this._like(l));
-    on('comment', (c) => this._send('comment', { name: c.name, text: c.text }, c.at));
+    on('comment', (c) => this._send('comment', { name: c.name, text: c.text, ...whoOf(c) }, c.at));
     on('follow', (f) => this._follow(f));
-    on('share', (s) => this._send('share', { name: s.name }, s.at));
+    on('share', (s) => this._send('share', { name: s.name, ...whoOf(s) }, s.at));
+    this.pictures = link.pictures && typeof link.pictures.line === 'function' ? link.pictures : null;
     try { this._state(link.state || {}); } catch {}
     return this;
   }
@@ -128,14 +170,22 @@ class VtuberLink {
     if (live === this.live) return;
     this.live = live;
     if (live) this._probeLoop();
-    else this._idle();             // the LIVE ended or dropped: ask again when it is back (no log line)
+    else {
+      this._idle();                // the LIVE ended or dropped: ask again when it is back (no log line)
+      // V8: which picture-server families this LIVE's viewers used (family names and counts only: no address, no viewer)
+      try { const line = this.pictures && this.pictures.line(); if (line) { this.log('info', `VTuber link: ${line}`); this.pictures.reset(); } } catch {}
+    }
   }
+
+  /** the contract version the listening VTuber speaks: 2 = it takes who the viewer is, `show` and `control` */
+  _v(inApp) { return inApp ? (Number(inApp.v) >= 2 ? 2 : 1) : (this.ok && this.peerV >= 2 ? 2 : 1); }
 
   _idle() {
     this.live = false;
     this.ok = false;
     this.clearTimeout(this.probeTimer); this.probeTimer = null;
     if (this.likes) { this.clearTimeout(this.likes.timer); this.likes = null; }
+    this.clearTimeout(this.tapTimer); this.tapTimer = null; this.tappers.clear(); this.crowd = 0;
     this.clearTimeout(this.sweepTimer); this.sweepTimer = null;
     this.combos.clear();
   }
@@ -183,7 +233,9 @@ class VtuberLink {
         res.on('end', () => {
           let j = null;
           try { j = JSON.parse(body); } catch {}
-          done(res.statusCode === 200 && !!j && j.ok === true && Number(j.v) >= 1);
+          const ok = res.statusCode === 200 && !!j && j.ok === true && Number(j.v) >= 1;
+          if (ok) this.peerV = Number(j.v) >= 2 ? 2 : 1;
+          done(ok);
         });
         res.on('error', () => done(false));
       });
@@ -233,13 +285,14 @@ class VtuberLink {
     this.told.delete(key);
     this.told.set(key, total);
     if (this.told.size > TOLD_MAX) this.told.delete(this.told.keys().next().value);
-    this._send('gift', { name: g.userName || g.userHandle, gift: g.name, coins: g.coins, count: total - before }, g.at);
+    this._send('gift', { name: g.userName || g.userHandle, gift: g.name, coins: g.coins, count: total - before, ...whoOf(g) }, g.at);
   }
 
   _like(l) {
     if (!this.live || !l || (!this.ok && !this._inApp())) return;   // nothing listening: nothing is kept for later
     const c = Math.floor(Number(l.count) || 0);
     if (!(c > 0)) return;
+    if (this._v(this._inApp()) >= 2) { this._tap(l, c); return; }
     if (!this.likes) this.likes = { count: 0, name: null, timer: null };
     this.likes.count += c;
     if (l.name || l.handle) this.likes.name = l.name || l.handle;
@@ -259,6 +312,39 @@ class VtuberLink {
     this._send('like', { name: b.name, count: b.count }, this.now());
   }
 
+  // ---- v2 taps: one viewer per like event, with their own taps
+  _tap(l, c) {
+    const uid = cleanUid(l.userId), handle = cleanHandle(l.handle);
+    const key = uid ? 'u' + uid : handle ? 'h' + handle.toLowerCase() : null;
+    if (!key) this.crowd += c;                           // a tap with no viewer on it
+    else {
+      const e = this.tappers.get(key);
+      if (e) { e.count += c; if (l.avatar) e.avatar = l.avatar; if (l.name) e.name = l.name; }
+      else if (this.tappers.size >= TAPPERS_MAX) this.crowd += c;
+      else this.tappers.set(key, { count: c, name: l.name || l.handle || null, handle, uid, avatar: l.avatar || null, at: this.mono() });
+    }
+    if (!this.tapTimer) this.tapTimer = this._later(() => this._flushTaps(), Math.max(0, this.lastLikeAt + this.likeEveryMs - this.mono()));
+  }
+
+  _flushTaps() {
+    this.tapTimer = null;
+    const now = this.mono();
+    const early = this.lastLikeAt + this.likeEveryMs - now;           // a timer may fire a hair early
+    if (early > 0) { this.tapTimer = this._later(() => this._flushTaps(), Math.ceil(early)); return; }
+    let top = null, topKey = null;
+    for (const [key, e] of this.tappers) {
+      if (now - e.at >= this.crowdAfterMs) { this.crowd += e.count; this.tappers.delete(key); continue; }
+      if (!top || e.count > top.count) { top = e; topKey = key; }
+    }
+    if (!top && !this.crowd) return;
+    // the waiting crowd and the named viewers take turns, so neither starves the other
+    const crowdNow = this.crowd > 0 && (!top || this.lastTapNamed);
+    this.lastLikeAt = now;
+    if (crowdNow) { const n = this.crowd; this.crowd = 0; this.lastTapNamed = false; this._send('like', { name: null, count: n }, this.now()); }
+    else { this.tappers.delete(topKey); this.lastTapNamed = true; this._send('like', { name: top.name, count: top.count, handle: top.handle, uid: top.uid, avatar: top.avatar }, this.now()); }
+    if ((this.tappers.size || this.crowd) && this.live) this.tapTimer = this._later(() => this._flushTaps(), this.likeEveryMs);
+  }
+
   _follow(f) {
     const who = String(f.userId || f.handle || f.name || '');
     const now = this.mono();
@@ -268,20 +354,46 @@ class VtuberLink {
       this.follows.set(who, now);
       if (this.follows.size > TOLD_MAX) this.follows.delete(this.follows.keys().next().value);
     }
-    this._send('follow', { name: f.name }, f.at);
+    this._send('follow', { name: f.name, ...whoOf(f) }, f.at);
   }
 
   // ---------------------------------------------------------------- the send
   _send(type, fields, at) {
     const inApp = this.live && !this.stopped ? this._inApp() : null;
     if (!this.live || this.stopped || (!inApp && !this.ok)) { this.stats.dropped++; return false; }
-    const ev = buildEvent(type, fields, at || this.now());
+    const ev = buildEvent(type, fields, at || this.now(), this._v(inApp));
     if (!ev) return false;
     const r = this.rate[type === 'gift' ? 'gift' : 'other'];
     const now = this.mono();
     if (now - r.at >= 1000) { r.at = now; r.n = 0; }
     if (r.n >= RATE_PER_S[type === 'gift' ? 'gift' : 'other'] || (!inApp && this.inFlight >= MAX_IN_FLIGHT)) { this.stats.dropped++; return false; }
     r.n++;
+    return this._out(ev, inApp);
+  }
+
+  // ---------------------------------------------------------------- V8: the show state (C3) and a key press (C4)
+  /** Hands one `show` or `control` message to a VTuber that speaks v2. False when none does (nothing is kept for later). */
+  _side(msg, stat) {
+    if (!msg) return false;
+    const inApp = this.live && !this.stopped ? this._inApp() : null;
+    if (!this.live || this.stopped || (!inApp && !this.ok) || this._v(inApp) < 2) return false;
+    const now = this.mono();
+    if (now - this.side.at >= 1000) { this.side.at = now; this.side.n = 0; }
+    if (this.side.n >= SIDE_PER_S || (!inApp && this.inFlight >= MAX_IN_FLIGHT)) { this.stats.dropped++; return false; }
+    this.side.n++;
+    const took = this._out(msg, inApp);
+    if (took) this.stats[stat]++;
+    return took;
+  }
+  /** C3: the show state as show-feed.js builds it ({ v: 2, type: 'show', ... }). */
+  sendShow(msg) { return msg && msg.v === 2 && msg.type === 'show' ? this._side(msg, 'show') : false; }
+  /** C4: a key pressed in LIVE Link: action 'puppet' (name = goo | fire | melt | crack | eat), 'fight' or 'vote'. */
+  sendControl(action, name) { return this._side(buildControl(action, name, this.now()), 'control'); }
+  /** can a `show` / `control` message reach a VTuber right now? (the global keys are held only then) */
+  get canControl() { const inApp = this.live && !this.stopped ? this._inApp() : null; return !!this.live && !this.stopped && (!!inApp || this.ok) && this._v(inApp) >= 2; }
+
+  // one message out: handed over inside the app, or one POST to 127.0.0.1
+  _out(ev, inApp) {
     if (inApp) {                                         // handed over inside the app: no request, nothing to wait for
       let took = false;
       try { took = inApp(ev) !== false; } catch { took = false; }
@@ -314,4 +426,4 @@ class VtuberLink {
   }
 }
 
-module.exports = { VtuberLink, buildEvent, DEFAULT_PORT, PATH, PROBE_EVERY_MS, LIKE_EVERY_MS, COMBO_QUIET_MS };
+module.exports = { VtuberLink, buildEvent, buildControl, PUPPET_MOVES, CONTROL_ACTIONS, CROWD_AFTER_MS, DEFAULT_PORT, PATH, PROBE_EVERY_MS, LIKE_EVERY_MS, COMBO_QUIET_MS };

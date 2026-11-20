@@ -14,6 +14,8 @@
 //   'giftEnd' { key, count, coins, giftId, name, userHandle, userName, at }
 //            a combo finished (its end frame; count = the combo's final total) or a single gift arrived
 //   'comment' { name, handle, userId, text, at }      'follow' / 'share' { name, handle, userId, at }
+//   V8: every local event also carries `avatar` (the viewer's picture: an allowed https address or null, pictures.js);
+//   'like', 'gift' and 'giftEnd' carry `userId` (TikTok's id as digits, or null). None of it goes to the site.
 //
 // Why these numbers (ported from tos crew live/server.js):
 //   * a LIVE room that dropped: retry after 10 s;
@@ -29,6 +31,7 @@
 const EventEmitter = require('events');
 const crypto = require('crypto');
 const { usableTotal } = require('./batcher');
+const { pickAvatar, cleanUid, TIKTOK_PICTURE_HOSTS, PictureStats } = require('./pictures');
 
 const validId = (v) => v !== undefined && v !== null && String(v) !== '' && String(v) !== '0';
 const sha = (x) => crypto.createHash('sha1').update(JSON.stringify(x)).digest('hex').slice(0, 24);
@@ -173,6 +176,7 @@ class TikTokLink extends EventEmitter {
     this.probation = null;                    // { roomId, until } connected to that room, waiting for LIVE data
     this.watchdog = null;
     this.state = { status: 'idle', roomId: null, viewers: 0, error: null, errorKind: null, retryAt: null, wrongOwner: null };
+    this.pictures = new PictureStats();   // V8: which picture-server families this LIVE's viewers use (family names only)
     this.giftStreaks = new Map();   // combo base key -> { seq, last, ended, at }
     this.giftMsgs = new Map();      // msgId of single gifts already seen -> at
   }
@@ -309,6 +313,9 @@ class TikTokLink extends EventEmitter {
     const userName = clip(u.nickname || rawHandle, 80) || 'Someone';
     const userHandle = rawHandle || clip(userName, 60) || 'viewer';
     const userId = String(u.userId || u.id || userHandle);
+    // V8, local only (the VTuber on this PC): the gifter's id and picture. The site's push names its fields one by one
+    // (controller.js), so these never leave this computer.
+    const who = this._safePicture(u);
     const rawGiftId = validId(d.giftId) ? String(d.giftId) : String(gift.id || '');
     const giftId = /^\d{1,24}$/.test(rawGiftId) ? rawGiftId : '0';
     const count = Math.max(1, Math.floor(Number(d.repeatCount) || 1));
@@ -325,7 +332,7 @@ class TikTokLink extends EventEmitter {
       const s = this.giftStreaks.get(base) || { seq: 0, last: 0, ended: false, at: now };
       const endFrame = Number(d.repeatEnd) === 1;
       // 2.1.2 (local only): note the combo's end with its final total, for the 'giftEnd' event. Crediting is unchanged.
-      const noteEnd = () => { this._giftEnd = { key: `c:${base}:${s.seq}`, count: s.last, coins, giftId, name, userHandle, userName, at: this.now() }; };
+      const noteEnd = () => { this._giftEnd = { key: `c:${base}:${s.seq}`, count: s.last, coins, giftId, name, userHandle, userName, userId: who.uid, avatar: who.avatar, at: this.now() }; };
       if (hasGroup) {
         // Real groupIds are unique per combo (millisecond stamps; 0 reuses in 124 real frames): a count at or below
         // what we have is a stale or repeated frame, never a new combo. The end frame usually repeats the last count.
@@ -354,9 +361,9 @@ class TikTokLink extends EventEmitter {
         key = `m:${sha([this.state.roomId || '', userId, rawGiftId, this.now(), Math.random()])}`;
       }
       units = count;
-      this._giftEnd = { key, count, coins, giftId, name, userHandle, userName, at: this.now() };   // a single gift is its own end
+      this._giftEnd = { key, count, coins, giftId, name, userHandle, userName, userId: who.uid, avatar: who.avatar, at: this.now() };   // a single gift is its own end
     }
-    return { key, count, units, coins, giftId, name, imageUrl, userHandle, userName, at: this.now() };
+    return { key, count, units, coins, giftId, name, imageUrl, userHandle, userName, userId: who.uid, avatar: who.avatar, at: this.now() };
   }
 
   // 2.1.2: who sent a comment, follow or share (the same cuts as for gifts). Local only: for the VTuber on this PC.
@@ -365,7 +372,14 @@ class TikTokLink extends EventEmitter {
     const handle = clip(String(u.displayId || u.uniqueId || '').replace(/^@/, ''), 60) || null;
     const name = clip(u.nickname || '', 80) || handle || 'Someone';
     const userId = String(u.userId || u.id || handle || '');
-    return { name, handle, userId };
+    return { name, handle, userId, avatar: this._safePicture(u).avatar };
+  }
+
+  // V8, local only: a viewer's TikTok id (digits, or null) and profile picture (an allowed https address, or null; see
+  // pictures.js). Never throws: a strange user object gives nulls.
+  _safePicture(u) {
+    try { return { uid: cleanUid(u && (u.userId || u.id)), avatar: pickAvatar(u, TIKTOK_PICTURE_HOSTS, this.pictures) }; }
+    catch { return { uid: null, avatar: null }; }
   }
 
   // A local-only event (for vtuber-link.js). A listener that throws must never break the TikTok feed, the gifts or the
@@ -575,7 +589,9 @@ class TikTokLink extends EventEmitter {
       const u = (d && d.user) || {};
       const handle = clip(String(u.displayId || u.uniqueId || '').replace(/^@/, ''), 60) || null;
       const name = clip(u.nickname || '', 80) || null;
-      if (count > 0 || t !== null) this.emit('like', { count, total, at: this.now(), handle, name });
+      // V8, local only: who tapped, with their id and picture (a boss-fight missile carries it). The site never gets these.
+      const who = count > 0 ? this._safePicture(u) : { uid: null, avatar: null };
+      if (count > 0 || t !== null) this.emit('like', { count, total, at: this.now(), handle, name, userId: who.uid, avatar: who.avatar });
     });
     // 2.1.2, local only (the VTuber on this PC, see vtuber-link.js; nothing here reaches the site or the log).
     // tiktok-live-connector 2.4.4: 'chat' = WebcastChatMessage (the comment is `content`; older shapes `comment`);
