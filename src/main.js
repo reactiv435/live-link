@@ -15,6 +15,7 @@ const { pickCaptureSource, extFor, CHUNK_MS } = require('./core/capture');
 const { VtuberLink } = require('./core/vtuber-link');
 const { VtuberHost, vtuberCard, vtuberEnabled } = require('./core/vtuber-host');
 const { setupVtuberSession } = require('./core/vtuber-session');
+const { vtuberWindowSize, cleanVtuberSize } = require('./core/vtuber-window');
 const { ShowFeed } = require('./core/show-feed');
 const { PuppetKeys, puppetWanted, eatWanted, setKey: setPuppetKey, DEFAULT_KEYS: PUPPET_DEFAULT_KEYS, STREAM_DECK_KEYS } = require('./core/puppet-keys');
 const { coverHosts } = require('./core/pictures');
@@ -382,8 +383,11 @@ function openVtuber() {
     const r = await vtHost.start();
     if (!r.ok || quitting) return vtuberCardNow();
     const origin = `http://127.0.0.1:${r.port}`;
+    // V9: the control deck's size, 1366 x 768 (never below 1000 x 640), or the size he chose last time; always
+    // clamped to the primary display's work area as it is NOW (core/vtuber-window.js)
+    const vt = vtuberWindowSize({ workArea: screen.getPrimaryDisplay().workArea, saved: store ? store.get('vtuberSize') : null });
     const w = new BrowserWindow({
-      ...(TEST_RUN ? testBounds(360, 560, 0) : { width: 600, height: 940 }), minWidth: 340, minHeight: 480, title: 'LIVE Link VTuber', autoHideMenuBar: true, show: false,
+      ...(TEST_RUN ? { ...testBounds(360, 560, 0), minWidth: 340, minHeight: 480 } : { width: vt.width, height: vt.height, minWidth: vt.minWidth, minHeight: vt.minHeight }), title: 'LIVE Link VTuber', autoHideMenuBar: true, show: false,
       backgroundColor: '#0a0a0a', icon: iconPath(IS_MAC ? 'icon.png' : 'icon.ico'),
       webPreferences: { session: vtuberSession(), sandbox: true, contextIsolation: true, nodeIntegration: false, backgroundThrottling: false, autoplayPolicy: 'no-user-gesture-required', spellcheck: false },
     });
@@ -395,6 +399,17 @@ function openVtuber() {
     w.webContents.on('will-navigate', (e, url) => { if (!String(url).startsWith(origin + '/')) e.preventDefault(); });
     w.webContents.on('render-process-gone', (_e, d) => { log('warn', `VTuber: its window stopped (${d && d.reason})`); try { w.destroy(); } catch {} });
     w.once('ready-to-show', () => { if (vtWin === w) showVtuberWindow(); });
+    // V9: a size he chose himself (he resized the window) is saved when it closes, the size only (never the place,
+    // never maximized: getNormalBounds), through the app's store, and never in a test run
+    let vtResized = false;
+    w.on('resized', () => { vtResized = true; });
+    w.on('close', () => {
+      try {
+        if (TEST_RUN || !vtResized || !store) return;
+        const s = cleanVtuberSize(w.getNormalBounds());
+        if (s) store.set('vtuberSize', s);
+      } catch {}
+    });
     w.on('closed', () => {
       if (vtWin === w) vtWin = null;
       // closing the window = OFF: the VTuber switches the avatar off in OBS (the host's camera shows) and ends
