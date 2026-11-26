@@ -506,3 +506,22 @@ first message and the new `finish` shape. The reviewer's contract script with a 
   still opens Chrome at 600 x 940; that is the VTuber repo's file, not changed here.
 - Tests: `test/v9-sign-keys.test.js`, `test/v9-key-card.test.js`, `test/v9-vtuber-window.test.js`, and the counts in
   `v8-keys`, `v8-events`, `v8-show-feed`, `v8-vendor`, `v9-galaxy-key`.
+
+### Fix round 1 (after the independent review, D:/claude-cache/briefs/livelink-keys-review.md)
+
+- **RELEASE GATE**: `test/v8-vendor.test.js` "RELEASE GATE (V9, never skip)". It feeds every key's control message
+  through the VENDORED VTuber's `cleanControl` and is RED with the pinned 7416148, which drops `tap` (galaxy),
+  `sign` and `overlay`. It goes green only after a re-vendor to a VTuber that accepts all three together
+  (`vtuber-v9-galaxy` alone drops sign and overlay; `vtuber-v9-sign` alone drops tap). No release while it is red.
+  Never skip, `.todo` or delete it.
+- The window sizes are now the PAGE's: the window is made with `useContentSize: true`, and
+  `fitVtuberWindow` measures the frame and keeps page + frame inside the work area. The window minimum is the
+  1000 x 640 page plus the frame. The saved `vtuberSize` is the page size.
+- The size is saved on `close` AND right before every `destroy()` of the VTuber window, through main.js
+  `destroyVtWin`. That covers LIVE Link quitting with the window open, the VTuber process ending, and its page
+  crashing or not loading. Never destroy that window any other way.
+- The sign and overlay keys are `toggle`: one toggle per press. A press within 0.6 s (`TOGGLE_MS`) of the last one,
+  sent or ignored, is a held key repeating. The other keys keep their 4 a second.
+- The keys part's summary reads "Ctrl+Alt+1 to 9 and 0" / "F13 to F23" (it said "Ctrl+Alt+1 to Ctrl+Alt+0").
+- `scripts/sync-vtuber.js`: NEVER still blocks every .mp3 except exactly `assets/music/countdown-music.mp3`. That
+  is the countdown song, the owner's own song, off by default for every host. `test/v9-sync-music.test.js` covers it.
