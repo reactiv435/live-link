@@ -752,7 +752,10 @@ test('main.js keeps the rules: a test run never takes a real key, the keys are g
   assert.match(main, /restBase = new URL\(API_BASE\)\.origin \+ '\/rest\/v1\/'/);
   assert.match(main, /apiKey: SITE\.publishableKey, coverHosts: coverHosts\(SITE\.apiBase\)/);
   assert.ok(main.includes('send: (m) => vtuber.sendShow(m), wanted: () => vtuber.canControl, hostId: () => (ctl && ctl.cfg && ctl.cfg.host_id) || null });'), '2.3.1: the host whose song on air is read = the one this computer is paired to (the site\'s own config answer)');
-  assert.ok(main.includes('puppetKeys.setWanted(puppetWanted({ canControl: !!(vtuber && vtuber.canControl), enabled: vtuberOn(), inApp: !!(vtHost && vtHost.running), vt: vtHost ? vtHost.vt : null }));'), 'the keys follow the chosen character');
+  assert.ok(main.includes('const k = { canControl: !!(vtuber && vtuber.canControl), enabled: vtuberOn(), inApp: !!(vtHost && vtHost.running), vt: vtHost ? vtHost.vt : null };'), 'the keys follow the chosen character');
+  assert.ok(main.includes('puppetKeys.setWanted(puppetWanted(k));'), 'the puppet keys: the Mask + its Puppet show switch');
+  assert.ok(main.includes('puppetKeys.setEatWanted(eatWanted(k));'), '2.3.1 EAT IT: the Mask, whatever its Puppet show switch says');
+  assert.match(main, /const \{ PuppetKeys, puppetWanted, eatWanted, /);
   assert.ok(main.includes('onChange: () => { syncPuppetKeys(); if (showFeed && vtuber && vtuber.canControl) showFeed.nudge(); }'), 'a VTuber that starts listening gets the state at once');
 });
 

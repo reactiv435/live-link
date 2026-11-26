@@ -936,8 +936,8 @@
     renderPuppetKeys(c.puppet);
   }
 
-  // V8: the puppet show keys (core/puppet-keys.js). They work in any window, but only while a TikTok LIVE is connected
-  // and VTuber is open; every sentence here says so in plain words.
+  // V8: the puppet show keys (core/puppet-keys.js). They work in any window, but only while VTuber is open with the
+  // Mask (2.3.1: a TikTok LIVE is not needed); every sentence here says so in plain words.
   const KEY_STATE = { held: 'ready', taken: 'taken', off: 'off', idle: '' };
   let puppetKey = '';
   function renderPuppetKeys(p) {
@@ -955,7 +955,7 @@
     $('vtkeys-sum').textContent = !p.enabled ? 'Off' : p.active ? (taken.length ? `${taken.length} taken by another program` : 'Working now') : (set.length ? `${set[0].key} to ${set[set.length - 1].key}` : 'No keys set');
     $('vtkeys-note').textContent = !p.enabled ? 'Off. The buttons in the VTuber window still work.'
       : p.active ? (taken.length ? 'Another program already uses the keys marked "taken". Pick a different key for those.' : 'These keys work right now, in any window: press one and the Mask does the move.')
-        : 'Press a key in any window (OBS, TikTok, a browser) and the Mask does the move. They work while your TikTok LIVE is connected and VTuber is open. The rest of the time the keys belong to your other programs.';
+        : 'Press a key in any window (OBS, TikTok, a browser) and the Mask does the move. They work while VTuber is open with the Mask. The rest of the time the keys belong to your other programs.';
     $('vtkeys-on').checked = !!p.enabled;
     const rows = $('vtkeys-rows');
     rows.classList.toggle('off', !p.enabled);
@@ -1104,7 +1104,7 @@
       captureNow: async () => ({ ok: true }),
       // V8 stills: ?demo=puppet (keys working during a LIVE), puppet-idle (no LIVE), puppet-taken (one key taken), puppet-off
       ...(String(pick).startsWith('puppet') ? (() => {
-        const labels = { goo: 'Goo', fire: 'Fire head', melt: 'Melt', crack: 'Crack open', eat: 'Eat a comment', fight: 'Boss fight', vote: 'Vote' };
+        const labels = { goo: 'Goo', fire: 'Fire head', melt: 'Melt', crack: 'Crack open', eat: 'Eat a comment', fight: 'Boss fight', vote: 'Vote', 'eat-now': 'Eat it (the song)' };
         const choices = ['off', ...['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'].map((d) => 'Ctrl+Alt+' + d), ...Array.from({ length: 12 }, (_, i) => 'F' + (13 + i))];
         const p = { enabled: pick !== 'puppet-off', active: pick === 'puppet' || pick === 'puppet-taken', choices,
           rows: Object.keys(labels).map((id, i) => ({ id, label: labels[id], key: 'Ctrl+Alt+' + (i + 1), state: pick === 'puppet-taken' && id === 'melt' ? 'taken' : pick === 'puppet' || pick === 'puppet-taken' ? 'held' : 'idle' })) };

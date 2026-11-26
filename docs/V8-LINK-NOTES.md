@@ -317,3 +317,71 @@ Tests after the fix round: `npm test` 256 tests, 252 pass, 4 skip, 0 fail (v8-ev
   each run is the one from a moment before the switch (it wrote "Ryo" for the Mask run).
 - Not confirmed by eye: the keys part of the card in the packaged app's own window (no screenshot of it was taken).
   It follows from wire 2 (the packaged `resources/vtuber/js/mask-wire.js` has `cleanShow`) and the card code.
+
+## Release A (2.3.1, Nov 26, 2026): the Mask eats the song at DONE / ADD TO AI RADIO / EAT IT (branch `v8-eat`)
+
+LIVE Link's half. The VTuber's half (`v8-eat` in the VTuber repo) turns these into the eat act; the vendor copy here
+is still 2.3.0's until the lead re-syncs it (it drops the new fields and the new control, with no error).
+
+**What changed, in his words:** the Mask no longer needs TikTok to know the song. LIVE Link reads the song on air for
+his host straight from the site (as the /live/now overlay does), tells the VTuber when he pressed DONE or ADD TO AI
+RADIO, and passes his verdict as a word. A new key, Ctrl+Alt+8, means "eat it now".
+
+- **The song on air without TikTok** (`show-feed.js`): `active_projects` for his host (`host_id` = the one the site's
+  `live-link-config` answer names; `ctl.cfg.host_id` in `main.js`), the hype-target row, else the newest; read every
+  2.5 s while a v2 VTuber listens, with the existing back-off. The controller's `target` is the word used until that
+  read answers (and when the site's config has no `host_id`: then it is the only word, as in 2.3.0), and a NEW target
+  from the controller is taken at once. `hold` 'show' / 'song' still mean "nothing on air". TikTok's connection
+  gates nothing in the feed any more.
+- **The finish** (two ADDED fields of the v:2 `show` message; the version stays 2 because a 2.3.0 VTuber requires
+  `v === 2` and drops fields it does not know):
+  - `grade`: `'fire' | 'gem' | 'solid' | 'promising' | null`, the word behind `score`.
+  - `finish`: `{ id, kind: 'played' | 'radio', at } | null`, said for 20 s; the song (id, title, cover) stays in
+    the message with it while nothing else is on air. With the NEXT song already on air the message's `song` is the
+    new one and `finish.id` names the old one.
+  - `'radio'`: the on-air song's `radio_tracks` row appears, or stops being `preview_only` (read every 2nd round;
+    the first answer is only the starting point, so a song that was already in the radio does not finish by it).
+  - `'played'`: the song leaves the air and `submissions_public.status` is `'played'` (three looks: at once, 1.5 s,
+    4 s; a `played_at` more than a minute older than this airing is an earlier show's DONE). A song CLEARED without
+    DONE keeps its status: no finish.
+  - One finish per song (both buttons = one; the same song is not finished again within 10 minutes).
+  - After a finish the late looks for a verdict run at 1.5 s, 5 s, 10 s and 20 s (2.3.0: the first two). The next
+    song going on air ends them: never another song's word during this one.
+- **Show + control without TikTok** (`vtuber-link.js`): a v2 VTuber IN THE APP gets `show` and `control` with or
+  without a TikTok LIVE; the viewers' events still need the LIVE. The desktop-shortcut VTuber (HTTP) is unchanged:
+  it is only asked during a LIVE (nothing is asked of 127.0.0.1 otherwise), so it is reached only then, and is told
+  "nothing on air" when the LIVE drops. The VTuber in the app is told nothing at a drop: its show goes on.
+- **EAT IT** (`puppet-keys.js`): control action `'eat'` (`{ v: 2, type: 'control', action: 'eat', name: '', at }`),
+  an eighth row "Eat it (the song)" on **Ctrl+Alt+8** (Stream Deck preset: F20). It is held whenever the Mask is the
+  chosen character, even with the VTuber's Puppet show switch off (`eatWanted`); the other seven follow that switch
+  as before. The card's own "Use these keys" switch covers all eight. Keys saved by 2.3.0 gain Ctrl+Alt+8 (or "No
+  key" if he had already given Ctrl+Alt+8 to another action).
+- Site reads are GET only, with the publishable key: `active_projects`, `radio_tracks`, `submissions_public`
+  (+ `status`, `played_at`) on top of 2.3.0's `project_hype`, `hype_plays`, `ranking_board`. `stream_status` is NOT
+  read (the controller's `hold` already says when the site's show is off, and its columns were not needed).
+
+**Changed on purpose, beyond the plan's words**
+1. The keys and the show state now follow "a v2 VTuber is open in the app", not "a TikTok LIVE is connected". So the
+   Ctrl+Alt keys are held (taken from other programs) for as long as VTuber is open with the Mask, show or no show.
+2. With a host id, `active_projects` is read every 2.5 s whenever VTuber is open in the app, also with no song on air
+   (2.3.0 read nothing without a song).
+3. The VTuber in the app is no longer told "nothing on air" when the TikTok LIVE drops.
+4. The first `show` message is sent the moment the controller first reports (2.3.0: when the LIVE connected).
+
+**Not done / to know**
+- The site's real `live-link-config` answer was not looked at from here; the contract's stand-in (`test/mock-server.js`)
+  has `host_id` in it. If the real answer lacks it, the feed falls back to the controller's target (the song is then
+  only as fresh as LIVE Link's config poll while TikTok is off) and logs nothing about it.
+- Without TikTok the feed cannot see "the site's show is not on" (that word comes from the controller's `hold`, which
+  is only set during a LIVE): a song left active on the site with no show running reads as on air.
+- A song put on air again within 10 minutes of its finish does not finish a second time.
+- If he presses ADD TO AI RADIO within the first read or two of a song going on air (about 5 s), that press can be
+  taken as the starting point; DONE still finishes the song.
+- The desktop-shortcut (HTTP) VTuber still needs TikTok for show + control (see above).
+- The vendored VTuber (2.3.0) does nothing with `grade`, `finish` or the `eat` control until it is re-synced.
+
+Tests: `test/v8-show-feed.test.js` (the song on air without TikTok 4, the finish + the word 7, the old ones adapted),
+`test/v8-events.test.js` (show + control without TikTok, the HTTP VTuber as before, the drop), `test/v8-keys.test.js`
+(eight keys, EAT IT with the Puppet show off), `test/v8-vendor.test.js` (the real vendored VTuber: eight keys, no
+TikTok needed, EAT IT accepted without an error, the keys stay at a LIVE drop). All against the stand-in site and
+stand-in VTubers on random ports.

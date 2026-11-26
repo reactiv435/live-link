@@ -1,13 +1,16 @@
 'use strict';
 // V8 (the puppet show): keys that work in ANY window (OBS, TikTok LIVE Studio, a browser) for the Mask's puppet moves,
 // the boss fight and a vote. Contract: the VTuber repo's V8-PHASE2.md, B3 and C4.
-//  * Held ONLY while a VTuber that understands them is listening AND a TikTok LIVE is connected (vtuber-link.js
-//    canControl), and only when the host has not switched them off. The rest of the time the keys belong to the
+//  * Held ONLY while a VTuber that understands them is listening (vtuber-link.js canControl; 2.3.1: with or without
+//    a TikTok LIVE), and only when the host has not switched them off. The rest of the time the keys belong to the
 //    other programs again. All are given back when LIVE Link quits.
+//  * 2.3.1: "Eat it" (Ctrl+Alt+8) = the Mask eats the song on air NOW (control action 'eat'; not the puppet move
+//    "Eat a comment"). It is the one key that does not follow the VTuber's Puppet show switch (`always`): it is held
+//    whenever the Mask is the chosen character (eatWanted below).
 //  * A system-wide key has no "key up": one press = one `control` message. The VTuber plays the move at its standard
 //    length; a second press of Goo while it pours makes it pour longer. Holding a key down repeats it: at most 4 a
 //    second per key go out.
-//  * The usual keys are Ctrl+Alt+1 ... Ctrl+Alt+7: nothing in Windows, OBS, TikTok LIVE Studio or a browser uses them
+//  * The usual keys are Ctrl+Alt+1 ... Ctrl+Alt+8: nothing in Windows, OBS, TikTok LIVE Studio or a browser uses them
 //    out of the box. F13-F24 are offered for a Stream Deck (no keyboard has them, so nothing else can clash). A key
 //    another program already holds is reported per key ("taken"), never silently dropped.
 // Electron-free: main.js passes `register(accelerator, fn) -> bool` and `unregister(accelerator)` (globalShortcut).
@@ -20,6 +23,7 @@ const ACTIONS = Object.freeze([
   { id: 'eat', action: 'puppet', name: 'eat', label: 'Eat a comment' },
   { id: 'fight', action: 'fight', name: '', label: 'Boss fight' },
   { id: 'vote', action: 'vote', name: '', label: 'Vote' },
+  { id: 'eat-now', action: 'eat', name: '', label: 'Eat it (the song)', always: true },
 ]);
 
 // what the host sees -> Electron's accelerator
@@ -76,6 +80,16 @@ function puppetWanted({ canControl, enabled = true, inApp = false, vt = null } =
   return vt.puppet !== false;
 }
 
+/**
+ * 2.3.1: should the "Eat it" key be held right now? As puppetWanted, except that the VTuber's Puppet show switch does
+ * not matter: the Mask eats the song whether or not the puppet show is on.
+ */
+function eatWanted({ canControl, enabled = true, inApp = false, vt = null } = {}) {
+  if (!canControl || !enabled) return false;
+  if (!inApp) return true;
+  return !!vt && vt.character === 'mask';
+}
+
 class PuppetKeys {
   /**
    * opts: register(accelerator, fn) -> bool, unregister(accelerator), send(action, name) -> bool (vtuber-link
@@ -95,28 +109,34 @@ class PuppetKeys {
     this.saidTaken = new Map();     // action id -> the accelerator already logged as taken (one line per key, not one per try)
     this.keys = cleanKeys(opts.keys);
     this.enabled = opts.enabled !== false;
-    this.wanted = false;            // a v2 VTuber is listening and a LIVE is connected
+    this.wanted = false;            // a v2 VTuber is listening (the Mask, its Puppet show on): the puppet keys
+    this.eatOn = false;             // 2.3.1: a v2 VTuber is listening (the Mask): the "Eat it" key
     this.held = new Map();          // action id -> accelerator held right now
     this.taken = new Set();         // action ids whose key another program holds
     this.lastAt = new Map();        // action id -> when it last went out
     this.stats = { presses: 0, sent: 0 };
   }
 
-  get active() { return this.enabled && this.wanted; }
+  /** some key is (or should be) held right now */
+  get active() { return this.enabled && (this.wanted || this.eatOn); }
+  /** should this action's key be held right now? */
+  _on(a) { return this.enabled && (a.always ? this.eatOn : this.wanted); }
 
-  /** the listening VTuber / the LIVE changed: hold the keys, or give them back */
+  /** the listening VTuber changed: hold the puppet keys, or give them back */
   setWanted(on) { on = !!on; if (on === this.wanted) return false; this.wanted = on; this._sync(); return true; }
+  /** 2.3.1: the same for the "Eat it" key (it does not follow the Puppet show switch) */
+  setEatWanted(on) { on = !!on; if (on === this.eatOn) return false; this.eatOn = on; this._sync(); return true; }
   setEnabled(on) { on = !!on; if (on === this.enabled) return false; this.enabled = on; this._sync(); return true; }
   setKeys(keys) { this.keys = cleanKeys(keys); this._sync(); }
 
   /** LIVE Link is quitting: every key back */
-  release() { this.wanted = false; this._sync(); }
+  release() { this.wanted = false; this.eatOn = false; this._sync(); }
 
   _sync(retry) {
     this.clearTimeout(this.retryTimer); this.retryTimer = null;
     const before = retry ? [...this.taken].join() : null;
     const want = new Map();
-    if (this.active) for (const a of ACTIONS) { const acc = KEY_CHOICES[this.keys[a.id]]; if (acc) want.set(a.id, acc); }
+    for (const a of ACTIONS) { const acc = this._on(a) ? KEY_CHOICES[this.keys[a.id]] : null; if (acc) want.set(a.id, acc); }
     for (const [id, acc] of [...this.held]) {
       if (want.get(id) === acc) continue;
       try { this.unregister(acc); } catch {}
@@ -148,7 +168,7 @@ class PuppetKeys {
   /** a key was pressed (or the OS repeats a held one) */
   press(id) {
     const a = ACTIONS.find((x) => x.id === id);
-    if (!a || !this.active) return false;
+    if (!a || !this._on(a)) return false;
     this.stats.presses++;
     const now = this.mono(), last = this.lastAt.get(id);
     if (last !== undefined && now - last < REPEAT_MS) return false;
@@ -170,4 +190,4 @@ class PuppetKeys {
   }
 }
 
-module.exports = { PuppetKeys, puppetWanted, ACTIONS, KEY_CHOICES, DEFAULT_KEYS, STREAM_DECK_KEYS, REPEAT_MS, RETRY_TAKEN_MS, cleanKeys, setKey };
+module.exports = { PuppetKeys, puppetWanted, eatWanted, ACTIONS, KEY_CHOICES, DEFAULT_KEYS, STREAM_DECK_KEYS, REPEAT_MS, RETRY_TAKEN_MS, cleanKeys, setKey };

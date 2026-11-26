@@ -15,7 +15,7 @@ const path = require('path');
 const { VtuberHost } = require('../src/core/vtuber-host');
 const { VtuberLink } = require('../src/core/vtuber-link');
 const { ShowFeed } = require('../src/core/show-feed');
-const { PuppetKeys, puppetWanted } = require('../src/core/puppet-keys');
+const { PuppetKeys, puppetWanted, eatWanted } = require('../src/core/puppet-keys');
 const { createMock } = require('./mock-server');
 
 const VT = path.join(__dirname, '..', 'vendor', 'vtuber');
@@ -62,7 +62,7 @@ test('2.3.0 the vendored VTuber speaks v2: wire 2, the keys follow the Mask and 
   const tiktok = new EventEmitter(); tiktok.state = { status: 'idle' };
   const direct = (ev) => host.event(ev);
   Object.defineProperty(direct, 'v', { get: () => host.wire });
-  const sync = () => keys.setWanted(puppetWanted({ canControl: vlink.canControl, enabled: true, inApp: host.running, vt: host.vt }));
+  const sync = () => { const k = { canControl: vlink.canControl, enabled: true, inApp: host.running, vt: host.vt }; keys.setWanted(puppetWanted(k)); keys.setEatWanted(eatWanted(k)); };   // main.js syncPuppetKeys
   const vlink = new VtuberLink({ http: false, direct: () => (host.running ? direct : null), onChange: () => { sync(); if (vlink.canControl) feed.nudge(); } }).attach(tiktok);
   const feed = new ShowFeed({ restBase: `http://127.0.0.1:${sitePort}/rest/v1/`, apiKey: 'test-publishable-key', coverHosts: [], pollMs: 60, tickMs: 20, send: (m) => vlink.sendShow(m), wanted: () => vlink.canControl });
   host.on('state', sync);
@@ -79,25 +79,32 @@ test('2.3.0 the vendored VTuber speaks v2: wire 2, the keys follow the Mask and 
   t.after(() => { clearInterval(pulse); try { ws.terminate(); } catch {} });
   const choose = (extra) => ws.send(JSON.stringify({ t: 'avatar', on: true, bg: 'preset:courtyard', face: 'auto', faceHoldMs: 0, mirror: false, zoom: 1, offsetY: 0, ...extra }));
 
-  // a TikTok LIVE connects; the Mask with the Puppet show on: the keys are held
-  tiktok.state = { status: 'live' }; tiktok.emit('state', tiktok.state);
-  assert.equal(vlink.canControl, true, 'a v2 VTuber in the app + a LIVE');
+  // 2.3.1: no TikTok LIVE is needed: a v2 VTuber in the app is enough. The Mask with the Puppet show on: the keys are held
+  assert.equal(vlink.canControl, true, 'a v2 VTuber in the app, TikTok not connected');
   choose({ mask: true, v8: { on: true } });
   await until(() => host.vt.character === 'mask' && host.vt.puppet === true, 6000, 'the VTuber says: the Mask, Puppet show on');
-  await until(() => kb.held.size === 7, 2000, 'the seven keys are held');
+  await until(() => kb.held.size === 8, 2000, 'the eight keys are held (the seven puppet keys + EAT IT)');
   // a pressed key reaches the page as a command
   kb.held.get('Control+Alt+1')();
   await until(() => got.some((m) => m.t === 'v8-cmd' && m.name === 'goo'), 4000, 'Goo reached the VTuber\'s page');
-  // the Puppet show switch goes off: the keys go back to the other programs; on again: held again
+  // EAT IT (Ctrl+Alt+8): the VTuber takes the message without an error (2.3.0's files do not know it yet and drop it; a later VTuber eats)
+  assert.doesNotThrow(() => kb.held.get('Control+Alt+8')());
+  assert.equal(host.running, true);
+  // a TikTok LIVE connects: nothing changes for the keys
+  tiktok.state = { status: 'live' }; tiktok.emit('state', tiktok.state);
+  assert.equal(vlink.canControl, true);
+  assert.equal(kb.held.size, 8);
+  // the Puppet show switch goes off: the puppet keys go back to the other programs, EAT IT stays; on again: all held again
   choose({ mask: true, v8: { on: false } });
-  await until(() => host.vt.puppet === false && kb.held.size === 0, 6000, 'Puppet show off: the keys are given back');
+  await until(() => host.vt.puppet === false && kb.held.size === 1, 6000, 'Puppet show off: the puppet keys are given back');
+  assert.deepEqual([...kb.held.keys()], ['Control+Alt+8'], 'EAT IT does not follow the Puppet show switch');
   choose({ mask: true, v8: { on: true } });
-  await until(() => kb.held.size === 7, 6000, 'Puppet show on again: held again');
-  // Ryo is chosen: the keys are given back
+  await until(() => kb.held.size === 8, 6000, 'Puppet show on again: held again');
+  // Ryo is chosen: the keys are given back (EAT IT too: Ryo does not eat songs)
   choose({ character: 'ryo' });
   await until(() => host.vt.character === 'ryo' && kb.held.size === 0, 6000, 'Ryo: the keys are given back');
   choose({ mask: true, v8: { on: true } });
-  await until(() => kb.held.size === 7, 6000, 'the Mask again');
+  await until(() => kb.held.size === 8, 6000, 'the Mask again');
 
   // the show feed: no song on air = not one read of the site; the state still reaches the page
   feed.update({ connected: true, target: null, hold: 'song' });
@@ -116,10 +123,15 @@ test('2.3.0 the vendored VTuber speaks v2: wire 2, the keys follow the Mask and 
   const n = site.state.restCalls.length;
   await wait(500);
   assert.ok(site.state.restCalls.length <= n + 3, 'off air: only the two late looks for a grade, then nothing');
-  // the LIVE drops: the keys go back, the page hears "nothing on air"
-  const shows = got.filter((m) => m.t === 'v8-show').length;
+  // 2.3.1: the TikTok LIVE drops: the keys stay and the show state goes on reaching the page (a song put on air now is still said)
   tiktok.state = { status: 'offline' }; tiktok.emit('state', tiktok.state);
-  assert.equal(kb.held.size, 0, 'no LIVE: no key is held');
-  await until(() => got.filter((m) => m.t === 'v8-show').length > shows && got[got.length - 1].s.onAir === false, 4000, 'the drop reached the page');
+  assert.equal(kb.held.size, 8, 'no LIVE: the keys stay (the VTuber is still open with the Mask)');
+  assert.equal(vlink.canControl, true);
+  site.state.rest.project_hype.push({ submission_id: 'sub-2', hype_bar: 0 });
+  feed.update({ connected: false, target: { submission_id: 'sub-2', title: 'After The Drop' }, hold: null });
+  await until(() => got.some((m) => m.t === 'v8-show' && m.s.onAir === true && m.s.song && m.s.song.title === 'After The Drop'), 6000, 'a song on air after the drop reached the page');
+  // VTuber is closed: every key goes back
   await host.stop();
+  sync();
+  assert.equal(kb.held.size, 0, 'VTuber closed: no key is held');
 });

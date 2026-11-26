@@ -35,6 +35,14 @@
 //  * v2 taps: each like event names ONE viewer with their OWN taps (a boss-fight missile carries their picture, and the
 //    fight's top 3 must be true). Still at most 4 like sends a second: the viewer with the most waiting taps goes first;
 //    taps that waited 3 s (a big room) go out summed as one event with no viewer on it, so the total is never lost.
+// 2.3.1 (the Mask eats the song at DONE / ADD TO AI RADIO / EAT IT):
+//  * `show` and `control` no longer need a TikTok LIVE: they go to a v2 VTuber whenever one is listening. The VTuber
+//    inside the app is known to be there without asking, so it gets them with or without TikTok. The viewers' events
+//    (gifts, likes, comments, follows, shares) still go out only while a LIVE is connected.
+//  * The desktop-shortcut VTuber (HTTP) is still asked only during a LIVE (the rule above: nothing is asked of
+//    127.0.0.1 otherwise), so it gets `show` / `control` only then, exactly as in 2.3.0; when the LIVE drops it is
+//    told "nothing on air" as its last word. The VTuber in the app is told nothing at a drop: its show goes on.
+//  * C4 gains the action 'eat' ("EAT IT": eat the song on air now). A 2.3.0 VTuber drops a control it does not know.
 const http = require('http');
 const { clip } = require('./tiktok-link');
 const { cleanPictureUrl, cleanUid, cleanHandle, TIKTOK_PICTURE_HOSTS } = require('./pictures');
@@ -57,7 +65,7 @@ const CROWD_AFTER_MS = 3000;            // v2 taps: a viewer's taps that waited 
 const TAPPERS_MAX = 300;                // v2 taps: viewers with waiting taps kept at once (the rest are summed)
 const SIDE_PER_S = 6;                   // show + control messages a second (their own cap, never the viewers' events')
 const PUPPET_MOVES = ['goo', 'fire', 'melt', 'crack', 'eat'];
-const CONTROL_ACTIONS = ['puppet', 'fight', 'vote'];
+const CONTROL_ACTIONS = ['puppet', 'fight', 'vote', 'eat'];
 
 // One event in the contract's shape, every field clipped; null when there is nothing to send.
 // v = 2 adds who the viewer is (handle, uid, avatar), each checked again here; v = 1 is the 2.1.2 event, field for field.
@@ -86,7 +94,7 @@ function buildEvent(type, x = {}, at = Date.now(), v = 1) {
   return ev;
 }
 
-/** C4: { v: 2, type: 'control', action, name, at } or null. name = the move for 'puppet', '' otherwise. */
+/** C4: { v: 2, type: 'control', action, name, at } or null. action = puppet | fight | vote | eat; name = the move for 'puppet', '' otherwise. */
 function buildControl(action, name, at = Date.now()) {
   if (!CONTROL_ACTIONS.includes(action)) return null;
   if (action === 'puppet' && !PUPPET_MOVES.includes(name)) return null;
@@ -174,12 +182,14 @@ class VtuberLink {
     this.live = live;
     if (live) this._probeLoop();
     else {
-      // V8: the LIVE ended or dropped: a v2 VTuber is told "nothing is on air" at once (the last word it gets), so
-      // the Mask does not go on believing the last song for seconds. Sent before the sending is switched off.
+      // V8: the LIVE ended or dropped: a v2 desktop-shortcut VTuber (HTTP) is told "nothing is on air" at once (the
+      // last word it gets: it is only reached during a LIVE), so the Mask does not go on believing the last song.
+      // Sent before the sending is switched off. 2.3.1: the VTuber in the app is told nothing here: its show state
+      // goes on without TikTok (show-feed.js keeps sending it).
       try {
         const inApp = !this.stopped ? this._inApp() : null;
-        if (!this.stopped && (inApp || this.ok) && this._v(inApp) >= 2 && (inApp || this.inFlight < MAX_IN_FLIGHT)) {
-          if (this._out({ v: 2, type: 'show', onAir: false, song: null, hype: hypeOf(0), score: null, at: this.now() }, inApp)) this.stats.show++;
+        if (!this.stopped && !inApp && this.ok && this._v(null) >= 2 && this.inFlight < MAX_IN_FLIGHT) {
+          if (this._out({ v: 2, type: 'show', onAir: false, song: null, hype: hypeOf(0), score: null, at: this.now() }, null)) this.stats.show++;
         }
       } catch {}
       this._idle();                // ask again when it is back (no log line)
@@ -389,11 +399,15 @@ class VtuberLink {
   }
 
   // ---------------------------------------------------------------- V8: the show state (C3) and a key press (C4)
-  /** Hands one `show` or `control` message to a VTuber that speaks v2. False when none does (nothing is kept for later). */
+  /**
+   * Hands one `show` or `control` message to a VTuber that speaks v2. False when none does (nothing is kept for later).
+   * 2.3.1: a TikTok LIVE is not needed, a listening v2 VTuber is (in the app: it runs; over HTTP: the last ask found it,
+   * and it is only asked during a LIVE).
+   */
   _side(msg, stat) {
     if (!msg) return false;
-    const inApp = this.live && !this.stopped ? this._inApp() : null;
-    if (!this.live || this.stopped || (!inApp && !this.ok) || this._v(inApp) < 2) return false;
+    const inApp = !this.stopped ? this._inApp() : null;
+    if (this.stopped || (!inApp && !this.ok) || this._v(inApp) < 2) return false;
     const now = this.mono();
     if (now - this.side.at >= 1000) { this.side.at = now; this.side.n = 0; }
     if (this.side.n >= SIDE_PER_S || (!inApp && this.inFlight >= MAX_IN_FLIGHT)) { this.stats.dropped++; return false; }
@@ -404,10 +418,10 @@ class VtuberLink {
   }
   /** C3: the show state as show-feed.js builds it ({ v: 2, type: 'show', ... }). */
   sendShow(msg) { return msg && msg.v === 2 && msg.type === 'show' ? this._side(msg, 'show') : false; }
-  /** C4: a key pressed in LIVE Link: action 'puppet' (name = goo | fire | melt | crack | eat), 'fight' or 'vote'. */
+  /** C4: a key pressed in LIVE Link: action 'puppet' (name = goo | fire | melt | crack | eat), 'fight', 'vote' or 'eat' (EAT IT: the song). */
   sendControl(action, name) { return this._side(buildControl(action, name, this.now()), 'control'); }
-  /** can a `show` / `control` message reach a VTuber right now? (the global keys are held only then) */
-  get canControl() { const inApp = this.live && !this.stopped ? this._inApp() : null; return !!this.live && !this.stopped && (!!inApp || this.ok) && this._v(inApp) >= 2; }
+  /** can a `show` / `control` message reach a VTuber right now? (the global keys are held only then; 2.3.1: TikTok or not) */
+  get canControl() { const inApp = !this.stopped ? this._inApp() : null; return !this.stopped && (!!inApp || this.ok) && this._v(inApp) >= 2; }
 
   // one message out: handed over inside the app, or one POST to 127.0.0.1
   _out(ev, inApp) {

@@ -16,7 +16,7 @@ const { VtuberLink } = require('./core/vtuber-link');
 const { VtuberHost, vtuberCard, vtuberEnabled } = require('./core/vtuber-host');
 const { setupVtuberSession } = require('./core/vtuber-session');
 const { ShowFeed } = require('./core/show-feed');
-const { PuppetKeys, puppetWanted, setKey: setPuppetKey, DEFAULT_KEYS: PUPPET_DEFAULT_KEYS, STREAM_DECK_KEYS } = require('./core/puppet-keys');
+const { PuppetKeys, puppetWanted, eatWanted, setKey: setPuppetKey, DEFAULT_KEYS: PUPPET_DEFAULT_KEYS, STREAM_DECK_KEYS } = require('./core/puppet-keys');
 const { coverHosts } = require('./core/pictures');
 const { EventEmitter } = require('events');
 const SITE = require('./site-config.json');
@@ -342,12 +342,15 @@ const vtuberOn = () => !(ctl && vtuberEnabled(ctl.cfg) === false);
 // V8: the card's "Puppet show keys" part: only when the VTuber in this install understands the keys (contract v2)
 const puppetNow = () => (puppetKeys && vtHost && vtHost.wire >= 2 ? puppetKeys.getState() : null);
 const vtuberCardNow = () => ({ ...vtuberCard(vtHost ? vtHost.getState() : null, { enabled: vtuberOn(), platform: process.platform }), open: !!(vtWin && !vtWin.isDestroyed()), puppet: puppetNow() });
-// The keys are held only while a VTuber that understands them is listening, a TikTok LIVE is connected, AND the
-// chosen character is the Mask (the puppet moves are the Mask's: with Ryo or Melanie the keys would do nothing and
+// The keys are held only while a VTuber that understands them is listening (2.3.1: with or without a TikTok LIVE) AND
+// the chosen character is the Mask (the puppet moves are the Mask's: with Ryo or Melanie the keys would do nothing and
 // still be taken from every other program). core/puppet-keys.js puppetWanted has the rule.
+// 2.3.1: "Eat it" (Ctrl+Alt+8) is held with the Mask chosen even when its Puppet show switch is off (eatWanted).
 function syncPuppetKeys() {
   if (!puppetKeys) return;
-  puppetKeys.setWanted(puppetWanted({ canControl: !!(vtuber && vtuber.canControl), enabled: vtuberOn(), inApp: !!(vtHost && vtHost.running), vt: vtHost ? vtHost.vt : null }));
+  const k = { canControl: !!(vtuber && vtuber.canControl), enabled: vtuberOn(), inApp: !!(vtHost && vtHost.running), vt: vtHost ? vtHost.vt : null };
+  puppetKeys.setWanted(puppetWanted(k));
+  puppetKeys.setEatWanted(eatWanted(k));
   sendVtuber();
 }
 let vtCardKey = '';

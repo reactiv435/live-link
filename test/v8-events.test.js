@@ -12,7 +12,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { TikTokLink } = require('../src/core/tiktok-link');
-const { VtuberLink, buildEvent, buildControl, PUPPET_MOVES } = require('../src/core/vtuber-link');
+const { VtuberLink, buildEvent, buildControl, PUPPET_MOVES, CONTROL_ACTIONS } = require('../src/core/vtuber-link');
 const { TIKTOK_PICTURE_HOSTS, cleanPictureUrl, pickAvatar, cleanUid, cleanHandle, hostFamily, coverHosts, PictureStats } = require('../src/core/pictures');
 const { createMock } = require('./mock-server');
 const { LiveLinkApi } = require('../src/core/api');
@@ -312,7 +312,7 @@ test('v2 taps in a big room: viewers who waited too long go out summed with no v
   const n = got.length;
   link.set('offline', null);
   await wait(150);
-  assert.deepEqual(got.slice(n).map((e) => [e.type, e.onAir]), [['show', false]], 'only the "nothing on air" word; no late taps');
+  assert.deepEqual(got.slice(n).map((e) => [e.type, e.onAir]), [], 'no late taps (2.3.1: and the VTuber in the app is not told "nothing on air": its show goes on)');
   v.stop();
 });
 
@@ -331,8 +331,14 @@ test('a v1 VTuber still gets its taps summed as in 2.2.0 (one event, the last ta
 
 // ---------------------------------------------------------------- C4: a pressed key
 
-test('C4 control: only the three actions and the five moves; its own cap of 6 a second that never eats the viewers\' events', () => {
+test('C4 control: only the four actions (2.3.1: + eat, "EAT IT": the Mask eats the song now) and the five moves; its own cap of 6 a second that never eats the viewers\' events', () => {
   assert.deepEqual(PUPPET_MOVES, ['goo', 'fire', 'melt', 'crack', 'eat']);
+  assert.deepEqual(CONTROL_ACTIONS, ['puppet', 'fight', 'vote', 'eat']);
+  assert.deepEqual(buildControl('eat', undefined, 77), { v: 2, type: 'control', action: 'eat', name: '', at: 77 });
+  assert.deepEqual(buildControl('eat', 'ignored', 77), { v: 2, type: 'control', action: 'eat', name: '', at: 77 }, 'eat (the song) has no name: not the puppet move "eat" (a comment)');
+  // the VTuber in this install: 2.3.0's files drop a control they do not know (no error); a later one takes it
+  const read = require('../vendor/vtuber/js/mask-wire.js').cleanControl(buildControl('eat', '', 77));
+  assert.ok(read === null || (read.type === 'control' && read.action === 'eat' && read.name === ''), JSON.stringify(read));
   assert.deepEqual(buildControl('puppet', 'goo', 77), { v: 2, type: 'control', action: 'puppet', name: 'goo', at: 77 });
   assert.deepEqual(buildControl('fight', 'ignored', 77), { v: 2, type: 'control', action: 'fight', name: '', at: 77 });
   assert.deepEqual(buildControl('vote', undefined, 77), { v: 2, type: 'control', action: 'vote', name: '', at: 77 });
@@ -359,7 +365,65 @@ test('C4 control: only the three actions and the five moves; its own cap of 6 a 
 
 // ---------------------------------------------------------------- the fix round
 
-test('fix round: the TikTok LIVE drops: a v2 VTuber is told "nothing on air" at once, as the last message; a v1 VTuber is told nothing', async () => {
+test('2.3.1 show + control do not need TikTok: a v2 VTuber in the app gets the show state and EAT IT with no LIVE at all; the viewers\' events still need the LIVE', () => {
+  const link = new FakeLink();                                          // TikTok was never connected
+  const got = [];
+  let running = true;
+  const fn = Object.assign((ev) => { got.push(ev); return true; }, { v: 2 });
+  let clock = 1000;                                                     // (show + control have their own cap of 6 a second)
+  const v = new VtuberLink({ http: false, direct: () => (running ? fn : null), mono: () => clock }).attach(link);
+  assert.equal(v.live, false);
+  assert.equal(v.canControl, true, 'a v2 VTuber in the app is enough');
+  const show = { v: 2, type: 'show', onAir: true, song: { id: 'sub-1', title: 'Test Song', cover: null }, hype: { taps: 0, rank: 0, label: 'Tap to hype it up', mythic: 0 }, score: null, grade: null, finish: null, at: 5 };
+  assert.equal(v.sendShow(show), true, 'the show state with TikTok offline');
+  assert.equal(v.sendControl('eat'), true, 'EAT IT with TikTok offline');
+  assert.equal(v.sendControl('puppet', 'goo'), true);
+  assert.deepEqual(got.map((e) => [e.type, e.action || null]), [['show', null], ['control', 'eat'], ['control', 'puppet']]);
+  assert.deepEqual({ ...got[1], at: 0 }, { v: 2, type: 'control', action: 'eat', name: '', at: 0 });
+  assert.deepEqual(got[0], show, 'handed over as built (grade and finish with it)');
+  link.emit('comment', { name: 'Early', text: 'before the LIVE' });
+  link.emit('like', { name: 'Early', count: 5 });
+  assert.equal(got.length, 3, 'no LIVE: no viewer event (unchanged)');
+  // the LIVE connects and drops: nothing changes for show + control, and the VTuber is NOT told "nothing on air" (the show goes on)
+  for (const st of ['live', 'reconnecting', 'live', 'offline']) {
+    const n = got.length;
+    clock += 1000;
+    link.set(st);
+    assert.equal(got.length, n, `${st}: no message of its own`);
+    assert.equal(v.canControl, true, st);
+    assert.equal(v.sendShow(show), true, st);
+  }
+  clock += 1000;
+  assert.equal(v.stats.show, 5);
+  assert.equal(v.stats.control, 2);
+  // a v1 VTuber, no VTuber, a stopped link: nothing
+  fn.v = 1;
+  assert.deepEqual([v.canControl, v.sendShow(show), v.sendControl('eat')], [false, false, false], 'a v1 VTuber is sent no show and no control');
+  fn.v = 2; running = false;
+  assert.deepEqual([v.canControl, v.sendShow(show), v.sendControl('eat')], [false, false, false], 'VTuber closed');
+  running = true;
+  assert.equal(v.canControl, true);
+  v.stop();
+  assert.deepEqual([v.canControl, v.sendShow(show), v.sendControl('eat')], [false, false, false], 'stopped');
+});
+
+test('2.3.1 the desktop-shortcut VTuber (HTTP) is as in 2.3.0: asked only during a LIVE, so show + control reach it only then; nothing is asked or sent without one', async () => {
+  const srv = vtuberServer(2); await srv.listen();
+  const link = new FakeLink();
+  const v = new VtuberLink({ port: srv.port, probeEveryMs: 40 }).attach(link);
+  try {
+    await wait(150);
+    assert.equal(srv.gets.length + srv.posts.length, 0, 'no LIVE: 127.0.0.1 is not asked and nothing is sent');
+    assert.deepEqual([v.canControl, v.sendControl('eat')], [false, false]);
+    link.set('live');
+    assert.ok(await until(() => v.canControl));
+    assert.equal(v.sendControl('eat'), true);
+    assert.ok(await until(() => srv.events('control').length === 1));
+    assert.deepEqual({ ...srv.events('control')[0], at: 0 }, { v: 2, type: 'control', action: 'eat', name: '', at: 0 });
+  } finally { v.stop(); await srv.close(); }
+});
+
+test('fix round: the TikTok LIVE drops: the desktop-shortcut VTuber (HTTP, v2) is told "nothing on air" at once, as the last message; a v1 VTuber is told nothing; 2.3.1: the VTuber in the app is told nothing either (its show goes on)', async () => {
   for (const peer of [2, 1]) {
     const link = new FakeLink();
     const got = [];
@@ -370,11 +434,7 @@ test('fix round: the TikTok LIVE drops: a v2 VTuber is told "nothing on air" at 
     for (const drop of ['reconnecting', 'offline']) {
       const n = got.length;
       link.set(drop);                                                   // dropped (it is retried), or the LIVE ended
-      const more = got.slice(n);
-      if (peer === 2) assert.deepEqual(more.map((m) => ({ ...m, at: 0 })), [{ v: 2, type: 'show', onAir: false, song: null, hype: { taps: 0, rank: 0, label: 'Tap to hype it up', mythic: 0 }, score: null, at: 0 }], drop);
-      else assert.equal(more.length, 0);
-      link.set(drop);                                                   // said again: not sent twice
-      assert.equal(got.length, n + (peer === 2 ? 1 : 0));
+      assert.equal(got.length, n, `in the app (v${peer}), ${drop}: no "nothing on air" (2.3.1: the song may well still be on air)`);
       link.set('live');
     }
     v.stop();
