@@ -15,7 +15,7 @@ const { pickCaptureSource, extFor, CHUNK_MS } = require('./core/capture');
 const { VtuberLink } = require('./core/vtuber-link');
 const { VtuberHost, vtuberCard, vtuberEnabled } = require('./core/vtuber-host');
 const { setupVtuberSession } = require('./core/vtuber-session');
-const { vtuberWindowSize, cleanVtuberSize } = require('./core/vtuber-window');
+const { vtuberWindowSize, fitVtuberWindow } = require('./core/vtuber-window');
 const { ShowFeed } = require('./core/show-feed');
 const { PuppetKeys, puppetWanted, eatWanted, setKey: setPuppetKey, DEFAULT_KEYS: PUPPET_DEFAULT_KEYS, STREAM_DECK_KEYS } = require('./core/puppet-keys');
 const { coverHosts } = require('./core/pictures');
@@ -369,6 +369,15 @@ function testBounds(w, h, slot) {
   const a = screen.getPrimaryDisplay().workArea;
   return { width: w, height: h, x: a.x + a.width - (w + 10) * (slot + 1), y: a.y + a.height - h - 10 };
 }
+// V9: each VTuber window's fit (core/vtuber-window.js fitVtuberWindow). It saves his size on 'close', and through
+// destroyVtWin right before the window is destroyed: destroy() skips 'close' (LIVE Link quitting with the window
+// open, the VTuber process ending, its page crashing or not loading). Never destroy the VTuber window any other way.
+const vtFits = new WeakMap();
+function destroyVtWin(vw) {
+  if (!vw || vw.isDestroyed()) return;
+  const fit = vtFits.get(vw);
+  if (fit) fit.destroy(); else { try { vw.destroy(); } catch {} }   // (no fit: it never got that far)
+}
 function showVtuberWindow() {
   if (!vtWin || vtWin.isDestroyed()) return;
   if (TEST_RUN) { vtWin.showInactive(); return; }
@@ -383,33 +392,25 @@ function openVtuber() {
     const r = await vtHost.start();
     if (!r.ok || quitting) return vtuberCardNow();
     const origin = `http://127.0.0.1:${r.port}`;
-    // V9: the control deck's size, 1366 x 768 (never below 1000 x 640), or the size he chose last time; always
-    // clamped to the primary display's work area as it is NOW (core/vtuber-window.js)
-    const vt = vtuberWindowSize({ workArea: screen.getPrimaryDisplay().workArea, saved: store ? store.get('vtuberSize') : null });
+    // V9: the control deck's PAGE size, 1366 x 768 (never below 1000 x 640), or the page size he chose last time;
+    // page + frame always inside the primary display's work area as it is NOW (core/vtuber-window.js). The deck
+    // measures its page, so the window is made at the page size (useContentSize) and fitted once its frame is known.
+    const vtOpts = { workArea: screen.getPrimaryDisplay().workArea, saved: store ? store.get('vtuberSize') : null, store, testRun: TEST_RUN };
+    const vt = vtuberWindowSize(vtOpts);
     const w = new BrowserWindow({
-      ...(TEST_RUN ? { ...testBounds(360, 560, 0), minWidth: 340, minHeight: 480 } : { width: vt.width, height: vt.height, minWidth: vt.minWidth, minHeight: vt.minHeight }), title: 'LIVE Link VTuber', autoHideMenuBar: true, show: false,
+      ...(TEST_RUN ? { ...testBounds(360, 560, 0), minWidth: 340, minHeight: 480 } : { useContentSize: true, width: vt.width, height: vt.height, minWidth: vt.minWidth, minHeight: vt.minHeight }), title: 'LIVE Link VTuber', autoHideMenuBar: true, show: false,
       backgroundColor: '#0a0a0a', icon: iconPath(IS_MAC ? 'icon.png' : 'icon.ico'),
       webPreferences: { session: vtuberSession(), sandbox: true, contextIsolation: true, nodeIntegration: false, backgroundThrottling: false, autoplayPolicy: 'no-user-gesture-required', spellcheck: false },
     });
     vtWin = w;
+    vtFits.set(w, fitVtuberWindow(w, vtOpts));
     if (!IS_MAC) w.removeMenu();
     // its own title, whatever the page calls itself (the desktop-shortcut VTuber's window is called "VTuber")
     w.on('page-title-updated', (e) => e.preventDefault());
     w.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     w.webContents.on('will-navigate', (e, url) => { if (!String(url).startsWith(origin + '/')) e.preventDefault(); });
-    w.webContents.on('render-process-gone', (_e, d) => { log('warn', `VTuber: its window stopped (${d && d.reason})`); try { w.destroy(); } catch {} });
+    w.webContents.on('render-process-gone', (_e, d) => { log('warn', `VTuber: its window stopped (${d && d.reason})`); destroyVtWin(w); });
     w.once('ready-to-show', () => { if (vtWin === w) showVtuberWindow(); });
-    // V9: a size he chose himself (he resized the window) is saved when it closes, the size only (never the place,
-    // never maximized: getNormalBounds), through the app's store, and never in a test run
-    let vtResized = false;
-    w.on('resized', () => { vtResized = true; });
-    w.on('close', () => {
-      try {
-        if (TEST_RUN || !vtResized || !store) return;
-        const s = cleanVtuberSize(w.getNormalBounds());
-        if (s) store.set('vtuberSize', s);
-      } catch {}
-    });
     w.on('closed', () => {
       if (vtWin === w) vtWin = null;
       // closing the window = OFF: the VTuber switches the avatar off in OBS (the host's camera shows) and ends
@@ -417,7 +418,7 @@ function openVtuber() {
       sendVtuber();
     });
     log('info', 'VTuber: window opened');
-    w.loadURL(origin + '/vtuber.html').catch((e) => { log('warn', `VTuber: its page did not load (${e && e.message})`); try { w.destroy(); } catch {} });
+    w.loadURL(origin + '/vtuber.html').catch((e) => { log('warn', `VTuber: its page did not load (${e && e.message})`); destroyVtWin(w); });
     return vtuberCardNow();
   })().catch((e) => { log('warn', `VTuber: could not open (${e && e.message})`); return vtuberCardNow(); }).finally(() => { vtOpening = null; sendVtuber(); });
   return vtOpening;
@@ -555,7 +556,7 @@ app.whenReady().then(async () => {
   vtHost.on('state', () => { syncPuppetKeys(); sendVtuber(); if (updater) updater.poke(); });
   vtHost.on('front', showVtuberWindow);
   // its process ended (closed, or crashed): the window goes too, and the card offers "Open VTuber" again
-  vtHost.on('exit', () => { if (vtWin && !vtWin.isDestroyed()) { try { vtWin.destroy(); } catch {} } sendVtuber(); });
+  vtHost.on('exit', () => { if (vtWin && !vtWin.isDestroyed()) destroyVtWin(vtWin); sendVtuber(); });
   ipcMain.handle('vtuber:get', () => vtuberCardNow());
   ipcMain.handle('vtuber:open', () => openVtuber());
   ipcMain.handle('vtuber:close', () => closeVtuber());
