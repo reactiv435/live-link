@@ -28,11 +28,12 @@ async function setup(t, { speed = 1, wanted = () => true, take = () => true, opt
   const feed = new ShowFeed({ restBase: `http://127.0.0.1:${port}/rest/v1/`, apiKey: 'test-publishable-key', coverHosts: [SITE],
     send: (m) => { if (take(m) === false) return false; sent.push(m); return true; }, wanted, log: (l, m) => logs.push(`${l} ${m}`),
     now, mono: () => (Date.now() - t0) * speed, pollMs: 40, pollMaxMs: 320, tickMs: 15, keepMs: 5000, lateGradeMs: [60, 160], lateScoreShowMs: 400 * speed,
-    finishTryMs: [0, 30, 80], finishGradeMs: [260, 360], finishShowMs: 400 * speed, ...opts });
+    finishTryMs: [0, 30, 80], finishGradeMs: [260, 360], finishShowMs: 400 * speed, holdMaxMs: 7000 * speed, ...opts });   // (holdMaxMs: 7 s of REAL time, whatever the speed)
   t.after(async () => { feed.stop(); await mock.close(); });
   const rest = mock.state.rest;
   const reads = (table) => mock.state.restCalls.filter((c) => !table || c.table === table);
-  return { mock, feed, sent, logs, rest, reads, now, last: () => sent[sent.length - 1] };
+  const NOTHING = Object.freeze({ onAir: undefined, song: null, hype: Object.freeze({}), score: undefined, grade: undefined, finish: undefined });
+  return { mock, feed, sent, logs, rest, reads, now, last: () => sent[sent.length - 1] || NOTHING };
 }
 const onAir = (target = SONG) => ({ connected: true, target, hold: null });
 
@@ -155,9 +156,10 @@ test('a song on air: read with the publishable key (GET only), its cover and tit
     { id: 'p1', submission_id: 'sub-1', host_id: 'host-1', start_bar: 1000, end_bar: null, started_at: iso(started), ended_at: null });
   x.rest.submissions_public.push({ id: 'sub-1', title: 'Test Song', album_artwork_url: COVER, attachment_urls: [] });
   x.feed.update(onAir());
-  assert.equal(x.sent[0].onAir, true, 'on air is said at once, before any read');
-  assert.deepEqual(x.sent[0].song, { id: 'sub-1', title: 'Test Song', cover: null });
-  assert.ok(await until(() => x.last().song.cover === COVER), 'the cover arrives with the first read');
+  assert.equal(x.sent.length, 0, 'fix round L-1: a new song is not said before its cover has been asked for');
+  assert.ok(await until(() => x.sent.length >= 1), 'said as soon as the first read answered');
+  assert.equal(x.sent[0].onAir, true);
+  assert.deepEqual(x.sent[0].song, { id: 'sub-1', title: 'Test Song', cover: COVER }, 'the FIRST message has the title and the cover');
   assert.ok(await until(() => x.last().hype.rank === 5 && x.last().hype.taps === 5000, 4000), `ended at ${JSON.stringify(x.last().hype)}`);
   // this play's taps = bar - start_bar = 5,000 = LEGENDARY; reached rank by rank, never ahead of 15 s a rank
   const ranks = [];
@@ -232,7 +234,8 @@ test('the grade: only the host\'s verdict given DURING this play comes out (an o
   assert.equal(x.sent.filter((m, i) => m.score === 82 && (i === 0 || x.sent[i - 1].score !== 82)).length, 1, 'the score appears once and stays');
   // the next song: its verdict is from before its play began
   x.feed.update(onAir({ submission_id: 'sub-2', title: 'Next Song' }));
-  assert.deepEqual([x.last().song.id, x.last().song.title, x.last().score, x.last().hype.taps], ['sub-2', 'Next Song', null, 0]);
+  assert.ok(await until(() => x.last().song && x.last().song.id === 'sub-2', 2000));
+  assert.deepEqual([x.last().song.id, x.last().song.title, x.last().score], ['sub-2', 'Next Song', null]);   // (its taps: its own bar, read with its cover)
   assert.ok(await until(() => x.reads('ranking_board').filter((c) => /sub-2/.test(c.query)).length >= 2));
   assert.equal(x.last().score, null);
 });
@@ -278,7 +281,7 @@ test('off air in every way the site says it (no target, show not on, nothing on 
   }
   // test mode (taps are checked, not added) still has a song on air
   x.feed.update({ connected: true, target: SONG, hold: 'test' });
-  assert.equal(x.last().onAir, true);
+  assert.ok(await until(() => x.last().onAir === true, 2000));
   x.feed.update({ connected: true, target: null, hold: null });
   await wait(200);                                                                  // (2.3.1: the three looks at the song's status are over)
   const n = x.reads().length;
@@ -290,6 +293,7 @@ test('off air in every way the site says it (no target, show not on, nothing on 
   assert.equal(x.reads().length, n);
   // a title with control characters and a too-long title are cleaned
   x.feed.update(onAir({ submission_id: 'sub-1', title: 'A\u0000\u202e\n  B ' + 'x'.repeat(200) }));
+  assert.ok(await until(() => x.last().onAir === true, 2000));
   assert.equal(x.last().song.title, ('A B ' + 'x'.repeat(200)).slice(0, 80));
 });
 
@@ -297,7 +301,16 @@ test('gentle on the site: a failing read doubles the wait (40, 80, 160, 320 ms h
   const x = await setup(t);
   // the waits themselves
   const f = new ShowFeed({ send: () => true });
-  assert.deepEqual([0, 1, 2, 3, 4, 5, 20].map((n) => { f.fails = n; return f.nextWaitMs(); }), [2500, 5000, 10000, 20000, 30000, 30000, 30000]);
+  // (fix round L-8: every 5 s while nothing is on air, every 2.5 s with a song)
+  assert.deepEqual([0, 1, 2, 3, 20].map((n) => { f.fails = n; return f.nextWaitMs(); }), [5000, 10000, 20000, 30000, 30000], 'nothing on air');
+  f.song = { id: 'sub-1' };
+  assert.deepEqual([0, 1, 2, 3, 4, 5, 20].map((n) => { f.fails = n; return f.nextWaitMs(); }), [2500, 5000, 10000, 20000, 30000, 30000, 30000], 'a song on air');
+  // between the songs of a show (2 minutes after one went off air): still 2.5 s, so the next song is seen quickly
+  f.song = null; f.fails = 0;
+  let clock = 1000000; f.mono = () => clock; f.lastAirAt = clock;
+  assert.equal(F.BETWEEN_SONGS_MS, 120000);
+  assert.deepEqual([0, 119000, 121000].map((later) => { clock = 1000000 + later; return f.nextWaitMs(); }), [2500, 2500, 5000]);
+  f.lastAirAt = null;
   f.fails = 0; f.retryAfterMs = 12000;
   assert.equal(f.nextWaitMs(), 12000, 'never sooner than a 429 asked for');
   f.stop();
@@ -363,8 +376,9 @@ test('a throwing send, a throwing wanted() and a site that answers nonsense neve
   assert.doesNotThrow(() => x.feed.update(onAir()));
   await wait(150);
   mode = 'ok';
-  assert.ok(await until(() => x.reads('ranking_board').length >= 2 && x.sent.length >= 1, 3000));
+  assert.ok(await until(() => x.reads('project_hype').length >= 4 && x.sent.length >= 1, 3000));
   assert.deepEqual([x.last().onAir, x.last().song.cover, x.last().hype.taps, x.last().score], [true, null, 0, null], 'nonsense reads as nothing');
+  assert.equal(x.reads('ranking_board').length, 0, 'when the airing began is not known, a verdict cannot be placed: it is not asked for');
   for (const bad of [undefined, null, 5, 'x', { connected: true, target: 'x' }, { connected: true, target: { submission_id: {} } }]) assert.doesNotThrow(() => x.feed.update(bad));
 });
 
@@ -402,8 +416,9 @@ test('2.3.1 the controller\'s target is used until the direct read answers; then
   const x = await setup(t, { opts: { hostId: () => 'host-1' } });
   x.mock.state.restFail = (table) => (table === 'active_projects' ? { status: 503 } : null);       // the direct read does not answer yet
   x.feed.update({ connected: false, target: SONG, hold: null });
-  assert.equal(x.sent[0].onAir, true, 'said at once from the controller\'s target, TikTok or not');
-  assert.equal(x.sent[0].song.id, 'sub-1');
+  assert.equal(x.feed.message().onAir, true, 'on air at once from the controller\'s target, TikTok or not');
+  assert.ok(await until(() => x.last().onAir === true, 3000), 'and said once its cover has been asked for');
+  assert.equal(x.last().song.id, 'sub-1');
   assert.ok(await until(() => x.reads('active_projects').length >= 2));
   assert.equal(x.feed.message().song.id, 'sub-1', 'no answer yet: the controller\'s target stays');
   x.rest.active_projects.push({ id: 'a1', submission_id: 'sub-2', activated_at: iso(x.now()), host_id: 'host-1', is_hype_target: true });
@@ -413,6 +428,8 @@ test('2.3.1 the controller\'s target is used until the direct read answers; then
   assert.equal(x.feed.message().song.id, 'sub-2');
   x.rest.active_projects[0].submission_id = 'sub-3';
   x.feed.update({ connected: true, target: { submission_id: 'sub-3', title: 'Third' }, hold: null });   // a NEW target (a push answer): at once
+  assert.equal(x.feed.message().song.id, 'sub-3');
+  assert.ok(await until(() => x.last().song && x.last().song.id === 'sub-3', 3000));
   assert.deepEqual([x.last().song.id, x.last().song.title], ['sub-3', 'Third']);
   // hold ('show' / 'song') still forces off air, whatever the table says
   for (const hold of ['show', 'song']) {
@@ -421,7 +438,7 @@ test('2.3.1 the controller\'s target is used until the direct read answers; then
     await wait(120);
     assert.equal(x.feed.message().onAir, false, `${hold}: stays off air`);
     x.feed.update({ connected: true, target: { submission_id: 'sub-3', title: 'Third' }, hold: null });
-    assert.equal(x.last().onAir, true);
+    assert.ok(await until(() => x.last().onAir === true, 3000));
   }
 });
 
@@ -490,7 +507,7 @@ test('2.3.1 DONE: the song leaves the air with status "played" -> one finish { i
   assert.ok(await until(() => x.last().finish, 3000), 'the finish reached the message');
   const m = x.last();
   assert.deepEqual({ ...m, at: 0, finish: { ...m.finish, at: 0 } }, { v: 2, type: 'show', onAir: false, song: { id: 'sub-1', title: 'Test Song', cover: COVER }, hype: ZERO_HYPE, score: null,
-    grade: null, finish: { id: 'sub-1', kind: 'played', at: 0 }, at: 0 });
+    grade: null, finish: { id: 'sub-1', kind: 'played', at: 0, grade: null }, at: 0 });
   assert.ok(Number.isInteger(m.finish.at) && m.finish.at >= before && m.finish.at <= x.now(), 'at = when it was seen (ms)');
   assert.ok(await until(() => x.last().finish === null && x.last().song === null, 3000), 'kept for its time, then cleared');
   await wait(200);
@@ -614,8 +631,8 @@ test('2.3.1 the verdict WORD travels with the score: fire / gem / solid / promis
   assert.deepEqual(['fire', 'gem', 'solid', 'promising', ' GEM ', 'A', 's', 'great', null, 'constructor'].map(F.gradeWord), ['fire', 'gem', 'solid', 'promising', 'gem', null, null, null, null, null]);
 });
 
-test('2.3.1 a verdict given AFTER the finish reaches the message within the wait (looks at 1.5 / 5 / 10 / 20 s; here 60 / 160 / 300 / 450 ms); with the next song on air it is dropped', async (t) => {
-  assert.deepEqual([F.LATE_GRADE_MS, F.FINISH_GRADE_MS, F.FINISH_SHOW_MS], [[1500, 5000], [10000, 20000], 20000], 'the real numbers');
+test('2.3.1 a verdict given AFTER the finish reaches the message within the wait (fix round L-7: looks at 1.5 / 4 / 7 / 10 / 14 / 18 s after the finish; here 300 / 450 ms); given after the next song went on air it is dropped', async (t) => {
+  assert.deepEqual([F.LATE_GRADE_MS, F.FINISH_GRADE_MS, F.FINISH_SHOW_MS], [[1500, 5000], [1500, 4000, 7000, 10000, 14000, 18000], 20000], 'the real numbers');
   const x = await eatSetup(t, { finishGradeMs: [300, 450], finishShowMs: 3000, lateScoreShowMs: 600 });
   putOnAir(x);
   x.feed.update({ connected: false, target: null, hold: null });
@@ -628,7 +645,7 @@ test('2.3.1 a verdict given AFTER the finish reaches the message within the wait
   assert.ok(await until(() => x.last().grade === 'fire', 3000), 'found by a later look');
   const m = x.last();
   assert.deepEqual({ ...m, at: 0, finish: { ...m.finish, at: 0 } }, { v: 2, type: 'show', onAir: false, song: { id: 'sub-1', title: 'Test Song', cover: COVER }, hype: ZERO_HYPE, score: 95,
-    grade: 'fire', finish: { id: 'sub-1', kind: 'played', at: 0 }, at: 0 });
+    grade: 'fire', finish: { id: 'sub-1', kind: 'played', at: 0, grade: 'fire' }, at: 0 });
   assert.equal(finishes(x).length, 1);
   // cleared without DONE: only the two early looks (2.3.0's), not the long wait
   const y = await eatSetup(t, { finishGradeMs: [300, 450], finishShowMs: 3000 });
@@ -651,7 +668,7 @@ test('2.3.1 a verdict given AFTER the finish reaches the message within the wait
   assert.deepEqual([z.last().finish.id, z.last().finish.kind], ['sub-1', 'played']);
   z.rest.ranking_board.push({ submission_id: 'sub-1', host_id: 'host-1', host_grade: 'fire', reviewed_at: iso(z.now()) });
   await wait(600);
-  assert.ok(z.sent.every((m) => m.grade === null && m.score === null), 'no word during another artist\'s song');
+  assert.ok(z.sent.every((m) => m.grade === null && m.score === null && (!m.finish || m.finish.grade === null)), 'a verdict given after the next song went on air is never said');
   assert.equal(finishes(z).length, 1);
 });
 
@@ -681,12 +698,287 @@ test('2.3.1 the show message is still the 2.3.0 one: v 2, every old field as bef
   assert.equal(x.last().grade, 'fire');
   // the VTuber in this install (2.3.0's files, or a later one): a message with the new fields is taken, its old fields unchanged
   const wire = require('../vendor/vtuber/js/mask-wire.js');
-  const full = { ...OLD.late, at: 1795000000000, grade: 'fire', finish: { id: 'sub-1', kind: 'played', at: 1795000000000 } };
+  const full = { ...OLD.late, at: 1795000000000, grade: 'fire', finish: { id: 'sub-1', kind: 'played', at: 1795000000000, grade: 'fire' } };
   const read = wire.cleanShow(full);
   assert.ok(read, 'not refused');
   assert.deepEqual({ type: read.type, onAir: read.onAir, song: { id: read.song.id, title: read.song.title }, hype: read.hype, score: read.score, at: read.at },
     { type: 'show', onAir: false, song: { id: 'sub-1', title: 'Test Song' }, hype: { taps: 0, rank: 0, label: '', mythic: 0 }, score: 95, at: 1795000000000 });
   assert.ok(wire.cleanShow({ ...full, v: 3 }) === null, 'which is why the version stays 2');
+});
+
+// ---------------------------------------------------------------- 2.3.1 fix round (the independent review): L-1 ... L-8
+
+test('fix round L-1: a new song\'s FIRST message carries its title and cover (TikTok off, the song from the site\'s table); a failed read sends what is known and the cover follows', async (t) => {
+  // the order the reviewer saw: the table names the song (no title, no cover yet), then submissions_public answers
+  const x = await eatSetup(t);
+  x.feed.update({ connected: false, target: null, hold: null });
+  assert.ok(await until(() => x.sent.length >= 1, 2000));
+  putOnAir(x);
+  assert.ok(await until(() => x.sent.some((m) => m.onAir), 3000));
+  const first = x.sent.find((m) => m.onAir);
+  assert.deepEqual(first.song, { id: 'sub-1', title: 'Test Song', cover: COVER }, 'the first on-air message: title and cover');
+  assert.ok(x.sent.every((m) => !m.song || (m.song.title === 'Test Song' && m.song.cover === COVER)), 'no message ever named the song without them');
+  // the next song, straight after DONE: the same
+  pressDone(x);
+  putOnAir(x, 'sub-2', { title: 'Next Song', ago: 0 });
+  assert.ok(await until(() => x.last().onAir && x.last().song.id === 'sub-2', 3000));
+  assert.ok(x.sent.filter((m) => m.onAir && m.song.id === 'sub-2').every((m) => m.song.title === 'Next Song' && m.song.cover === COVER));
+  // a song whose cover is not on the site's storage (a YouTube thumbnail): one first message, with the title, cover null
+  const y = await eatSetup(t);
+  putOnAir(y, 'sub-1', { cover: 'https://img.youtube.com/vi/abcdefghijk/mqdefault.jpg' });
+  y.feed.update({ connected: false, target: null, hold: null });
+  assert.ok(await until(() => y.sent.some((m) => m.onAir), 3000));
+  assert.deepEqual(y.sent.find((m) => m.onAir).song, { id: 'sub-1', title: 'Test Song', cover: null });
+  // the read fails: the song is said after that one failure with what is known; the cover follows when the site answers
+  const z = await eatSetup(t);
+  putOnAir(z);
+  z.mock.state.restFail = (table) => (table === 'submissions_public' ? { status: 503 } : null);
+  z.feed.update({ connected: false, target: null, hold: null });
+  assert.ok(await until(() => z.sent.some((m) => m.onAir), 3000), 'not held for ever');
+  assert.deepEqual(z.sent.find((m) => m.onAir).song, { id: 'sub-1', title: '', cover: null });
+  assert.equal(z.reads('submissions_public').length >= 1, true, 'said only after the read was tried');
+  z.mock.state.restFail = null;
+  assert.ok(await until(() => z.last().song && z.last().song.cover === COVER && z.last().song.title === 'Test Song', 4000), 'the next message has the cover');
+  // nobody answers at all (the read hangs): the hold has an end
+  const h = await eatSetup(t, { holdMaxMs: 120, wanted: undefined });
+  h.feed._poll = async () => {};                                                    // (no read ever happens)
+  h.feed.update({ connected: false, target: SONG, hold: null });
+  await wait(40);
+  assert.equal(h.sent.filter((m) => m.onAir).length, 0, 'held');
+  assert.ok(await until(() => h.sent.some((m) => m.onAir), 2000), 'then said without the cover');
+});
+
+test('fix round L-2: finish.grade is the finished song\'s own verdict: with the finish when it is known, filled in later when it is read later, also with the NEXT song already on air', async (t) => {
+  // known before DONE
+  const x = await eatSetup(t);
+  const at = putOnAir(x);
+  x.feed.update({ connected: false, target: null, hold: null });
+  assert.ok(await until(() => x.last().onAir, 3000));
+  x.rest.ranking_board.push({ submission_id: 'sub-1', host_id: 'host-1', host_grade: 'gem', reviewed_at: iso(at + 1000) });
+  assert.ok(await until(() => x.last().grade === 'gem', 3000));
+  pressDone(x);
+  assert.ok(await until(() => x.last().finish, 3000));
+  assert.deepEqual(x.sent.find((m) => m.finish).finish.grade, 'gem', 'with the very first finish message');
+  // ADD TO AI RADIO first, the verdict later while still on air: the kept finish gains it
+  const r = await eatSetup(t, { finishShowMs: 3000 });
+  const rAt = putOnAir(r);
+  r.feed.update({ connected: false, target: null, hold: null });
+  assert.ok(await until(() => r.last().onAir && r.reads('radio_tracks').length >= 1, 3000));
+  r.rest.radio_tracks.push({ submission_id: 'sub-1', preview_only: false, added_at: iso(r.now()) });
+  assert.ok(await until(() => r.last().finish, 3000));
+  assert.deepEqual([r.last().finish.kind, r.last().finish.grade], ['radio', null]);
+  r.rest.ranking_board.push({ submission_id: 'sub-1', host_id: 'host-1', host_grade: 'solid', reviewed_at: iso(rAt + 2000) });
+  assert.ok(await until(() => r.last().finish && r.last().finish.grade === 'solid', 3000), 'filled in on a later message');
+  assert.equal(r.last().grade, 'solid');
+  // the verdict is given, DONE is pressed and the next song goes on air before LIVE Link has read the verdict
+  const y = await eatSetup(t, { finishShowMs: 6000, finishGradeMs: [60, 160, 300, 600, 1000, 1500, 2200, 3000] });
+  const yAt = putOnAir(y);
+  y.feed.update({ connected: false, target: null, hold: null });
+  assert.ok(await until(() => y.last().onAir && y.reads('ranking_board').length >= 1, 3000));
+  y.mock.state.restFail = (table) => (table === 'ranking_board' ? { status: 503 } : null);     // (the verdict is there but not read yet)
+  y.rest.ranking_board.push({ submission_id: 'sub-1', host_id: 'host-1', host_grade: 'fire', reviewed_at: iso(y.now()) });
+  await wait(30);
+  pressDone(y);
+  putOnAir(y, 'sub-2', { title: 'Next Song', ago: 0 });
+  assert.ok(await until(() => y.last().onAir && y.last().song.id === 'sub-2' && y.last().finish, 3000));
+  assert.equal(y.last().finish.grade, null);
+  y.mock.state.restFail = null;
+  assert.ok(await until(() => y.last().finish && y.last().finish.grade === 'fire', 5000), 'read later: the finish names the last song\'s verdict');
+  const m = y.last();
+  assert.deepEqual([m.onAir, m.song.id, m.score, m.grade, m.finish.id, m.finish.kind], [true, 'sub-2', null, null, 'sub-1', 'played'], 'the song on air has no verdict of its own');
+  assert.ok(yAt > 0 && finishes(y).length === 1);
+  // a verdict GIVEN after the next song went on air is not the last song's word any more
+  const z = await eatSetup(t, { finishShowMs: 3000, finishGradeMs: [60, 160, 300] });
+  putOnAir(z);
+  z.feed.update({ connected: false, target: null, hold: null });
+  assert.ok(await until(() => z.last().onAir && z.reads('ranking_board').length >= 1, 3000));
+  pressDone(z);
+  putOnAir(z, 'sub-2', { title: 'Next Song', ago: -20 });                           // (on air 20 ms from now)
+  assert.ok(await until(() => z.last().onAir && z.last().song.id === 'sub-2' && z.last().finish, 3000));
+  z.rest.ranking_board.push({ submission_id: 'sub-1', host_id: 'host-1', host_grade: 'fire', reviewed_at: iso(z.now() + 50) });
+  await wait(500);
+  assert.ok(z.sent.every((q) => !q.finish || q.finish.grade === null), 'given during the next song: no word');
+});
+
+test('fix round L-3: a song nobody opened a hype play for still gets its verdict (during this airing = since active_projects.activated_at), on air and just after DONE', async (t) => {
+  const air = (x, id = 'sub-1') => {
+    const at = x.now() - 5000;
+    x.rest.active_projects.push({ id: 'a-' + id, submission_id: id, activated_at: iso(at), host_id: 'host-1', is_hype_target: true });
+    x.rest.submissions_public.push({ id, title: 'Test Song', album_artwork_url: COVER, attachment_urls: [], status: 'in_progress', played_at: null });
+    return at;
+  };
+  const x = await eatSetup(t);
+  const at = air(x);                                                                // no project_hype row, no hype_plays row
+  x.rest.ranking_board.push({ submission_id: 'sub-1', host_id: 'host-1', host_grade: 'promising', reviewed_at: iso(at - 86400000) });   // last week's
+  x.feed.update({ connected: false, target: null, hold: null });
+  assert.ok(await until(() => x.last().onAir && x.reads('ranking_board').length >= 2, 3000), 'the verdict is asked for without a play');
+  assert.ok(x.sent.every((m) => m.score === null), 'an old verdict (before this airing) does not count');
+  x.rest.ranking_board.push({ submission_id: 'sub-1', host_id: 'host-1', host_grade: 'fire', reviewed_at: iso(at + 3000) });
+  assert.ok(await until(() => x.last().grade === 'fire' && x.last().score === 95, 3000));
+  pressDone(x);
+  assert.ok(await until(() => x.last().finish, 3000));
+  assert.deepEqual([x.last().finish.kind, x.last().finish.grade], ['played', 'fire']);
+  // ... and when the verdict comes just after DONE
+  const y = await eatSetup(t, { finishShowMs: 3000, finishGradeMs: [60, 160, 300] });
+  air(y);
+  y.feed.update({ connected: false, target: null, hold: null });
+  assert.ok(await until(() => y.last().onAir && y.reads('ranking_board').length >= 1, 3000));
+  pressDone(y);
+  assert.ok(await until(() => y.last().finish, 3000));
+  y.rest.ranking_board.push({ submission_id: 'sub-1', host_id: 'host-1', host_grade: 'gem', reviewed_at: iso(y.now()) });
+  assert.ok(await until(() => y.last().finish && y.last().finish.grade === 'gem' && y.last().grade === 'gem', 3000), 'the late look runs without a play');
+  // the play was closed before the verdict (the site ended it early): the verdict still counts
+  const z = await eatSetup(t);
+  const zAt = putOnAir(z);
+  z.rest.hype_plays[0].ended_at = iso(zAt + 1000);
+  z.feed.update({ connected: false, target: null, hold: null });
+  assert.ok(await until(() => z.last().onAir, 3000));
+  z.rest.ranking_board.push({ submission_id: 'sub-1', host_id: 'host-1', host_grade: 'solid', reviewed_at: iso(zAt + 3000) });
+  assert.ok(await until(() => z.last().grade === 'solid', 3000));
+});
+
+test('fix round L-4: ADD TO AI RADIO in the song\'s first seconds (the row is already there at the first read, added during this airing) is a finish; a row added before this airing is not', async (t) => {
+  const x = await eatSetup(t);
+  const at = putOnAir(x);
+  x.rest.radio_tracks.push({ submission_id: 'sub-1', preview_only: false, added_at: iso(at + 800) });   // pressed 0.8 s after the song went on air
+  x.feed.update({ connected: false, target: null, hold: null });
+  assert.ok(await until(() => x.last().finish, 3000), 'not swallowed by the starting point');
+  assert.deepEqual([x.last().finish.id, x.last().finish.kind, x.last().onAir], ['sub-1', 'radio', true]);
+  assert.match(x.reads('radio_tracks')[0].query, /select=submission_id(,|%2C)preview_only(,|%2C)added_at/);
+  await wait(200);
+  assert.equal(finishes(x).length, 1);
+  // added in an earlier show: only the starting point
+  const y = await eatSetup(t);
+  const yAt = putOnAir(y);
+  y.rest.radio_tracks.push({ submission_id: 'sub-1', preview_only: false, added_at: iso(yAt - 86400000) });
+  y.feed.update({ connected: false, target: null, hold: null });
+  assert.ok(await until(() => y.reads('radio_tracks').length >= 3, 3000));
+  assert.ok(y.sent.every((m) => m.finish === null));
+  // a preview-only row that goes live during the airing (the baseline rule) still finishes, whatever its added_at
+  const z = await eatSetup(t);
+  const zAt = putOnAir(z);
+  z.rest.radio_tracks.push({ submission_id: 'sub-1', preview_only: true, added_at: iso(zAt - 86400000) });
+  z.feed.update({ connected: false, target: null, hold: null });
+  assert.ok(await until(() => z.reads('radio_tracks').length >= 2, 3000));
+  assert.ok(z.sent.every((m) => m.finish === null), 'a preview-only row added during the airing is not "in the radio" either');
+  z.rest.radio_tracks[0].preview_only = false;
+  assert.ok(await until(() => z.last().finish && z.last().finish.kind === 'radio', 3000));
+  // a preview-only row ADDED during this airing: not a finish
+  const p = await eatSetup(t);
+  const pAt = putOnAir(p);
+  p.rest.radio_tracks.push({ submission_id: 'sub-1', preview_only: true, added_at: iso(pAt + 500) });
+  p.feed.update({ connected: false, target: null, hold: null });
+  assert.ok(await until(() => p.reads('radio_tracks').length >= 3, 3000));
+  assert.ok(p.sent.every((m) => m.finish === null));
+});
+
+test('fix round L-5: stream_status.is_live false for this host = nothing on air, whatever active_projects lists; no row or a failed read changes nothing', async (t) => {
+  const x = await eatSetup(t);
+  putOnAir(x);
+  x.rest.stream_status.push({ host_id: 'host-1', is_live: false, active_submission_id: 'sub-1' }, { host_id: 'host-2', is_live: true, active_submission_id: 'sub-1' });
+  x.feed.update({ connected: false, target: null, hold: null });
+  assert.ok(await until(() => x.reads('stream_status').length >= 3, 3000));
+  assert.ok(x.sent.length >= 1 && x.sent.every((m) => m.onAir === false && m.song === null), 'a song left active with the show off is not on air');
+  for (const c of x.reads('stream_status')) { assert.equal(c.method, 'GET'); assert.match(c.query, /select=is_live(,|%2C)active_submission_id/); assert.match(c.query, /host_id=eq\.host-1/); }
+  assert.ok(Math.abs(x.reads('stream_status').length - x.reads('active_projects').length) <= 1, 'read with the active_projects poll');
+  // the show goes live: on air
+  x.rest.stream_status[0].is_live = true;
+  assert.ok(await until(() => x.last().onAir === true, 3000));
+  // the show ends with the song still listed: off air, and that is no DONE (the status is not 'played')
+  x.rest.stream_status[0].is_live = false;
+  assert.ok(await until(() => x.last().onAir === false, 3000));
+  await wait(200);
+  assert.equal(finishes(x).length, 0);
+  // no row for this host: as before (on air)
+  x.rest.stream_status.length = 0;
+  assert.ok(await until(() => x.last().onAir === true, 3000), 'no row: active_projects alone decides');
+  // the read fails: nothing changes, and it does not slow the other reads down
+  x.mock.state.restFail = (table) => (table === 'stream_status' ? { status: 503 } : null);
+  const n = x.reads('project_hype').length;
+  await wait(400);
+  assert.equal(x.last().onAir, true, 'a failed read does not take the song off air');
+  assert.equal(x.feed.fails, 0, 'and is not a reason to read more slowly');
+  assert.ok(x.reads('project_hype').length >= n + 2);
+  // no host id: never read
+  const y = await setup(t);
+  y.feed.update(onAir());
+  assert.ok(await until(() => y.reads('project_hype').length >= 2, 3000));
+  assert.equal(y.reads('stream_status').length, 0);
+});
+
+test('fix round L-6: "a show is plausible" = a song on air, or up to 30 minutes after one went off air, or a TikTok LIVE connected; the eight keys are held only then', async (t) => {
+  assert.equal(F.AFTER_SHOW_MS, 30 * 60000);
+  const said = [];
+  const x = await eatSetup(t, { afterShowMs: 300, onPlausible: (p) => said.push(p) });
+  assert.equal(x.feed.plausible, false, 'at start: no');
+  x.feed.update({ connected: false, target: null, hold: null });
+  await wait(150);
+  assert.equal(x.feed.plausible, false, 'VTuber open, no song, no TikTok: no');
+  assert.deepEqual(said, []);
+  putOnAir(x);
+  assert.ok(await until(() => x.feed.plausible === true, 3000), 'a song on air');
+  assert.deepEqual(said, [true]);
+  offAirRow(x);
+  assert.ok(await until(() => x.last().onAir === false, 3000));
+  assert.equal(x.feed.plausible, true, 'just after a song: still yes');
+  assert.ok(await until(() => x.feed.plausible === false, 3000), 'the time after a song is over (30 minutes for real; 300 ms here)');
+  assert.ok(await until(() => said.length === 2, 1000), 'said by itself when the time runs out');
+  assert.deepEqual(said, [true, false]);
+  x.feed.update({ connected: true, target: null, hold: 'song' });                  // TikTok live, nothing on air: as 2.3.0
+  assert.equal(x.feed.plausible, true);
+  x.feed.update({ connected: false, target: null, hold: null });
+  assert.equal(x.feed.plausible, false);
+  assert.deepEqual(said, [true, false, true, false]);
+  x.feed.stop();
+  assert.equal(x.feed.plausible, false);
+  // the keys follow it (main.js passes show: showFeed.plausible)
+  const { PuppetKeys, puppetWanted, eatWanted } = require('../src/core/puppet-keys');
+  const k = { canControl: true, enabled: true, inApp: true, vt: { character: 'mask', puppet: true } };
+  assert.deepEqual([puppetWanted({ ...k, show: false }), eatWanted({ ...k, show: false })], [false, false], 'no show plausible: no key is held, EAT IT neither');
+  assert.deepEqual([puppetWanted({ ...k, show: true }), eatWanted({ ...k, show: true })], [true, true]);
+  assert.deepEqual([puppetWanted(k), eatWanted(k)], [true, true], 'not said (an older caller): as before');
+  assert.equal(eatWanted({ canControl: true, enabled: true, inApp: false, vt: null, show: false }), false, 'the desktop-shortcut VTuber too');
+  const held = new Map();
+  const pk = new PuppetKeys({ register: (acc, fn) => { held.set(acc, fn); return true; }, unregister: (acc) => { held.delete(acc); }, send: () => true });
+  for (const [show, n] of [[false, 0], [true, 8], [false, 0]]) { pk.setWanted(puppetWanted({ ...k, show })); pk.setEatWanted(eatWanted({ ...k, show })); assert.equal(held.size, n, `show ${show}`); }
+  // the card says it in one plain line
+  const ui = require('fs').readFileSync(require('path').join(__dirname, '..', 'src', 'ui', 'ui.js'), 'utf8');
+  assert.ok(ui.includes('They work during your show: VTuber open with the Mask, and a song on air (or up to 30 minutes after one) or your TikTok LIVE connected.'));
+});
+
+test('fix round L-8: every 5 s while nothing is on air (2.5 s with a song); nothing is read while another character than the Mask is chosen and no show is plausible', async (t) => {
+  assert.deepEqual([F.POLL_MS, F.IDLE_POLL_MS], [2500, 5000]);
+  // the pace (here: 40 ms on air, 160 ms idle)
+  const x = await eatSetup(t, { idlePollMs: 160 });
+  x.feed.update({ connected: false, target: null, hold: null });
+  await wait(900);
+  const idle = x.reads('active_projects').length;
+  assert.ok(idle >= 3 && idle <= 8, `${idle} reads in 0.9 s of nothing on air (about 6 at 160 ms; 20 at the on-air pace)`);
+  assert.deepEqual([...new Set(x.reads().map((c) => c.table))].sort(), ['active_projects', 'stream_status'], 'idle: only "is a song on air?"');
+  putOnAir(x);
+  assert.ok(await until(() => x.last().onAir, 3000));
+  const n = x.reads('active_projects').length;
+  await wait(600);
+  assert.ok(x.reads('active_projects').length - n >= 3, `on air: the usual pace (${x.reads('active_projects').length - n} reads in 0.6 s)`);
+  // Ryo is chosen, no show: not one read; the Mask is chosen: reads; Ryo with a TikTok LIVE connected: reads (a show is plausible)
+  let mask = false;
+  const y = await eatSetup(t, { mask: () => mask });
+  putOnAir(y);
+  y.feed.update({ connected: false, target: null, hold: null });
+  await wait(300);
+  assert.equal(y.reads().length, 0, 'another character, no show: the site is left alone');
+  assert.ok(y.sent.length >= 1 && y.sent.every((m) => m.onAir === false));
+  mask = true;
+  assert.ok(await until(() => y.last().onAir === true, 3000), 'the Mask is chosen: the song is found');
+  mask = false;
+  const k = y.reads('active_projects').length;
+  assert.ok(await until(() => y.reads('active_projects').length >= k + 2, 3000), 'a song is on air (a show is plausible): still read with another character');
+  const z = await eatSetup(t, { mask: () => false });
+  z.feed.update({ connected: true, target: null, hold: 'song' });
+  assert.ok(await until(() => z.reads('active_projects').length >= 2, 3000), 'TikTok live: read, as 2.3.0 did');
+  const w = await eatSetup(t, { mask: () => { throw new Error('boom'); } });
+  w.feed.update({ connected: false, target: null, hold: null });
+  assert.ok(await until(() => w.reads('active_projects').length >= 1, 3000), 'a throwing mask() counts as "the Mask"');
 });
 
 // ---------------------------------------------------------------- with the real controller (as main.js wires it)
@@ -751,8 +1043,9 @@ test('main.js keeps the rules: a test run never takes a real key, the keys are g
   assert.match(main, /app\.on\('will-quit', \(\) => \{ try \{ if \(puppetKeys\) puppetKeys\.release\(\); \}/);
   assert.match(main, /restBase = new URL\(API_BASE\)\.origin \+ '\/rest\/v1\/'/);
   assert.match(main, /apiKey: SITE\.publishableKey, coverHosts: coverHosts\(SITE\.apiBase\)/);
-  assert.ok(main.includes('send: (m) => vtuber.sendShow(m), wanted: () => vtuber.canControl, hostId: () => (ctl && ctl.cfg && ctl.cfg.host_id) || null });'), '2.3.1: the host whose song on air is read = the one this computer is paired to (the site\'s own config answer)');
-  assert.ok(main.includes('const k = { canControl: !!(vtuber && vtuber.canControl), enabled: vtuberOn(), inApp: !!(vtHost && vtHost.running), vt: vtHost ? vtHost.vt : null };'), 'the keys follow the chosen character');
+  assert.ok(main.includes('send: (m) => vtuber.sendShow(m), wanted: () => vtuber.canControl, hostId: () => (ctl && ctl.cfg && ctl.cfg.host_id) || null,'), '2.3.1: the host whose song on air is read = the one this computer is paired to (the site\'s own config answer)');
+  assert.ok(main.includes("mask: () => !(vtHost && vtHost.running) || !!(vtHost.vt && vtHost.vt.character === 'mask'), onPlausible: () => syncPuppetKeys() });"), 'fix round L-6 / L-8: the feed knows whether the Mask is chosen, and the keys follow "a show is plausible"');
+  assert.ok(main.includes('const k = { canControl: !!(vtuber && vtuber.canControl), enabled: vtuberOn(), inApp: !!(vtHost && vtHost.running), vt: vtHost ? vtHost.vt : null, show: !!(showFeed && showFeed.plausible) };'), 'the keys follow the chosen character, and only while a show is plausible (fix round L-6)');
   assert.ok(main.includes('puppetKeys.setWanted(puppetWanted(k));'), 'the puppet keys: the Mask + its Puppet show switch');
   assert.ok(main.includes('puppetKeys.setEatWanted(eatWanted(k));'), '2.3.1 EAT IT: the Mask, whatever its Puppet show switch says');
   assert.match(main, /const \{ PuppetKeys, puppetWanted, eatWanted, /);

@@ -346,9 +346,11 @@ const vtuberCardNow = () => ({ ...vtuberCard(vtHost ? vtHost.getState() : null, 
 // the chosen character is the Mask (the puppet moves are the Mask's: with Ryo or Melanie the keys would do nothing and
 // still be taken from every other program). core/puppet-keys.js puppetWanted has the rule.
 // 2.3.1: "Eat it" (Ctrl+Alt+8) is held with the Mask chosen even when its Puppet show switch is off (eatWanted).
+// All eight are held only while a show is plausible (a song on air, up to 30 minutes after one, or a TikTok LIVE
+// connected: core/show-feed.js `plausible`), so the Ctrl+Alt digits are not taken from other programs all day.
 function syncPuppetKeys() {
   if (!puppetKeys) return;
-  const k = { canControl: !!(vtuber && vtuber.canControl), enabled: vtuberOn(), inApp: !!(vtHost && vtHost.running), vt: vtHost ? vtHost.vt : null };
+  const k = { canControl: !!(vtuber && vtuber.canControl), enabled: vtuberOn(), inApp: !!(vtHost && vtHost.running), vt: vtHost ? vtHost.vt : null, show: !!(showFeed && showFeed.plausible) };
   puppetKeys.setWanted(puppetWanted(k));
   puppetKeys.setEatWanted(eatWanted(k));
   sendVtuber();
@@ -560,7 +562,9 @@ app.whenReady().then(async () => {
   let restBase = '';
   try { restBase = new URL(API_BASE).origin + '/rest/v1/'; } catch { restBase = ''; }
   showFeed = new ShowFeed({ restBase, apiKey: SITE.publishableKey, coverHosts: coverHosts(SITE.apiBase), log,
-    send: (m) => vtuber.sendShow(m), wanted: () => vtuber.canControl, hostId: () => (ctl && ctl.cfg && ctl.cfg.host_id) || null });
+    send: (m) => vtuber.sendShow(m), wanted: () => vtuber.canControl, hostId: () => (ctl && ctl.cfg && ctl.cfg.host_id) || null,
+    // the Mask is the chosen character (a desktop-shortcut VTuber does not say: taken as yes); a show became / stopped being plausible
+    mask: () => !(vtHost && vtHost.running) || !!(vtHost.vt && vtHost.vt.character === 'mask'), onPlausible: () => syncPuppetKeys() });
   // V8: the puppet keys. A test run never takes a real key from this computer.
   puppetKeys = new PuppetKeys({
     keys: store.get('puppetKeys'), enabled: store.get('puppetKeysOn') !== false, log, onChange: () => sendVtuber(),

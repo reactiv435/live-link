@@ -2,8 +2,10 @@
 // V8 (the puppet show): keys that work in ANY window (OBS, TikTok LIVE Studio, a browser) for the Mask's puppet moves,
 // the boss fight and a vote. Contract: the VTuber repo's V8-PHASE2.md, B3 and C4.
 //  * Held ONLY while a VTuber that understands them is listening (vtuber-link.js canControl; 2.3.1: with or without
-//    a TikTok LIVE), and only when the host has not switched them off. The rest of the time the keys belong to the
-//    other programs again. All are given back when LIVE Link quits.
+//    a TikTok LIVE) AND a show is plausible (show-feed.js `plausible`: a song on air, up to 30 minutes after one went
+//    off air, or a TikTok LIVE connected), and only when the host has not switched them off. The rest of the time the
+//    keys belong to the other programs again (Ctrl+Alt+digit types a symbol on some keyboards). All are given back
+//    when LIVE Link quits.
 //  * 2.3.1: "Eat it" (Ctrl+Alt+8) = the Mask eats the song on air NOW (control action 'eat'; not the puppet move
 //    "Eat a comment"). It is the one key that does not follow the VTuber's Puppet show switch (`always`): it is held
 //    whenever the Mask is the chosen character (eatWanted below).
@@ -65,16 +67,16 @@ function setKey(keys, id, key) {
 }
 
 /**
- * Should the keys be held right now? canControl = a v2 VTuber is listening and a TikTok LIVE is connected
- * (vtuber-link.js); enabled = the site has not switched the VTuber card off; inApp = the VTuber runs inside LIVE Link;
+ * Should the keys be held right now? canControl = a v2 VTuber is listening (vtuber-link.js); show = a show is
+ * plausible (show-feed.js: a song on air, up to 30 minutes after one, or a TikTok LIVE; not said = yes); enabled = the site has not switched the VTuber card off; inApp = the VTuber runs inside LIVE Link;
  * vt = its own state (vtuber-host.js: { character: 'mask' | 'ryo' | 'melanie' | null, ... }).
  *  * In the app: only while the chosen character is the Mask.
  *  * A desktop-shortcut VTuber (HTTP) does not tell LIVE Link which character is chosen: the keys are held as before.
  *  * The VTuber's own "Puppet show" switch is not in the state it sends today, so LIVE Link cannot know it. If a
  *    later VTuber sends `puppet: false` in its state, the keys are given back then.
  */
-function puppetWanted({ canControl, enabled = true, inApp = false, vt = null } = {}) {
-  if (!canControl || !enabled) return false;
+function puppetWanted({ canControl, enabled = true, inApp = false, vt = null, show = true } = {}) {
+  if (!canControl || !enabled || !show) return false;
   if (!inApp) return true;
   if (!vt || vt.character !== 'mask') return false;
   return vt.puppet !== false;
@@ -82,10 +84,11 @@ function puppetWanted({ canControl, enabled = true, inApp = false, vt = null } =
 
 /**
  * 2.3.1: should the "Eat it" key be held right now? As puppetWanted, except that the VTuber's Puppet show switch does
- * not matter: the Mask eats the song whether or not the puppet show is on.
+ * not matter: the Mask eats the song whether or not the puppet show is on. It follows the same "a show is plausible"
+ * window as the other keys.
  */
-function eatWanted({ canControl, enabled = true, inApp = false, vt = null } = {}) {
-  if (!canControl || !enabled) return false;
+function eatWanted({ canControl, enabled = true, inApp = false, vt = null, show = true } = {}) {
+  if (!canControl || !enabled || !show) return false;
   if (!inApp) return true;
   return !!vt && vt.character === 'mask';
 }

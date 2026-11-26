@@ -5,7 +5,11 @@
 //   { v: 2, type: 'show', onAir, song: { id, title, cover } | null, hype: { taps, rank, label, mythic }, score, at }
 //   2.3.1 adds two fields (ADDED only: v stays 2, a 2.3.0 VTuber drops what it does not know):
 //     grade:  'fire' | 'gem' | 'solid' | 'promising' | null   the host's verdict WORD behind `score`
-//     finish: { id, kind: 'played' | 'radio', at } | null     the song was finished (DONE / ADD TO AI RADIO); said for 20 s
+//     finish: { id, kind: 'played' | 'radio', at, grade } | null   the song was finished (DONE / ADD TO AI RADIO); said
+//             for 20 s. finish.grade = THAT song's verdict word (or null), as known when the finish is seen and filled in
+//             on later messages while the finish is kept, also when the next song is already on air.
+//   A new song's FIRST message carries its title and cover: it is held until the song's submissions_public read has
+//   answered or failed once (the Mask must have the cover before it can eat it).
 //   sent on every change and at least every 5 s, to a VTuber that speaks v2 (2.3.1: with or without a TikTok LIVE).
 //
 // Where each part comes from:
@@ -34,8 +38,17 @@
 //      'played' = the host pressed DONE: the song leaves the air and submissions_public.status becomes 'played'
 //                 (played_at not older than this airing). Looked at up to three times as the song leaves. A song
 //                 CLEARED without DONE keeps its status: no finish.
-//    One finish per song (both buttons = one). After a finish the late looks for a verdict go on to 10 s and 20 s;
-//    the next song going on air ends them (never another song's word during this one).
+//      Also 'radio': a row with preview_only false whose added_at is not before this airing began (ADD TO AI RADIO
+//      pressed in the song's first seconds, before the starting point was read).
+//    One finish per song (both buttons = one). After a finish its verdict is looked for at 1.5 / 4 / 7 / 10 / 14 /
+//    18 s. With the NEXT song already on air only a verdict given BEFORE that song went on air counts (it fills
+//    finish.grade; never a word that was given during another artist's song).
+//  * "During this airing" for a verdict: from active_projects.activated_at when the table said it, else from the
+//    song's open hype_plays row (2.3.0's rule). A song nobody opened a play for still gets its verdict.
+//  * stream_status.is_live === false for this host = nothing on air, whatever active_projects still lists. No row or
+//    a failed read changes nothing.
+//  * Pace: every 2.5 s with a song on air (and for 2 minutes after one went off air), every 5 s otherwise; nothing is read while a character other than the
+//    Mask is chosen and no show is plausible (`plausible`: a song on air, up to 30 minutes after one, or TikTok live).
 //
 // Gentle on the site: one small read round every 2.5 s while a VTuber that speaks v2 is listening (GET only);
 // nothing otherwise. Any failed read doubles the wait (5 s, 10 s, 20 s, 30 s at most; a 429's Retry-After is honoured);
@@ -145,7 +158,10 @@ const LATE_SCORE_SHOW_MS = 10000;     // a grade found then stays in the show st
 // 2.3.1: the song's finish
 const RADIO_EVERY = 2;                // the AI radio's row for the song on air: every 2nd read (5 s)
 const FINISH_TRY_MS = [0, 1500, 4000];   // the song left the air: three looks at its status (DONE writes it a moment later)
-const FINISH_GRADE_MS = [10000, 20000];  // after a finish: two more looks for a verdict (the Mask waits 20 s for the word)
+const FINISH_GRADE_MS = [1500, 4000, 7000, 10000, 14000, 18000];   // after a finish: looks for its verdict (the Mask waits 20 s for the word)
+const IDLE_POLL_MS = 5000;            // nothing on air: the song on air is asked for this often (2.5 s with a song)
+const AFTER_SHOW_MS = 30 * 60000;     // a show is still "plausible" this long after the last song went off air
+const BETWEEN_SONGS_MS = 2 * 60000;   // just after a song went off air the next one is looked for at the on-air pace (2.5 s)
 const FINISH_SHOW_MS = 20000;         // a finish stays in the show state this long
 const FINISH_ONCE_MS = 10 * 60000;    // the same song is not finished twice within this (both buttons, a flicker off and on air)
 const PLAYED_SLACK_MS = 60000;        // played_at may be this much before the airing's own start time and still be this DONE
@@ -158,7 +174,8 @@ class ShowFeed {
    * opts: restBase ('https://<site>/rest/v1/'), apiKey (the site's publishable key), fetch, coverHosts (the site's
    *       storage host), send(msg) -> bool (vtuber-link sendShow), wanted() -> bool (a v2 VTuber is listening),
    *       hostId() -> string | null (the host this computer is paired to: the site's live-link-config host_id),
-   *       log, now, mono, setTimeout, clearTimeout, pollMs, tickMs
+   *       mask() -> bool (the Mask is the chosen character, or it is not known), onPlausible() (`plausible` changed),
+   *       log, now, mono, setTimeout, clearTimeout, pollMs, idlePollMs, tickMs
    */
   constructor(opts = {}) {
     this.restBase = String(opts.restBase || '');
@@ -168,12 +185,18 @@ class ShowFeed {
     this.send = opts.send || (() => false);
     this.wanted = opts.wanted || (() => true);
     this.hostId = typeof opts.hostId === 'function' ? opts.hostId : () => null;
+    this.mask = typeof opts.mask === 'function' ? opts.mask : () => true;
+    this.onPlausible = typeof opts.onPlausible === 'function' ? opts.onPlausible : null;
     this.log = opts.log || (() => {});
     this.now = opts.now || (() => Date.now());
     this.mono = opts.mono || (() => performance.now());
     this.setTimeout = opts.setTimeout || setTimeout;
     this.clearTimeout = opts.clearTimeout || clearTimeout;
     this.pollMs = opts.pollMs || POLL_MS;
+    this.idlePollMs = opts.idlePollMs || (opts.pollMs ? opts.pollMs * 2 : IDLE_POLL_MS);
+    this.afterShowMs = opts.afterShowMs || AFTER_SHOW_MS;
+    this.betweenSongsMs = opts.betweenSongsMs || BETWEEN_SONGS_MS;
+    this.holdMaxMs = opts.holdMaxMs || (opts.readTimeoutMs || READ_TIMEOUT_MS) + 1000;   // a new song's first message is never held longer
     this.pollMaxMs = opts.pollMaxMs || POLL_MAX_MS;
     this.tickMs = opts.tickMs || TICK_MS;
     this.keepMs = opts.keepMs || KEEP_MS;
@@ -184,13 +207,15 @@ class ShowFeed {
     this.finishGradeMs = opts.finishGradeMs || FINISH_GRADE_MS;
     this.finishShowMs = opts.finishShowMs || FINISH_SHOW_MS;
     this.finishOnceMs = opts.finishOnceMs || FINISH_ONCE_MS;
-    this.connected = false;         // a TikTok LIVE is connected (kept for the record: it gates nothing here since 2.3.1)
+    this.connected = false;         // a TikTok LIVE is connected (it gates nothing here since 2.3.1; it makes a show "plausible")
+    this.lastAirAt = null;          // when the last song went off air
+    this.wasPlausible = false;
     this.started = false;           // the controller has said something: the clock runs
     this.ctl = { id: null, title: '', hold: null };   // the controller's word: its target and why taps are on hold
     this.ctlRev = 0;                // counts its changes (an answer of the table that is older than the last one is dropped)
     this.air = undefined;           // the site's own word (active_projects): { id, activatedAt } | null; undefined = not answered yet
     this.wasWant = false;           // a v2 VTuber was listening at the last tick
-    this.song = null;               // { id, title, cover, coverTried, since, radio, finished } the song on air
+    this.song = null;               // { id, title, cover, coverTried, since, radio, finished, ready, at } the song on air
     this.play = null;               // { key, startBar, startedAt, hostId, open } the song's newest play
     this.shownKey = null;           // the play `shown` belongs to
     this.bar = null;                // project_hype.hype_bar, last read
@@ -198,9 +223,9 @@ class ShowFeed {
     this.shown = 0;                 // the climb-limited value (what the overlay shows)
     this.score = null; this.grade = null;   // the host's verdict: 0-100, and its word
     this.late = null;               // { song, score, grade, until } a grade found just after the song went off air
-    this.finish = null;             // { id, kind, at, until, song, score, grade } the last finish, while it is said
+    this.finish = null;             // { id, kind, at, until, song, score, grade, from } the last finish, while it is said
     this.finishedAt = new Map();    // song id -> when it was finished (one finish per song)
-    this.lastOff = null;            // { was, play, gen, at } the song that last went off air (for the looks after a finish)
+    this.lastOff = null;            // { was, gen } the song that last went off air
     this.finishTimers = [];
     this.fails = 0; this.retryAfterMs = 0;
     this.reads = 0;                 // good read rounds for this song
@@ -232,9 +257,24 @@ class ShowFeed {
     const first = !this.started;
     if (first) { this.started = true; this.wasWant = this._want(); this._startTick(); }
     this._resolve();
-    if (first) this._emit(false);                      // the first word (a song or "nothing on air") is said at once
+    if (first) this._emit(false);                      // the first word ("nothing on air"; a song once its cover is read) is said at once
     if (changed && this._hostId() && this._want()) this._pollSoon(0);
+    this._checkPlausible();
   }
+
+  /**
+   * Is a show plausible right now? A song is on air, or one went off air in the last 30 minutes, or a TikTok LIVE is
+   * connected. The keys that work in any window are held only then (main.js), and with another character than the
+   * Mask chosen nothing is read from the site outside it.
+   */
+  get plausible() { return !!this.song || this.connected || (this.lastAirAt !== null && this.mono() - this.lastAirAt < this.afterShowMs); }
+  _checkPlausible() {
+    const p = !this.stopped && this.plausible;
+    if (p === this.wasPlausible) return;
+    this.wasPlausible = p;
+    if (this.onPlausible) { try { this.onPlausible(p); } catch {} }
+  }
+  _maskOn() { try { return this.mask() !== false; } catch { return true; } }
 
   /** the host this computer is paired to, or null (then the controller's target is all there is) */
   _hostId() { try { const h = this.hostId(); return okId(h) ? h : null; } catch { return null; } }
@@ -251,12 +291,15 @@ class ShowFeed {
         this.gen++;
         this._clearLate();
         // since = when this airing began by the SITE's clock (active_projects.activated_at), if the table said so
-        this.song = { id, title, cover: null, coverTried: 0, since: this.air && this.air.id === id ? this.air.activatedAt : NaN, radio: undefined, finished: false };
+        // ready = its title and cover have been asked for once: its first message waits for that (see _emit)
+        this.song = { id, title, cover: null, coverTried: 0, since: this.air && this.air.id === id ? this.air.activatedAt : NaN, radio: undefined, finished: false,
+          ready: false, at: this.mono() };
         this.play = null; this.bar = null; this.real = 0; this.shown = 0; this.score = null; this.grade = null; this.reads = 0; this.shownKey = null;
         this.fails = 0; this.retryAfterMs = 0;
         this._pollSoon(0);
       }
       this._emit(true);
+      this._checkPlausible();
     } else if (this.song && title && title !== this.song.title) { this.song.title = title; this._emit(true); }
   }
 
@@ -267,6 +310,7 @@ class ShowFeed {
     this.stopped = true; this.connected = false; this._offAir(false); this._stopTick(); this.clearTimeout(this.pollTimer); this.pollTimer = null;
     for (const t of this.finishTimers.splice(0)) this.clearTimeout(t);
     this.finish = null;
+    this._checkPlausible();
   }
 
   // ---------------------------------------------------------------- the message
@@ -276,19 +320,25 @@ class ShowFeed {
     // off air: the song a late verdict or a finish belongs to stays in the message (the Mask needs its cover to eat it)
     const song = this.song || (late && late.song) || (fin && fin.song) || null;
     const said = this.song ? this : late || fin || { score: null, grade: null };
+    // the finished song's own verdict: what was found for it, or (still on air after ADD TO AI RADIO) what it has now
+    const finGrade = fin ? (fin.score !== null ? fin.grade : this.song && this.song.id === fin.id && this.score !== null ? this.grade : null) : null;
     return {
       v: 2, type: 'show', onAir: !!this.song,
       song: song ? { id: song.id, title: song.title, cover: song.cover || null } : null,
       hype: hypeOf(this.song ? this.shown : 0),
       score: said.score,
       grade: said.score === null ? null : said.grade || null,
-      finish: fin ? { id: fin.id, kind: fin.kind, at: fin.at } : null,
+      finish: fin ? { id: fin.id, kind: fin.kind, at: fin.at, grade: finGrade || null } : null,
       at: this.now(),
     };
   }
 
   _emit(force) {
     if (!this.started || this.stopped) return;
+    // A new song's first message carries its title and cover: nothing is sent until they have been asked for once
+    // (answered or failed; a fraction of a second), so the VTuber never learns of a song without its cover.
+    const s = this.song;
+    if (s && !s.ready) { if (this.mono() - s.at < this.holdMaxMs) return; s.ready = true; }
     const m = this.message();
     const key = JSON.stringify({ ...m, at: 0 });
     const due = this.mono() - this.lastSentAt >= this.keepMs;
@@ -318,46 +368,50 @@ class ShowFeed {
       this.lastSentKey = ''; this.lastSentAt = -Infinity;
     }
     this.wasWant = want;
+    this._checkPlausible();
     // a VTuber is listening: read (the song on air for this host; the bar of the song on air)
-    if (want && (this.song || this._hostId()) && !this.pollTimer && !this.polling) this._pollSoon(0);
+    if (want && this._reading() && !this.pollTimer && !this.polling) this._pollSoon(0);
     this._emit(false);
     this.tickTimer = this._later(() => this._tick(), this.tickMs);
   }
 
   // ---------------------------------------------------------------- the song went off air
+  /** From when a verdict counts for the song on air ("during this airing"), and whose: { since (site ms) | NaN, hostId | null } */
+  _gradeFrom(offAir) {
+    const s = this.song, p = this.play;
+    if (!s) return { since: NaN, hostId: null };
+    const since = Number.isFinite(s.since) ? s.since : p && (p.open || offAir) && Number.isFinite(p.startedAt) ? p.startedAt : NaN;
+    return { since, hostId: (p && p.hostId) || null };
+  }
+
   _offAir(lookForGrade) {
-    const was = this.song, play = this.play, hadScore = this.score !== null;
+    const was = this.song, hadScore = this.score !== null;
     this.gen++;
     if (was) {
       was.score = this.score; was.grade = this.grade;                 // the verdict it left the air with (for its finish)
-      if (this.finish && this.finish.id === was.id) { this.finish.score = this.score; this.finish.grade = this.grade; }
+      was.from = this._gradeFrom(true);
+      if (this.finish && this.finish.id === was.id && this.finish.score === null) { this.finish.score = this.score; this.finish.grade = this.grade; }
+      this.lastAirAt = this.mono();
     }
     this.song = null; this.play = null; this.bar = null; this.real = 0; this.shown = 0; this.score = null; this.grade = null;
     this._clearLate();
     this.lastOff = null;
     if (!lookForGrade || !was || this.stopped) return;
+    this.lastOff = { was, gen: this.gen };
     // 2.3.1: did the host press DONE? (a song already finished by the AI radio button is not finished again)
-    if (!was.finished) this._lookPlayed(was, Number.isFinite(was.since) ? was.since : play && Number.isFinite(play.startedAt) ? play.startedAt : NaN);
-    if (hadScore || !play) return;
-    // The host often gives the verdict as the song ends: look twice more for one given during that play
-    // (and, once the song is known to be finished, at 10 s and 20 s: the Mask chews that long).
-    this.lastOff = { was, play, gen: this.gen, at: this.mono() };
-    this._lateLooks(this.lateGradeMs);
-    if (was.finished) this._lateLooks(this.finishGradeMs);
-  }
-  _lateLooks(waits) {
-    const off = this.lastOff;
-    if (!off || off.gen !== this.gen) return;
-    const { was, play, gen } = off, gone = this.mono() - off.at;
-    for (const wait of waits) {
+    if (!was.finished) this._lookPlayed(was, was.from.since);
+    if (hadScore || was.finished || !Number.isFinite(was.from.since)) return;   // (a finished song has its own looks: _finishLooks)
+    // The host often gives the verdict as the song ends: look twice more for one given during that airing.
+    const gen = this.gen;
+    for (const wait of this.lateGradeMs) {
       this.lateTimers.push(this._later(async () => {
         if (gen !== this.gen || this.late || this.stopped || !this._want()) return;
-        const g = await this._grade(was.id, play).catch(() => null);
+        const g = await this._grade(was.id, was.from).catch(() => null);
         if (gen !== this.gen || this.late || !g || this.stopped) return;
         this.late = { song: { id: was.id, title: was.title, cover: was.cover }, score: g.score, grade: g.word, until: this.mono() + this.lateScoreShowMs };
-        if (this.finish && this.finish.id === was.id) { this.finish.score = g.score; this.finish.grade = g.word; }
+        if (this.finish && this.finish.id === was.id && this.finish.score === null) { this.finish.score = g.score; this.finish.grade = g.word; }
         this._emit(true);
-      }, Math.max(0, wait - gone)));
+      }, wait));
     }
   }
 
@@ -370,12 +424,40 @@ class ShowFeed {
     this.finishedAt.delete(song.id); this.finishedAt.set(song.id, now);
     if (this.finishedAt.size > 50) this.finishedAt.delete(this.finishedAt.keys().next().value);
     // the verdict known so far: the song's own while on air, else what it left the air with or a late look found
+    const onAir = this.song === song;
     const late = this.late && this.late.song.id === song.id ? this.late : null;
-    const said = this.song === song ? this : late || { score: song.score === undefined ? null : song.score, grade: song.grade || null };
+    const said = onAir ? this : late || { score: song.score === undefined ? null : song.score, grade: song.grade || null };
     this.finish = { id: song.id, kind, at: Math.floor(this.now()), until: now + this.finishShowMs, song: { id: song.id, title: song.title, cover: song.cover },
-      score: said.score, grade: said.grade || null };
+      score: said.score, grade: said.grade || null, from: onAir ? this._gradeFrom(false) : song.from || { since: NaN, hostId: null } };
+    // off air: the two early looks are replaced by the finish's own (the same question, asked once)
+    if (!onAir && this.lastOff && this.lastOff.was === song && this.lastOff.gen === this.gen) for (const t of this.lateTimers.splice(0)) this.clearTimeout(t);
+    if (this.finish.score === null) this._finishLooks(this.finish);
     this._emit(true);
     return true;
+  }
+  /**
+   * The finished song's verdict, looked for at 1.5 / 4 / 7 / 10 / 14 / 18 s after the finish (the Mask chews for 20 s).
+   * The next song going on air does not stop the looks, but then only a verdict given BEFORE that song went on air
+   * counts: the host gave it for the song he just finished, LIVE Link had merely not read it yet.
+   */
+  _finishLooks(fin) {
+    for (const wait of this.finishGradeMs) {
+      const t = this._later(async () => {
+        this.finishTimers = this.finishTimers.filter((x) => x !== t);
+        if (this.finish !== fin || fin.score !== null || this.stopped || !this._want()) return;
+        const same = this.song && this.song.id === fin.id ? this.song : null;                 // still on air (ADD TO AI RADIO)
+        if (same && this.score !== null) { fin.score = this.score; fin.grade = this.grade; this._emit(true); return; }
+        const from = same ? this._gradeFrom(false) : fin.from;
+        const next = this.song && !same ? this.song : null;
+        if (next && !Number.isFinite(next.since)) return;                                     // (when the next song began is not known: no word)
+        const g = await this._grade(fin.id, { ...from, until: next ? next.since : undefined }).catch(() => null);
+        if (this.finish !== fin || fin.score !== null || !g || this.stopped) return;
+        fin.score = g.score; fin.grade = g.word;
+        if (this.song && this.song.id === fin.id && this.score === null) { this.score = g.score; this.grade = g.word; }
+        this._emit(true);
+      }, wait);
+      this.finishTimers.push(t);
+    }
   }
   /** The song left the air: up to three looks at its status. 'played' (by this airing's DONE) = a finish. */
   _lookPlayed(was, since) {
@@ -389,7 +471,7 @@ class ShowFeed {
         if (was.finished || this.stopped || !r || r.status !== 'played') return;
         const at = ms(r.played_at);
         if (Number.isFinite(at) && Number.isFinite(since) && at < since - PLAYED_SLACK_MS) return;   // an earlier show's DONE
-        if (this._finish(was, 'played') && this.lastOff && this.lastOff.was === was) this._lateLooks(this.finishGradeMs);
+        this._finish(was, 'played');
       }, wait);
       this.finishTimers.push(t);
     }
@@ -398,8 +480,17 @@ class ShowFeed {
 
   // ---------------------------------------------------------------- reading the site
   _want() { try { return this.wanted() !== false; } catch { return false; } }
-  /** the wait before the next read: 2.5 s, doubled per failed round up to 30 s; never sooner than a 429 asked for */
-  nextWaitMs() { return Math.max(Math.min(this.pollMaxMs, this.pollMs * 2 ** Math.min(this.fails, 8)), this.retryAfterMs || 0); }
+  /**
+   * the wait before the next read: 2.5 s with a song on air (and for 2 minutes after one went off air: the next song
+   * of the show must be seen quickly, for its cover and so that a verdict is never taken for the wrong song), 5 s
+   * otherwise; doubled per failed round up to 30 s; never sooner than a 429 asked for
+   */
+  nextWaitMs() {
+    const fast = !!this.song || (this.lastAirAt !== null && this.mono() - this.lastAirAt < this.betweenSongsMs);
+    return Math.max(Math.min(this.pollMaxMs, (fast ? this.pollMs : this.idlePollMs) * 2 ** Math.min(this.fails, 8)), this.retryAfterMs || 0);
+  }
+  /** is there anything to read? a song on air, or a host whose song to look for (not for another character than the Mask outside a show) */
+  _reading() { return !!this.song || (!!this._hostId() && (this._maskOn() || this.plausible)); }
   _pollSoon(wait) {
     this.clearTimeout(this.pollTimer);
     this.pollTimer = this._later(() => { this.pollTimer = null; this._poll(); }, wait);
@@ -428,15 +519,19 @@ class ShowFeed {
     } finally { this.clearTimeout(timer); }
   }
 
-  /** the host's verdict given during this play: { score: 0..100, word: 'fire' | 'gem' | 'solid' | 'promising' | null }, or null */
-  async _grade(id, play) {
-    const rows = await this._get(`ranking_board?select=host_id,host_grade,reviewed_at&submission_id=eq.${encodeURIComponent(id)}&host_grade=not.is.null&order=reviewed_at.desc.nullslast&limit=5`);
-    const since = play && Number.isFinite(play.startedAt) ? play.startedAt : NaN;
+  /**
+   * the host's verdict given during this airing: { score: 0..100, word: 'fire' | 'gem' | 'solid' | 'promising' | null }, or null.
+   * from = { since, hostId, until? } (_gradeFrom): since = when the airing began; until = given no later than this.
+   */
+  async _grade(id, from) {
+    const since = from && Number.isFinite(from.since) ? from.since : NaN;
     if (!Number.isFinite(since)) return null;
+    const rows = await this._get(`ranking_board?select=host_id,host_grade,reviewed_at&submission_id=eq.${encodeURIComponent(id)}&host_grade=not.is.null&order=reviewed_at.desc.nullslast&limit=5`);
     for (const r of rows) {
-      if (!r || (play.hostId && r.host_id && r.host_id !== play.hostId)) continue;   // another host's verdict
+      if (!r || (from.hostId && r.host_id && r.host_id !== from.hostId)) continue;   // another host's verdict
       const at = ms(r.reviewed_at);
       if (!(at >= since)) continue;                                                   // an old verdict (or undated)
+      if (from.until !== undefined && !(at <= from.until)) continue;                  // given after the next song went on air
       const n = gradeToScore(r.host_grade);
       if (n !== null) return { score: n, word: gradeWord(r.host_grade) };
     }
@@ -450,12 +545,17 @@ class ShowFeed {
     const pick = ok.find((r) => r.is_hype_target === true) || ok[0] || null;
     return pick ? { id: pick.submission_id, activatedAt: ms(pick.activated_at) } : null;
   }
+  /** is this host's show on, by the site's own word? false = no (nothing is on air); true = yes; null = no row (not known) */
+  async _live(hostId) {
+    const rows = await this._get(`stream_status?select=is_live,active_submission_id&host_id=eq.${encodeURIComponent(hostId)}&limit=1`);
+    return rows[0] ? rows[0].is_live !== false : null;
+  }
 
   async _poll() {
     if (this.polling || !this.started || this.stopped) return;
     if (!this._want()) return;                       // no v2 VTuber listening: nothing is read (the tick asks again)
     const hostId = this._hostId();
-    if (!hostId && !this.song) return;               // no song on air and no host to ask about: nothing to read
+    if (!this._reading()) return;                    // no song on air and no host to ask about (or Ryo / Melanie outside a show): nothing to read
     this.polling = true;
     let ok = true, retryAfter = 0, gen = this.gen;
     const fail = (e) => { ok = false; if (e && e.retryAfterMs) retryAfter = Math.max(retryAfter, e.retryAfterMs); };
@@ -463,11 +563,14 @@ class ShowFeed {
       if (hostId) {
         // 2.3.1: which song is on air, from the site's own table (TikTok or not)
         const rev = this.ctlRev;
-        try {
-          const air = await this._onAir(hostId);
-          if (this.stopped) return;
-          if (rev === this.ctlRev) { this.air = air; this._resolve(); }   // (the controller said something new meanwhile: its word stands, the next read settles it)
-        } catch (e) { fail(e); }
+        // (stream_status.is_live false = the site's show is off: nothing is on air. No row, or that read failing, changes nothing.)
+        const [air, live] = await Promise.allSettled([this._onAir(hostId), this._live(hostId)]);
+        if (this.stopped) return;
+        if (air.status === 'rejected') fail(air.reason);
+        else if (rev === this.ctlRev) {                // (else the controller said something new meanwhile: its word stands, the next read settles it)
+          this.air = live.status === 'fulfilled' && live.value === false ? null : air.value;
+          this._resolve();
+        }
       }
       gen = this.gen;
       const song = this.song;
@@ -489,21 +592,26 @@ class ShowFeed {
           song.coverTried = 3;                                     // answered: a song without a usable cover stays without
           song.cover = coverOf(rows[0], this.coverHosts);
           if (!song.title && rows[0] && typeof rows[0].title === 'string') song.title = text(rows[0].title, 80);   // (the table gave the song, not the controller)
-        }, (e) => { song.coverTried++; fail(e); }));
+          song.ready = true; this._emit(true);                     // its first message, with the title and the cover
+        }, (e) => { song.coverTried++; fail(e); if (gen === this.gen) { song.ready = true; this._emit(true); } }));
       }
       if (!song.finished && this.reads % RADIO_EVERY === 0) {
         // 2.3.1: ADD TO AI RADIO for the song on air = its row appears, or stops being preview-only
-        jobs.push(this._get(`radio_tracks?select=submission_id,preview_only&submission_id=eq.${id}&limit=1`).then((rows) => {
+        jobs.push(this._get(`radio_tracks?select=submission_id,preview_only,added_at&submission_id=eq.${id}&limit=1`).then((rows) => {
           if (gen !== this.gen || song.finished) return;
           const inRadio = !!rows[0] && rows[0].preview_only !== true;
-          if (song.radio === undefined) song.radio = inRadio;          // where this airing starts from
-          else if (inRadio && !song.radio) { song.radio = true; this._finish(song, 'radio'); }
+          // added during THIS airing (the button pressed in the song's first seconds, before the starting point was read)
+          const addedNow = inRadio && Number.isFinite(song.since) && ms(rows[0].added_at) >= song.since;
+          const before = song.radio;
+          song.radio = inRadio;
+          if (inRadio && (before === false || (before === undefined && addedNow))) this._finish(song, 'radio');
         }, fail));
       }
       await Promise.all(jobs);
       if (gen !== this.gen) return;
-      if (this.play && this.play.open && this.score === null && this.reads % GRADE_EVERY === 0) {
-        try { const g = await this._grade(song.id, this.play); if (gen === this.gen && g) { this.score = g.score; this.grade = g.word; } } catch (e) { fail(e); }
+      const from = this._gradeFrom(false);
+      if (Number.isFinite(from.since) && this.score === null && this.reads % GRADE_EVERY === 0) {
+        try { const g = await this._grade(song.id, from); if (gen === this.gen && g) { this.score = g.score; this.grade = g.word; } } catch (e) { fail(e); }
         if (gen !== this.gen) return;
       }
       this.stats.reads++;
@@ -515,7 +623,7 @@ class ShowFeed {
         if (ok) { this.fails = 0; this.retryAfterMs = 0; if (gen === this.gen && this.song) this.reads++; this._say('ok'); }
         else { this.fails++; this.retryAfterMs = retryAfter; this._say('fail'); }
         // the song changed while its reads were out: read the new one now; else at the usual pace
-        if (this.song || this._hostId()) this._pollSoon(gen !== this.gen && this.song && ok ? 0 : this.nextWaitMs());
+        if (this._reading()) this._pollSoon(gen !== this.gen && this.song && ok ? 0 : this.nextWaitMs());
         this._emit(false);
       }
     }
@@ -549,4 +657,4 @@ class ShowFeed {
 }
 
 module.exports = { ShowFeed, HYPE_TIERS, MYTHIC_MIN, MYTHIC_STEP, RANKS_PER_SECOND, tierIndex, mythicMultiplier, rankPosition, tapsAtRankPosition, climb, hypeOf,
-  GRADE_SCORE, LETTER_SCORE, GRADE_WORDS, gradeToScore, gradeWord, coverOf, POLL_MS, POLL_MAX_MS, KEEP_MS, LATE_GRADE_MS, FINISH_TRY_MS, FINISH_GRADE_MS, FINISH_SHOW_MS };
+  GRADE_SCORE, LETTER_SCORE, GRADE_WORDS, gradeToScore, gradeWord, coverOf, POLL_MS, POLL_MAX_MS, KEEP_MS, LATE_GRADE_MS, FINISH_TRY_MS, FINISH_GRADE_MS, FINISH_SHOW_MS, IDLE_POLL_MS, AFTER_SHOW_MS, BETWEEN_SONGS_MS };

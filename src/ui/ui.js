@@ -937,7 +937,8 @@
   }
 
   // V8: the puppet show keys (core/puppet-keys.js). They work in any window, but only while VTuber is open with the
-  // Mask (2.3.1: a TikTok LIVE is not needed); every sentence here says so in plain words.
+  // Mask and a show is on (2.3.1: a song on air, up to 30 minutes after one, or the TikTok LIVE connected); every
+  // sentence here says so in plain words.
   const KEY_STATE = { held: 'ready', taken: 'taken', off: 'off', idle: '' };
   let puppetKey = '';
   function renderPuppetKeys(p) {
@@ -955,7 +956,7 @@
     $('vtkeys-sum').textContent = !p.enabled ? 'Off' : p.active ? (taken.length ? `${taken.length} taken by another program` : 'Working now') : (set.length ? `${set[0].key} to ${set[set.length - 1].key}` : 'No keys set');
     $('vtkeys-note').textContent = !p.enabled ? 'Off. The buttons in the VTuber window still work.'
       : p.active ? (taken.length ? 'Another program already uses the keys marked "taken". Pick a different key for those.' : 'These keys work right now, in any window: press one and the Mask does the move.')
-        : 'Press a key in any window (OBS, TikTok, a browser) and the Mask does the move. They work while VTuber is open with the Mask. The rest of the time the keys belong to your other programs.';
+        : 'Press a key in any window (OBS, TikTok, a browser) and the Mask does the move. They work during your show: VTuber open with the Mask, and a song on air (or up to 30 minutes after one) or your TikTok LIVE connected. The rest of the time the keys belong to your other programs.';
     $('vtkeys-on').checked = !!p.enabled;
     const rows = $('vtkeys-rows');
     rows.classList.toggle('off', !p.enabled);
