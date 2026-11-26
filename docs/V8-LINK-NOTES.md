@@ -434,3 +434,23 @@ These replace what the section above says where they differ.
 Tests: 8 more in `test/v8-show-feed.test.js` (one per item; each fails on 1be13dd), the older ones adapted to the held
 first message and the new `finish` shape. The reviewer's contract script with a case per item:
 `D:/claude-cache/claude-scratch/review-release-a/contract-fix.js` (30 of 30 checks pass).
+
+## 2.3.1 build (Thu Nov 26 2026, ~00:00-01:00 ET; NOT released yet: release is Saturday 5 AM-noon ET with the owner's go)
+- Code: 14f17ef (branch `vtuber-card` fast-forwarded from cacb502; same commit on `main` at origin), VTuber pinned to
+  7416148 (album eating + verdict words + the Visualizer fix). `npm test`: 278 tests, 274 pass, 0 fail, 4 skipped.
+- Windows (`npm run dist` from this main checkout; real node_modules, so tiktok-live-connector 2.4.4 and all its
+  dependencies are packed: the same 59 packages as 2.3.0, 0 unresolved):
+  - LIVE-Link-Setup-2.3.1.exe 171,799,467 bytes, sha256 07bd97bce3fdad4820cd835d45f227e0064437248763391fc0095467ebc478fd
+  - LIVE-Link-source-2.3.1.zip 4,478,612 bytes, sha256 ca17372a2f80023632f321020177da73d6374d6486e00308d62bae8285c639be
+    (byte-identical to `git archive` of 14f17ef); dist/latest.json written locally only.
+  - Packaged VTuber smoke (synthetic face, ryo + mask, 30 s), on a PC at ~68 % CPU from other jobs: run 1 failed one
+    check (never "Ready." within 90 s), run 2 OK (ready 28.8 s; Ryo 29.7 / Mask 29.2 updates a second; 0 errors);
+    close hid the avatar in ~2 s (2.3.0 here: 29 ms). Not a 2.3.1 regression: the Mac CI below measured 178 ms
+    (2.3.0 on Mac: 228 ms) and the close path did not change. Re-run on a quiet PC before release.
+  - `npm run smoke`: PASS (the mock site saw only pair, config and status).
+- Mac: tag v2.3.1-ci1 -> run 45758700826, success (universal, signed with the stable certificate, launch check on
+  Apple Silicon + Intel, VTuber smoke: ready 25.1 s, closeHidMs 178, problems []). Pre-release v2.3.1-ci1 holds
+  LIVE-Link-2.3.1-mac.dmg (350,711,620 bytes), LIVE-Link-2.3.1-mac.zip (319,682,998 bytes), latest-mac.json,
+  SHA256SUMS.txt.
+- Release day (not done): upload exe + source zip + dmg + mac zip through Lovable-minted upload URLs, then latest.json
+  and latest-mac.json LAST; verify eTags and live-link-config; owner's account first; never during a LIVE.
