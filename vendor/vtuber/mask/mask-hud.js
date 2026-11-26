@@ -1,7 +1,8 @@
 // V8 MASK: the 2D layer over the mask's canvas. Everything that must be READ on a phone is drawn here, crisp, on a second
 // canvas of the same size stacked on the WebGL one (the mask itself never draws text into its own canvas):
 //   the two health bars (BOSS + CHAT), "Tap to attack!", the pictures riding on the missiles, pop-ups ("ATE @name"),
-//   the top 3, the vote, the song's cover being bitten away, the score, the rank banner.
+//   the top 3, the vote, the song's cover (or a glowing record) being bitten away, the song's name while it is eaten,
+//   "THE VERDICT" over the word of fire the Mask spits (release A), the rank banner.
 //   const hud = VTMaskHud.create(canvas2d, { layout: 'stack' | 'versus' });
 //   hud.draw(mask.hud(), { label })      // once per drawn frame, after mask.draw(); -> true when anything was drawn
 // TikTok LIVE: the only call to action is the engine's own prompt ("Tap to attack!"); nothing here names gifts.
@@ -192,6 +193,24 @@ if (B.prompt && !E) { const p = 0.84 + 0.16 * Math.sin(t * 2 * Math.PI * 0.8), n
     function rr(px, py, w, h, r) { x.beginPath(); x.moveTo(px + r, py); x.arcTo(px + w, py, px + w, py + h, r); x.arcTo(px + w, py + h, px, py + h, r); x.arcTo(px, py + h, px, py, r); x.arcTo(px, py, px + w, py, r); x.closePath(); }
     function wrap(s, maxW, size) { font('700', size); const words = String(s || '').split(/\s+/), out = []; let cur = ''; for (const w of words) { const tr = cur ? cur + ' ' + w : w; if (x.measureText(tr).width > maxW * K() && cur) { out.push(cur); cur = w; } else cur = tr; } if (cur) out.push(cur); return out.slice(0, 2); }
 
+    /** RELEASE A: a glowing record (a song with no cover the Mask can load), drawn round 0,0: grooves, a sheen that turns, a warm label */
+    function record(s, spin, tint) {
+      const k = K(), R = s / 2, tc = srgb(tint || GOLDC), TAU = 6.2832;
+      x.shadowColor = hex(tc, 0.95); x.shadowBlur = 70 * k; for (let i = 0; i < 2; i++) { x.beginPath(); x.arc(0, 0, R, 0, TAU); x.fillStyle = '#0a0605'; x.fill(); } x.shadowBlur = 0;
+      const g = x.createRadialGradient(0, 0, R * 0.2, 0, 0, R); g.addColorStop(0, '#20140f'); g.addColorStop(0.62, '#0c0706'); g.addColorStop(1, '#1d1210');
+      x.beginPath(); x.arc(0, 0, R, 0, TAU); x.fillStyle = g; x.fill();
+      x.lineWidth = Math.max(1, 1.3 * k);
+      for (let i = 0; i < 10; i++) { x.strokeStyle = 'rgba(255,224,196,' + (0.06 + 0.05 * (i % 3)) + ')'; x.beginPath(); x.arc(0, 0, R * (0.42 + 0.055 * i), 0, TAU); x.stroke(); }
+      x.save(); x.rotate(spin || 0);
+      for (const a0 of [0.5, 0.5 + Math.PI]) { x.beginPath(); x.moveTo(0, 0); x.arc(0, 0, R * 0.97, a0 - 0.20, a0 + 0.20); x.closePath(); x.fillStyle = 'rgba(255,244,230,0.15)'; x.fill(); x.beginPath(); x.moveTo(0, 0); x.arc(0, 0, R * 0.97, a0 - 0.05, a0 + 0.05); x.closePath(); x.fillStyle = 'rgba(255,250,240,0.22)'; x.fill(); }
+      const lg = x.createRadialGradient(-R * 0.08, -R * 0.08, R * 0.02, 0, 0, R * 0.36); lg.addColorStop(0, hex(mix(tc, [1, 0.96, 0.88], 0.55))); lg.addColorStop(0.7, hex(tc)); lg.addColorStop(1, hex(mix(tc, CRIMSON, 0.6)));
+      x.beginPath(); x.arc(0, 0, R * 0.36, 0, TAU); x.fillStyle = lg; x.fill(); x.lineWidth = 2.5 * k; x.strokeStyle = 'rgba(255,236,200,0.9)'; x.stroke();
+      x.beginPath(); x.arc(0, 0, R * 0.25, 0.3, 2.2); x.lineWidth = 3 * k; x.strokeStyle = 'rgba(20,8,6,0.55)'; x.stroke();      // a mark on the label: the turning is seen
+      x.restore();
+      x.beginPath(); x.arc(0, 0, R * 0.05, 0, TAU); x.fillStyle = '#050302'; x.fill();
+      x.beginPath(); x.arc(0, 0, R - 1.5 * k, 0, TAU); x.lineWidth = 3 * k; x.strokeStyle = hex(mix(tc, [1, 0.96, 0.88], 0.35), 0.95); x.stroke();
+    }
+
     function draw(V, { label = '', mirror = false, barsY = 0 } = {}) {
       const k = K(), W = canvas.width, H = canvas.height;
       st.mirror = !!mirror; st.barsY = clamp(Number(barsY) || 0);
@@ -204,9 +223,14 @@ if (B.prompt && !E) { const p = 0.84 + 0.16 * Math.sin(t * 2 * Math.PI * 0.8), n
       if (V.cover && V.cover.a > 0.01) {
         const c = V.cover, s = c.size, ccx = mx(c.x); mark(); x.save(); x.globalAlpha = c.a;
         if (c.bite > 0) { x.beginPath(); x.moveTo(0, 0); x.lineTo(W, 0); x.lineTo(W, c.clipY); const nb = 5, bw = s / nb, x0 = ccx - s / 2; x.lineTo(x0 + s, c.clipY); for (let i = nb - 1; i >= 0; i--) x.arc(x0 + (i + 0.5) * bw, c.clipY, bw * 0.5, 0, Math.PI, true); x.lineTo(0, c.clipY); x.closePath(); x.clip(); }
-        x.translate(ccx, c.y); x.rotate(st.mirror ? -c.rot : c.rot); x.shadowColor = 'rgba(0,0,0,0.7)'; x.shadowBlur = 30 * k; rr(-s / 2, -s / 2, s, s, s * 0.06); x.fillStyle = '#111'; x.fill(); x.shadowBlur = 0;
-        x.save(); rr(-s / 2, -s / 2, s, s, s * 0.06); x.clip(); try { x.drawImage(c.image, -s / 2, -s / 2, s, s); } catch (e) { /* a picture that cannot be drawn: the frame alone */ } x.restore();
-        rr(-s / 2, -s / 2, s, s, s * 0.06); x.lineWidth = 4 * k; x.strokeStyle = 'rgba(255,255,255,0.9)'; x.stroke(); x.restore();
+        x.translate(ccx, c.y); x.rotate(st.mirror ? -c.rot : c.rot);
+        if (c.record || !c.image) record(s, st.mirror ? -(c.spin || 0) : c.spin || 0, c.tint);      // release A: no cover = a glowing record
+        else {
+          x.shadowColor = 'rgba(0,0,0,0.7)'; x.shadowBlur = 30 * k; rr(-s / 2, -s / 2, s, s, s * 0.06); x.fillStyle = '#111'; x.fill(); x.shadowBlur = 0;
+          x.save(); rr(-s / 2, -s / 2, s, s, s * 0.06); x.clip(); try { x.drawImage(c.image, -s / 2, -s / 2, s, s); } catch (e) { /* a picture that cannot be drawn: the frame alone */ } x.restore();
+          rr(-s / 2, -s / 2, s, s, s * 0.06); x.lineWidth = 4 * k; x.strokeStyle = 'rgba(255,255,255,0.9)'; x.stroke();
+        }
+        x.restore();
       }
       // the pictures riding on the missiles
       for (const m of V.missiles || []) {
@@ -233,13 +257,28 @@ if (B.prompt && !E) { const p = 0.84 + 0.16 * Math.sin(t * 2 * Math.PI * 0.8), n
         x.save(); x.translate(SAFE.cx * k, 356 * k); x.scale(punch, punch); x.translate(-SAFE.cx * k, -356 * k); text(String(shownN), SAFE.cx, 378, { size: 150, align: 'center', a, stroke: 12, col, glow }); x.restore();
       }
       // the rank banner (only when the rank changes) and the "+1 MYTHIC" pop
-      if (V.hype && !V.boss && !V.vote && !V.score) {
+      if (V.hype && !V.boss && !V.vote && !V.score && !V.verdict) {
         const h = V.hype;
         // (phase 2) the rank's name sits on a dark plate with a chrome hairline: readable over the brightest flames
         if (h.upAge < 2.8) { const a = ss(0, 0.2, h.upAge) * (1 - ss(2.2, 2.8, h.upAge)), size = h.rank >= 4 ? 80 : 66; mark(); plate(h.label, SAFE.cx, 300, size, 8, a, h.rank >= 4 ? '#ffd27a' : '#ffffff', h.rank >= 2 ? '#ff5a1a' : null); }
         else if (h.plusAge < 1.6) { const a = ss(0, 0.1, h.plusAge) * (1 - ss(1.0, 1.6, h.plusAge)); mark(); plate('+1 MYTHIC', SAFE.cx, 300, 70, 8, a, '#ffd27a', '#ff9a2a'); }
       }
-      if (V.song && V.song.title && V.song.u > 2.0 && !V.score && !(V.hype && V.hype.upAge < 2.8) && !V.boss && !V.vote) { const a = ss(2.0, 2.4, V.song.u) * (1 - ss(4.2, 5, V.song.u)); if (a > 0.01) { mark(); text('NOW EATING', SAFE.cx, 244, { size: 26, align: 'center', track: 8, a, stroke: 5, col: hex(GOLDC) }); text(V.song.title, SAFE.cx, 298, { size: 46, align: 'center', a, stroke: 7, fit: 800 }); } }
+      // release A: the song's name while the Mask eats it ...
+      if (V.eating && V.eating.title && V.eating.a > 0.01 && !V.score && !(V.hype && V.hype.upAge < 2.8) && !V.boss && !V.vote) { const a = V.eating.a; mark(); text('NOW EATING', SAFE.cx, 244, { size: 26, align: 'center', track: 8, a, stroke: 5, col: hex(GOLDC) }); text(V.eating.title, SAFE.cx, 298, { size: 46, align: 'center', a, stroke: 7, fit: 800 }); }
+      // (fix round V-6) while it chews and waits for his verdict: a small caption under the Mask, three dots that count
+      if (V.chewing && V.chewing.a > 0.01 && !V.boss && !V.vote) {
+        const A = V.anchors || {}, m = A.mouth || [W / 2, H * 0.55], un = A.unit || 300 * k, a = V.chewing.a * (0.78 + 0.22 * Math.sin(V.chewing.u * 3.2)), n = 1 + Math.floor(V.chewing.u * 2.2) % 3; mark();
+        const py = clamp(m[1] / k + 0 * un + 410, SAFE.y0 + 300, SAFE.y1 - 30), px = clamp(mx(m[0]) / k - 215, SAFE.x0 + 10, SAFE.x1 - 470);
+        void px; plate('CHEWING ON IT' + '...'.slice(0, n) + '   '.slice(n), SAFE.cx, py, 34, 7, a, hex(GOLDC), null);      // (on a dark plate: his chin often reaches the safe zone's lower edge, so it cannot always sit clear of it)
+      }
+      // ... and his verdict: the WORD itself is the Mask's own fire (mask-v8.js); here only what frames it, crisp: a small
+      // "THE VERDICT" under it between two hairlines (flames stand on top of it), then the song's name. No "SCORE", no number.
+      if (V.verdict && V.verdict.a > 0.01 && !V.boss && !V.vote) {
+        const v = V.verdict, a = v.a, top = clamp((v.top === null || v.top === undefined ? 0.172 * H : v.top) / k, SAFE.y0 + 70, 900), bot = clamp((v.bottom === null || v.bottom === undefined ? 0.318 * H : v.bottom) / k, top + 60, SAFE.y1 - 120); mark();
+        const cy = bot + 58; text('THE VERDICT', SAFE.cx, cy, { size: 30, align: 'center', track: 12, a, stroke: 5, col: 'rgba(255,240,225,0.95)' });
+        x.globalAlpha = a * 0.8; x.fillStyle = hex(GOLDC); for (const sd of [-1, 1]) x.fillRect((SAFE.cx + sd * 170 - (sd < 0 ? 150 : 0)) * k, (cy - 12) * k, 150 * k, Math.max(1, 2 * k)); x.globalAlpha = 1;
+        if (v.title) text(v.title, SAFE.cx, bot + 110, { size: 38, align: 'center', a: a * 0.95, stroke: 6, fit: 760, col: 'rgba(255,246,236,0.98)' });
+      }
       // demo only: what is being shown (the render tool passes it; the product never does)
       if (label) { mark(); let size = 44; font('700', size); let tw = x.measureText(label).width / k; if (tw > 960) { size = Math.floor(size * 960 / tw); font('700', size); tw = x.measureText(label).width / k; } const w = (tw + 64) * k; rr(W / 2 - w / 2, 1470 * k, w, 84 * k, 42 * k); x.fillStyle = 'rgba(12,7,6,0.84)'; x.fill(); x.lineWidth = 2 * k; x.strokeStyle = 'rgba(255,255,255,0.6)'; x.stroke(); text(label, 540, 1527, { w: '700', size, align: 'center', col: 'rgba(255,246,236,0.98)' }); }
       void INK; void CHROME;

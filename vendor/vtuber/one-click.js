@@ -230,6 +230,7 @@ async function startOneClick(opts = {}) {
       if (!rateOk(ev.type)) return 'rate';
       if (ev.type === 'show') { if (!S.showSeenAt) log('LIVE Link is sending the show state (song on air, hype)'); S.showSeenAt = Date.now(); if (app) app.broadcast({ t: 'v8-show', s: ev, rx: Date.now() }); return 'ok'; }
       // (a key also goes on while the avatar is OFF in OBS: the pages decide; the avatar page only acts while it is on air)
+      // (release A: the control 'eat' = EAT IT goes on as action 'eat'; it is not the puppet move "eat a comment", which is 'tap' + name 'eat')
       if (!app) return 'off';
       app.broadcast({ t: 'v8-cmd', action: ev.action === 'puppet' ? 'tap' : ev.action, name: ev.name, from: 'key' });
       return S.on ? 'ok' : 'off';

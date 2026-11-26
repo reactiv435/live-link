@@ -54,7 +54,7 @@
   // Kill switches: ?v8=0 on this page, or a window that sends no `v8` field (an older page, or vtuber.html?v8=0): the
   // Mask is then made without its V8 stage at all (the V7 Mask, untouched).
   const hudEl = document.getElementById('maskhud');
-  const V8 = { show: null, hud: null, on: false, status: null, key: '', ackAt: 0, over: null, lastShow: null, pics: new Map(), cover: { id: '', img: null }, nose: null, costMs: 0 };
+  const V8 = { show: null, hud: null, on: false, status: null, key: '', ackAt: 0, over: null, lastShow: null, pics: new Map(), covers: new Map(), airId: '', nose: null, costMs: 0 };
   const wantV8 = (a) => !Stage.KILL.v8 && !!(a && a.mask && a.v8) && !!window.VTShow && !!window.VTMaskV8 && !!window.VTMaskHud;
   const tNow = () => (S.mask && S.mask.clock ? S.mask.clock() : performance.now() / 1000);
   /** a viewer's picture as something the 2D layer can draw at once: a small canvas with the placeholder on it; the real
@@ -77,16 +77,41 @@
     }
     return p.c;
   }
-  /** what only the page can do for the show: the song's cover, a size / colour for a while, a flare */
+  /**
+   * RELEASE A: a song's cover, loaded through this server's own door (/api/pic), kept PER SONG ID (fix round V-1: eating
+   * song A after B went on air must not drop B's cover or its colour; the cover of a song may arrive on a later message
+   * than the song itself). `then(C)` runs once when the picture is there, cannot be loaded, or is not given.
+   * C.eat = a bite waiting for this picture (2.5 s at most: the Mask then eats a record, never nothing).
+   */
+  function loadCover(id, url, title, then) {
+    const old = V8.covers.get(id);
+    if (old && old.url === (url || '') && old.state !== 'none') { old.title = title || old.title; if (old.state === 'ok') then(old); else old.then = then; return old; }
+    const C = { id, url: url || '', img: null, cols: [], state: url ? 'loading' : 'none', title: title || '', eat: old ? old.eat : null, then };
+    V8.covers.delete(id); V8.covers.set(id, C); if (V8.covers.size > 6) V8.covers.delete(V8.covers.keys().next().value);
+    const done = () => { const f = C.then; C.then = null; if (f && V8.covers.get(id) === C) f(C); if (C.eat) { const e = C.eat; C.eat = null; e(); } };
+    if (!url) { const e = C.eat; C.eat = null; const f = C.then; C.then = null; if (f) f(C); if (e) e(); return C; }
+    const im = new Image();
+    im.onload = () => { if (C.state !== 'loading') return; C.img = im; try { C.cols = window.VTMaskV8.coverColours(im); } catch (e) { C.cols = []; } C.state = 'ok'; done(); };
+    im.onerror = () => { if (C.state !== 'loading') return; C.state = 'none'; done(); };
+    im.src = '/api/pic?u=' + encodeURIComponent(url);
+    setTimeout(() => { if (C.state === 'loading' && C.eat) { const e = C.eat; C.eat = null; e(); } }, 2500);
+    return C;
+  }
+  /** what only the page can do for the show: the song's cover (its colour at the start, eaten at the end), a size / colour for a while, a flare */
   function v8Acts(acts, m) {
     for (const x of acts) {
-      if (x.do === 'song') {
-        const id = x.id, title = x.title;
-        V8.cover.id = id;
-        const eat = (img) => { if (V8.cover.id !== id || !S.mask) return; try { S.mask.song(img ? { image: img, colours: window.VTMaskV8.coverColours(img), title } : { title }); } catch (e) { /* the next song */ } };
-        if (!x.cover) eat(null);
-        else { const im = new Image(); im.onload = () => eat(im); im.onerror = () => eat(null); im.src = '/api/pic?u=' + encodeURIComponent(x.cover); }
-      } else if (x.do === 'songOff') { V8.cover.id = ''; try { m.songOff(); } catch (e) { /* nothing on */ } }
+      if (x.do === 'cover') {
+        // the song on air (or its cover, which LIVE Link may send a moment after the song): its colour only. Nothing is eaten here.
+        V8.airId = x.id;
+        loadCover(x.id, x.cover, x.title, (C) => { if (!S.mask || V8.airId !== C.id) return; try { S.mask.cover({ colours: C.cols, title: C.title }); } catch (e) { /* the next song */ } });
+      } else if (x.do === 'eat') {
+        // DONE / ADD TO AI RADIO / EAT IT: the Mask eats the cover of THAT song (a picture it could not get = a glowing record)
+        const bite = (C) => { if (!S.mask) return; try { S.mask.eat({ image: C && C.state === 'ok' ? C.img : null, colours: C && C.state === 'ok' ? C.cols : [], title: x.title, grade: x.grade || null, wait: x.wait !== false }); } catch (e) { /* this one is not eaten */ } };
+        let C = x.id ? V8.covers.get(x.id) || null : null;
+        if (x.id && x.cover && (!C || (C.url !== x.cover && C.state !== 'ok'))) C = loadCover(x.id, x.cover, x.title, () => {});      // not seen on air by this page, or its cover only came now
+        if (C && C.state === 'loading') C.eat = () => bite(C);                      // still on its way: when it is there (2.5 s at most)
+        else bite(C);
+      } else if (x.do === 'songOff') { V8.airId = ''; try { m.songOff(); } catch (e) { /* nothing on */ } }
       else if (x.do === 'over') { V8.over = { zoom: x.zoom || 0, colour: x.colour || '', until: performance.now() + (x.secs || 20) * 1000, ck: S.applied.colourOwn || '' }; S.applied.place = S.applied.colour = undefined; apply(); }
       else if (x.do === 'flare') { try { m.flare(); } catch (e) { /* no stage */ } }
     }
@@ -102,7 +127,7 @@
     if (!st) return;
     V8.status = st;
     // told at once when something he can see on his buttons changed (a move, the fight, a vote, the song), at most 5 a second
-    const key = [st.on, st.song, st.songSrc, st.attack, st.fight ? st.fight.phase + (st.fight.winner || '') : '', st.vote ? st.vote.active + st.vote.id : '', st.note, MOVES8.map((k) => (st.moves[k].on ? 'o' : st.moves[k].cool > 0 ? 'c' : '-') + st.moves[k].why).join('')].join('|');
+    const key = [st.eat ? st.eat.state + (st.eat.busy ? 'b' : '') + (st.eat.eaten ? 'e' : '') : '', st.on, st.song, st.songSrc, st.attack, st.fight ? st.fight.phase + (st.fight.winner || '') : '', st.vote ? st.vote.active + st.vote.id : '', st.note, MOVES8.map((k) => (st.moves[k].on ? 'o' : st.moves[k].cool > 0 ? 'c' : '-') + st.moves[k].why).join('')].join('|');
     if (key !== V8.key && now - V8.ackAt > 200) { V8.key = key; V8.ackAt = now; ack(); }
   }
   const MOVES8 = ['goo', 'fire', 'melt', 'crack', 'eat'];
@@ -314,7 +339,8 @@
       if (V8.show) { try { v4 = V8.show.event(m.e, S.mask.clock()).v4 !== false; } catch (e) { v4 = true; } }
       if (v4) { try { S.mask.fire(m.e); } catch (e) { /* an event the mask does not know */ } }
     }
-    // V8: a button / key on the VTuber window, or one of LIVE Link's global keys
+    // V8: a button / key on the VTuber window, or one of LIVE Link's global keys. (Release A: EAT IT comes this way too and
+    // works with the Puppet show switched off: the show's brain is there whenever the Mask is, and takes 'eat' first.)
     else if (m.t === 'v8-cmd') { if (V8.show && S.mask && active()) { try { V8.show.cmd(m, S.mask.clock()); } catch (e) { /* one press lost */ } } }
     // V8: LIVE Link's show state (song on air, its cover, the hype rank, his score). Older than 15 s = not believed.
     else if (m.t === 'v8-show') { if (m.s && typeof m.s === 'object' && typeof m.rx === 'number' && Date.now() - m.rx < 15000) { V8.lastShow = { s: m.s, rx: m.rx }; if (V8.show && S.mask) V8.show.setShow(m.s, S.mask.clock()); } }

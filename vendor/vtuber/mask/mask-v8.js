@@ -1,7 +1,8 @@
 // V8 MASK: the stage. Everything the puppet show draws on top of / into the particle face (contract V8-PUPPET.md):
 //   * puppet moves: goo spew, fire head, melt, crack open, eat a comment
 //   * the hype ranks as layers (embers ... MYTHIC: a galaxy inside, suns for eyes)
-//   * the Mask eats the song (cover chomped, recolour, the score as fire or goo)
+//   * the Mask eats the song (release A: at DONE / ADD TO AI RADIO / EAT IT the cover is chomped on the beat, chewed, and his
+//     verdict is spat as a giant word of fire; at the start of a song the cover only gives the Mask its colour)
 //   * the boss fight's look, drawn from js/v8/boss-engine.js's state (missiles, shield, lasers, damage, phases, endings)
 //   * the angel / devil hand puppets, drawn from js/v8/hand-puppets.js's state
 // No network, no timers, no clock of its own: every call takes the time (seconds, the clock mask-fx.js uses).
@@ -10,7 +11,10 @@
 //   stage.puppet('goo' | 'fire' | 'melt' | 'crack' | 'eat', { hold, text }, t) -> true / false (cooling down)
 //   stage.release('goo' | 'fire', t)
 //   stage.setHype(rank 0..5 | name | -1 (off), progress01, t);  stage.hypePlus(t)   // the "+1 MYTHIC" flare
-//   stage.song({ image, colours: [[r,g,b] linear, ...], title }, t);  stage.score(n 0..100, t);  stage.songOff(t)
+//   stage.cover({ colours: [[r,g,b] linear, ...], title }, t);  stage.songOff(t)      // a song on air: its colour only
+//   stage.eat({ image | null (= a record), colours, title, grade, wait }, t)       // the Mask eats it: bites on the beat, then chews
+//   stage.verdict('fire' | 'gem' | 'solid' | 'promising', t);  stage.gulp(t)       // the word is spat / a gulp, no word
+//   stage.score(n 0..100, t)                                                        // (a LIVE Link 2.3.0: his score as a number)
 //   stage.boss(s, t)      // the engine's state, every drawn frame (null = no fight)
 //   stage.vote(v)         // the engine's poll state (the HUD draws it)
 //   stage.hands(p, { aspect }, t)   // the engine's puppet state
@@ -34,6 +38,45 @@
   const MOVES = { goo: { cool: 5, max: 12, min: 1.6 }, fire: { cool: 5, dur: 4.5, max: 12 }, melt: { cool: 9, dur: 3.6 }, crack: { cool: 9, dur: 4.4 }, eat: { cool: 4, dur: 3.3 } };
   const GOLD = [1.0, 0.50, 0.10], TOXIC = [0.30, 1.0, 0.10], TOXIC2 = [0.03, 0.34, 0.05], WHITE = [1.0, 0.96, 0.88];
   const FLASH_GAP = 0.36;                               // seconds between two full-frame flashes: under 3 a second
+
+  // ---------------------------------------------------------------- RELEASE A: the Mask eats the song, chews, spits his verdict
+  // The four verdicts of his site (ranking_board.host_grade) and how they are shown: upper case, nothing else is ever spelled.
+  const WORDS = { fire: 'FIRE', gem: 'GEM', solid: 'SOLID', promising: 'PROMISING' };
+  // Seconds. arrive: the cover reaches the mouth. biteGap / biteMax: a bite lands on a beat, at least / without a beat at
+  // most this long after the one before. settle: the chew before a word or a gulp. form / hold / suck: the word flies out
+  // and forms, is held, is sucked back in. gulp: the swallow. waitMax: the longest it chews when nobody calls verdict()
+  // or gulp(). pend: how long a verdict / gulp that arrived before the picture did is kept for the eat that follows.
+  const EAT = { arrive: 0.95, biteGap: 0.30, biteMax: 0.52, bites: 4, settle: 0.45, form: 0.55, hold: 3.0, suck: 0.5, gulp: 0.7, waitMax: 22, pend: 4 };
+  // How each word burns. br: brightness. flame: fire standing on the letters. ember: sparks rising off them. works:
+  // fireworks. jaw: how far the mouth stays open under it. slam: the camera's kick as it lands. boom: its sound.
+  // FIX ROUND V-6: a word's colour is FIXED, not the cover's: ramp = its body from the letters' feet to their heads (4
+  // stops), edge = its outline, glow = the light behind it. FIRE = white-hot into gold, orange and crimson; GEM =
+  // chrome-white (its glints are crimson); SOLID = chrome steel (a dark horizon line, as chrome has); PROMISING = warm amber.
+  const TIER = {
+    FIRE: { br: 1.0, flame: 1.0, ember: 0.9, works: 5, jaw: 0.42, slam: 1.0, boom: 1.4, ramp: [[1.0, 0.05, 0.02], [1.0, 0.36, 0.03], [1.0, 0.70, 0.14], [1.0, 0.94, 0.72]], edge: [1.0, 0.95, 0.80], glow: [1.0, 0.30, 0.04] },
+    GEM: { br: 0.95, flame: 0, ember: 0.5, works: 0, jaw: 0.16, slam: 0.7, boom: 1.0, glint: 1, ramp: [[0.70, 0.67, 0.65], [0.86, 0.84, 0.81], [0.95, 0.93, 0.90], [1.0, 0.98, 0.95]], edge: [1.0, 0.98, 0.95], glow: [0.85, 0.07, 0.10] },
+    SOLID: { br: 1.0, flame: 0, ember: 0.4, works: 0, jaw: 0.16, slam: 1.15, boom: 1.3, bar: 1, ramp: [[0.80, 0.77, 0.74], [0.30, 0.285, 0.27], [0.62, 0.60, 0.58], [0.98, 0.96, 0.93]], edge: [1.0, 0.97, 0.93], glow: [0.50, 0.46, 0.43] },
+    PROMISING: { br: 0.74, flame: 0, ember: 0.7, works: 0, jaw: 0.12, slam: 0.45, boom: 0.7, soft: 1, ramp: [[1.0, 0.36, 0.04], [1.0, 0.50, 0.08], [1.0, 0.64, 0.16], [1.0, 0.78, 0.32]], edge: [1.0, 0.86, 0.56], glow: [1.0, 0.52, 0.10] },
+  };
+  const FIRE_GOLD = [1.0, 0.52, 0.08], FIRE_DEEP = [0.95, 0.07, 0.03];      // the fire of a verdict (the letters' tongues, the head's crown under FIRE): fixed
+  /**
+   * Where the word sits in the frame: its centre and half size, x in half-widths and y in half-heights of the picture
+   * (0 = the middle, +y = up), on the Mask's own canvas (Mirror: the page flips that canvas, so x is flipped here).
+   * Always inside TikTok's safe zone (x 60 - 930, y 200 - 1436 of 1080 x 1920) and as big as that allows.
+   */
+  function wordBox(W, mirror, aspect = 0.5625) {
+    // (fix round V-6: the word's INK is about 80 % of the safe zone's width (696 of 870 px = 0.644 of the half picture); a short
+    // word stops at a height of 0.19 of the half picture)
+    const yr = Math.max(0.02, W && W.yr ? W.yr : 0.2), xr = Math.max(0.3, W && W.xr ? W.xr : 0.92), hw = Math.min(0.644 / xr, 0.78, 0.19 / (yr * aspect));
+    return { cx: mirror ? 0.083 : -0.083, cy: 0.53, hw, hh: hw * yr * aspect };
+  }
+  /** the soft full-frame flashes of this frame's events of an eat (the last bite, the spit): in the cover's warm colour, never white */
+  function eatFlashes(e) {
+    if (!e || !e.ev || !e.ev.length) return [];
+    const c = e.col || GOLD, m = Math.max(c[0], c[1], c[2], 0.05), col = [c[0] / m, Math.min(c[1] / m, 0.85), Math.min(c[2] / m, 0.7)], out = [];
+    for (const k of e.ev) { if (k === 'lastbite') out.push({ col, a: 0.20 }); else if (k === 'spit') out.push({ col, a: 0.22 }); }
+    return out;
+  }
 
   const PTS_VS = `#version 300 es
   precision highp float; in vec3 aPos; in vec4 aCol; uniform mat4 uViewProj; uniform float uPx; out vec3 vCol;
@@ -90,7 +133,7 @@
     let rs = seed * 9301 + 49297;
     const rnd = () => { rs = (rs * 1664525 + 1013904223) >>> 0; return rs / 4294967296; };
     const st = {
-      t: 0, lastT: null, moves: {}, hype: { rank: -1, k: 0, plusAt: -99 }, song: null, score: null, boss: null, vote: null, hands: null, handOpt: { aspect: 0.5625 },
+      t: 0, lastT: null, moves: {}, hype: { rank: -1, k: 0, plusAt: -99 }, song: null, eat: null, pend: null, tint: null, score: null, boss: null, vote: null, hands: null, handOpt: { aspect: 0.5625 },
       L: { halo: 0, crown: 0, eyes: 0, mouthFire: 0, embers: 0, eyeHot: 0, bgFire: 0, gold: 0, cosmic: 0, crack: 0, demon: 0, jaw: 0, melt: 0, heat: 0, room: 0, gone: 0, shatter: 0 },
       flashAt: -9, flash: [0, 0, 0, 0], cues: [], pops: [], kick: [0, 0, 0], kickV: 0, pool: 0, seen: new Map(), strikeSeen: new Map(), dmgN: 0, songK: 0, stageSeen: 'whole', endSeen: null, text: null, handSeen: { angel: false, devil: false },
     };
@@ -123,12 +166,136 @@
     function setMirror(on) { on = !!on; if (on === !!st.mirror) return; st.mirror = on; st.text = null; if (st.moves.eat) st.moves.eat.pts = null; }
     /** where the fight's bars sit, 0 (top) .. 1 (bottom): the Mask steps away from them */
     function setBars(y) { st.barsY = clamp(Number(y) || 0); }
-    function song(o, t = st.t) {
-      const cols = warmColours((o && o.colours) || []);              // a cover recolours the Mask toward WARM colours only (the house look)
-      st.song = { t0: t, image: o ? o.image || null : null, title: o ? String(o.title || '').slice(0, 40) : '', c1: cols[0] || null, c2: cols[1] || null, eaten: !(o && o.image) };
-      if (o && o.image) { cue(t, 'whoosh', 1, 0.9); cue(t + 1.25, 'chomp', 1); cue(t + 1.6, 'chomp', 0.9); cue(t + 1.95, 'chomp', 1.1); cue(t + 2.1, 'rise', 0.7, 0.7); }
+    /** RELEASE A. The song went on air: the Mask takes its cover's colour (warm colours only, the house look). Nothing is eaten. */
+    function cover(o, t = st.t) {
+      const cols = warmColours((o && o.colours) || []);
+      st.song = { t0: t, title: o ? String(o.title || '').slice(0, 40) : '', c1: cols[0] || null, c2: cols[1] || null };
     }
     function songOff() { st.song = null; }
+    /**
+     * The Mask eats the song: { image (null = a glowing record), colours, title, grade (his verdict, when it is known
+     * already), wait (false = chomp and gulp; else it chews until verdict() or gulp(), EAT.waitMax at most) }.
+     * The cover flies in, is bitten away in EAT.bites chomps on the beat, is chewed to the beat, then the word or a gulp.
+     */
+    function eat(o, t = st.t) {
+      o = o || {};
+      const cols = warmColours(o.colours || []), P = st.pend && t >= st.pend.t && t - st.pend.t < EAT.pend ? st.pend : null; st.pend = null;
+      const e = st.eat = {
+        t0: t, image: o.image || null, record: !o.image, title: String(o.title || '').replace(/[\u0000-\u001f]/g, '').slice(0, 40), c1: cols[0] || null, c2: cols[1] || null,
+        bites: [], chewT: null, munchT: -9, munches: 0, wait: o.wait !== false, word: null, wantGulp: false, wordT: null, spat: false, suckT: null, cut: false, gulpT: null,
+        pts: null, ev: [], eatenK: 0, col: null, glints: [], glintT: -9, works: 0,
+      };
+      const w = WORDS[o.grade] || (P && P.word) || null;
+      if (w) { e.word = w; e.pts = wordPoints(w); } else if (!e.wait || (P && P.gulp)) e.wantGulp = true;      // (the word's points are made now, not in the frame it is spat)
+      cue(t, 'whoosh', 1, 0.9);
+      return true;
+    }
+    /** his verdict landed ('fire' | 'gem' | 'solid' | 'promising'): the Mask spits it as a word once the bites are done. One word per eat. */
+    function verdict(word, t = st.t) {
+      const w = WORDS[String(word || '').toLowerCase()]; if (!w) return false;
+      const e = st.eat;
+      if (!e) { st.pend = { word: w, t }; return true; }                 // (the page is still loading the picture: kept for the eat that follows)
+      if (e.word || e.gulpT !== null) return false;
+      e.word = w; e.pts = wordPoints(w); e.wantGulp = false; return true;
+    }
+    /** no verdict, or the next song is on air: a satisfied gulp, no word (a word that is up is sucked back in at once) */
+    function gulp(t = st.t) {
+      const e = st.eat;
+      if (!e) { st.pend = { gulp: true, t }; return false; }
+      if (e.gulpT !== null) return false;
+      if (e.wordT !== null) { e.cut = true; st.cues = st.cues.filter((c) => c.own !== e || c.t <= t); } else { e.word = null; e.pts = null; e.wantGulp = true; }
+      return true;
+    }
+    /**
+     * FIX ROUND V-2, the owed word: the song was eaten earlier (in the middle of its song) and swallowed with no word; his
+     * verdict lands now. No second bite: a belch, and the word with the song's title. false while another eat is going on.
+     */
+    function belch(word, o, t = st.t) {
+      const w = WORDS[String(word || '').toLowerCase()]; if (!w || st.eat) return false;
+      eat({ image: null, title: o && o.title, grade: word, wait: false }, t);
+      const e = st.eat; e.belch = true; e.bites = [t, t, t, t]; e.chewT = t - EAT.settle + 0.35; e.munchT = t; { const lc = st.cues[st.cues.length - 1]; if (lc && lc.kind === 'whoosh' && lc.t === t) st.cues.pop(); } cue(t, 'pop', 1.1); cue(t + 0.05, 'rise', 0.7, 0.4);
+      return true;
+    }
+    /** one frame of an eat: the bites and the munches land on a beat (`onset`) when there is one; then the word or the gulp */
+    function eatStep(e, t, onset) {
+      const T = EAT; e.ev = [];
+      if (e.bites.length < T.bites && t - e.t0 >= T.arrive - 1e-6) {
+        const last = e.bites.length ? e.bites[e.bites.length - 1] : e.t0 + T.arrive - T.biteGap;
+        if ((onset && t - last >= T.biteGap - 1e-6) || t - last >= T.biteMax - 1e-6) {
+          e.bites.push(t); const n = e.bites.length; cue(t, 'chomp', n === T.bites ? 1.15 : 0.85 + 0.05 * n); e.ev.push('bite');
+          if (n === T.bites) { e.chewT = t; e.munchT = t; e.ev.push('lastbite'); cue(t + 0.1, 'rise', 0.6, 0.6); }
+        }
+      }
+      if (e.chewT !== null && e.wordT === null && e.gulpT === null) {
+        if (t > e.chewT && ((onset && t - e.munchT >= 0.28) || t - e.munchT >= 0.62)) { e.munchT = t; e.munches++; e.ev.push('munch'); if (e.munches <= 3) cue(t, 'chomp', 0.4); }
+        if (t - e.chewT >= T.settle - 1e-6) {
+          if (e.word) startWord(e, t + 0.12);
+          else if (e.wantGulp || t - e.chewT >= T.waitMax) startGulp(e, t);
+        }
+      }
+      if (e.wordT !== null && e.gulpT === null) {
+        const w = t - e.wordT;
+        if (!e.spat && w >= 0) { e.spat = true; e.ev.push('spit'); }
+        if (e.suckT === null && ((e.cut && w >= T.form * 0.5) || w >= T.form + T.hold)) { e.suckT = t; cue(t, 'slurp', 1, T.suck); e.ev.push('suck'); }
+        if (e.suckT !== null && t - e.suckT >= T.suck) startGulp(e, t);
+      }
+      if (e.gulpT !== null && t - e.gulpT >= T.gulp) st.eat = null;
+    }
+    function startWord(e, at) {
+      const tier = TIER[e.word], n0 = st.cues.length;
+      e.wordT = at; if (!e.pts) e.pts = wordPoints(e.word);
+      cue(at - 0.12, 'rise', 0.8, 0.2); cue(at, 'boom', tier.boom);
+      if (tier.flame > 0.5) cue(at + 0.1, 'fire', 1.1, EAT.hold);
+      for (let i = 0; i < tier.works; i++) cue(at + 0.55 + i * 0.40, 'bang', 0.8 + 0.3 * (i % 2));
+      if (tier.glint) for (let i = 0; i < 3; i++) cue(at + 0.35 + i * 0.22, 'ping', 0.7);
+      if (tier.soft) cue(at + 0.12, 'pop', 0.7);
+      for (let i = Math.min(n0, st.cues.length); i < st.cues.length; i++) st.cues[i].own = e;      // (a gulp that cuts the word short takes its later sounds with it)
+    }
+    function startGulp(e, t) { e.gulpT = t; e.ev.push('gulp'); cue(t, 'slurp', e.wordT === null ? 1.2 : 0.6, 0.35); cue(t + 0.32, 'pop', 0.9); }
+    /** the jaw of an eat, 0..1: wide for the cover, a snap at each bite, a munch on each beat, wide for the word, a swallow */
+    function eatJaw(e, t) {
+      const T = EAT, u = t - e.t0;
+      if (e.gulpT !== null) { const g = t - e.gulpT; return Math.max(0.5 * Math.sin(Math.PI * clamp(g / 0.22)), 0.16 * Math.sin(Math.PI * clamp((g - 0.36) / 0.30))); }
+      if (e.wordT !== null) {
+        const w = t - e.wordT; if (w < 0) return 0.03;                   // the wind-up: shut
+        if (e.suckT !== null) return 0.95 * ss(0, 0.10, t - e.suckT);
+        return lerp(1, TIER[e.word].jaw, ss(T.form * 0.8, T.form + 0.5, w));
+      }
+      if (e.chewT !== null) return 0.05 + 0.40 * Math.sin(Math.PI * clamp((t - e.munchT) / 0.24));
+      return e.bites.length ? ss(0.03, 0.22, t - e.bites[e.bites.length - 1]) : ss(0.45, 0.9, u);
+    }
+    /**
+     * A verdict word as points: the word is written once (heavy, upper case), its body sampled on a staggered grid and its
+     * outline on a finer one. -> { n, nFill, d: [x, y, kind] per point (x -1..1 across the word, y in the same unit,
+     * kind 0 = body, 1 = outline, 2 = an outline point on a top edge: where flames stand), yr: half its height, tops }.
+     * null where there is no canvas to write on (tests without one): the word's timing still runs.
+     */
+    function wordPoints(word) {
+      const doc = root.document; if (!doc && !root.OffscreenCanvas) return null;
+      try {
+        const F = 240, font = '700 ' + F + 'px Bahnschrift, "Segoe UI", Arial, sans-serif', mk = (w, h) => (root.OffscreenCanvas ? new root.OffscreenCanvas(w, h) : Object.assign(doc.createElement('canvas'), { width: w, height: h }));
+        let x = mk(8, 8).getContext('2d'); x.font = font;
+        const tw = Math.ceil(x.measureText(word).width), CW = Math.max(64, Math.min(2600, tw + 56)), CH = 330, c = mk(CW, CH); x = c.getContext('2d', { willReadFrequently: true });
+        x.fillStyle = '#000'; x.fillRect(0, 0, CW, CH); x.fillStyle = '#fff'; x.strokeStyle = '#fff'; x.lineJoin = 'round'; x.lineWidth = 8; x.font = font; x.textAlign = 'center'; x.textBaseline = 'middle';
+        x.strokeText(word, CW / 2, CH / 2 + 10); x.fillText(word, CW / 2, CH / 2 + 10);
+        const d = x.getImageData(0, 0, CW, CH).data, on = (px, py) => px >= 0 && py >= 0 && px < CW && py < CH && d[(py * CW + px) * 4] > 110;
+        let cnt = 0, y0 = CH, y1 = 0, x0 = CW, x1 = 0;
+        for (let py = 0; py < CH; py += 2) for (let px = 0; px < CW; px += 2) if (d[(py * CW + px) * 4] > 110) { cnt++; if (py < y0) y0 = py; if (py > y1) y1 = py; if (px < x0) x0 = px; if (px > x1) x1 = px; }
+        if (!cnt) return null;
+        const s = Math.max(2.2, Math.sqrt(cnt * 4 / 4300)), cyM = (y0 + y1) / 2, hw = CW / 2, fill = [], edge = [];
+        let row = 0;
+        for (let gy = s / 2; gy < CH; gy += s * 0.866, row++) for (let gx = (row % 2) * s / 2; gx < CW; gx += s) {
+          const px = Math.round(gx + (h1(gx * 0.37 + gy * 1.3) - 0.5) * s * 0.3), py = Math.round(gy + (h1(gx * 1.7 + gy * 0.21 + 3) - 0.5) * s * 0.3);
+          if (on(px, py)) fill.push((px - hw) / hw, (cyM - py) / hw, 0);
+        }
+        const es = Math.max(2, Math.round(s * 0.6));
+        for (let py = 0; py < CH; py += es) for (let px = (Math.floor(py / es) % 2); px < CW; px += es) if (on(px, py) && (!on(px - 3, py) || !on(px + 3, py) || !on(px, py - 3) || !on(px, py + 3))) edge.push((px - hw) / hw, (cyM - py) / hw, on(px, py - 3) ? 1 : 2);
+        const thin = (a, max) => { const n = a.length / 3; if (n <= max) return a; const out = [], step = n / max; for (let f = 0; Math.floor(f) < n && out.length < max * 3; f += step) { const i = Math.floor(f) * 3; out.push(a[i], a[i + 1], a[i + 2]); } return out; };
+        const A = thin(fill, 4900), B = thin(edge, 2600), all = new Float32Array(A.length + B.length); all.set(A, 0); all.set(B, A.length);
+        const n = all.length / 3, tops = []; for (let i = A.length / 3; i < n; i++) if (all[i * 3 + 2] === 2) tops.push(i);
+        return { word, n, nFill: A.length / 3, d: all, yr: Math.max(0.02, (y1 - y0) / 2 / hw), xr: Math.max(0.3, Math.max(hw - x0, x1 - hw) / hw), tops };
+      } catch (err) { return null; }
+    }
     function score(n, t = st.t) { n = clamp(Math.round(Number(n) || 0), 0, 100); st.score = { t0: t, n, kind: n >= 70 ? 'fire' : n <= 40 ? 'goo' : 'meh' }; cue(t, 'rise', 0.8, 1.1); if (n >= 70) { cue(t + 1.2, 'fire', 1.2, 2.2); for (let i = 0; i < 5; i++) cue(t + 1.5 + i * 0.42, 'bang', 0.8 + 0.3 * (i % 2)); } else if (n <= 40) cue(t + 1.2, 'goo', 1, 2.0); else cue(t + 1.2, 'pop', 0.6); }
     function boss(s) { st.boss = s && s.phase && s.phase !== 'idle' ? s : null; }
     function vote(v) { st.vote = v && (v.active || v.result) ? v : null; }
@@ -205,15 +372,20 @@
       const special = B && B.moves && B.moves.special && B.moves.special.name && B.moves.special.age < 1.6 ? B.moves.special : null;
       const spFire = special && special.name === 'fire' ? 1 - ss(1.1, 1.6, special.age) : 0, spGoo = special && special.name === 'goo' ? 1 - ss(1.1, 1.6, special.age) : 0;
       st.gooOn = Math.max(mv.goo.on ? 1 : 0, scoreGoo > 0.5 ? 1 : 0, spGoo > 0.5 ? 1 : 0);
+      // release A: the eat's own clock (a beat's onset = the envelope jumps), and what the word asks of the face
+      const bt = A.beat || 0, onset = bt > 0.4 && bt - (st.beatPrev === undefined ? bt : st.beatPrev) > 0.12; st.beatPrev = bt;
+      if (st.eat) eatStep(st.eat, t, onset);
+      const eN = st.eat, wordUp = eN && eN.wordT !== null && eN.gulpT === null && t >= eN.wordT ? 1 : 0, fireWord = wordUp && eN.word === 'FIRE' && eN.suckT === null ? 1 : 0, wordRoom = wordUp ? (st.faceK === undefined ? 1 : st.faceK) : 0;      // (wordRoom: in the Visualizer nothing moves the formation)
+      st.thin = fireWord;
       const tg = {
         halo: hy === 0 ? 0.55 : hy === 1 ? 1 : 0,
-        crown: Math.max(hy >= 1 ? [0.27, 0.55, 0.8, 1.0, 0][hy - 1] : 0, fireMv, stage === 'demon' ? 0.75 : stage === 'cracked' ? 0.3 : 0, spFire),
+        crown: Math.max(hy >= 1 ? [0.27, 0.55, 0.8, 1.0, 0][hy - 1] : 0, fireMv, stage === 'demon' ? 0.75 : stage === 'cracked' ? 0.3 : 0, spFire, 0.55 * fireWord),
         eyes: Math.max(hy === 3 || hy === 4 ? 0.75 : 0, fireMv, stage === 'demon' ? 0.9 : 0, spFire * 0.8),
-        mouthFire: Math.max(hy === 3 || hy === 4 ? 0.6 : 0, fireMv, scoreFire, spFire),
+        mouthFire: Math.max(hy === 3 || hy === 4 ? 0.6 : 0, fireMv, scoreFire, spFire),      // (fix round: no mouth flame under a verdict: it sat over the nose)
         embers: hy >= 0 ? 0.62 + 0.08 * hy : stage !== 'whole' ? 0.5 : 0, eyeHot: hy >= 0 ? 0.45 + 0.11 * hy : 0, bgFire: hy === 3 || hy === 4 ? 1 : 0,
         gold: hy === 4 ? 1 : 0, cosmic: hy === 5 ? 1 : 0,
         crack: Math.max(crackMv, stage === 'demon' ? 0.80 : stage === 'cracked' ? 0.58 : 0), demon: stage === 'demon' ? 1 : 0,
-        room: Math.max(st.vote ? 1 : 0, st.hands && (st.hands.angel.on || st.hands.devil.on) ? 1 : 0, B ? (E && E.winner === 'boss' && (E.stage === 'laugh' || E.stage === 'credits') ? 1 : (st.barsY || 0) > 0.25 ? 1 : 0.35) : 0, mv.eat.on && t - mv.eat.t0 < 2.9 ? 1 : 0),
+        room: Math.max(st.vote ? 1 : 0, st.hands && (st.hands.angel.on || st.hands.devil.on) ? 1 : 0, B ? (E && E.winner === 'boss' && (E.stage === 'laugh' || E.stage === 'credits') ? 1 : (st.barsY || 0) > 0.25 ? 1 : 0.35) : 0, mv.eat.on && t - mv.eat.t0 < 2.9 ? 1 : 0, wordRoom),
       };
       if (E && (E.stage === 'explode' || E.stage === 'rain' || E.stage === 'credits') && E.winner === 'chat') { tg.crown = 0; tg.eyes = 0; tg.mouthFire = 0; tg.crack = 0; tg.demon = 0; }
       if (E && E.stage === 'reform') { tg.crack = 0; tg.demon = 0; tg.crown = 0; tg.eyes = 0; }
@@ -227,7 +399,7 @@
       let jaw = 0;
       if (mv.goo.on) jaw = Math.max(jaw, 0.80 * env(mv.goo, t, 0.25, 0.45));
       if (mv.eat.on) { const u = t - mv.eat.t0; jaw = Math.max(jaw, ss(1.05, 1.45, u) * (1 - ss(2.75, 2.95, u)) * chompJaw(u, [2.15, 2.5])); }
-      if (st.song && st.song.image && !st.song.done) { const u = t - st.song.t0; jaw = Math.max(jaw, ss(0.6, 1.0, u) * (1 - ss(2.2, 2.4, u)) * chompJaw(u, [1.25, 1.6, 1.95])); if (u > 2.5) st.song.done = true; }
+      if (eN) jaw = Math.max(jaw, eatJaw(eN, t));                        // release A: the cover, the chew, the word, the gulp
       if (fireMv > 0) jaw = Math.max(jaw, 0.42 * fireMv);
       jaw = Math.max(jaw, 0.75 * scoreFire, 0.80 * scoreGoo, 0.5 * spFire, 0.7 * spGoo);
       if (B && B.moves) { if (B.moves.eat && (B.moves.eat.on || B.moves.eat.charge > 0)) jaw = Math.max(jaw, B.moves.eat.on ? 0.80 : 0.80 * (B.moves.eat.charge || 0)); if (B.moves.scream && B.moves.scream.age !== null && B.moves.scream.age < 0.9) jaw = Math.max(jaw, 0.85 * (1 - ss(0.6, 0.9, B.moves.scream.age))); }
@@ -257,7 +429,10 @@
       const nrm = (c) => { const m = Math.max(c[0], c[1], c[2], 1e-3); return [c[0] / m, c[1] / m, c[2] / m]; };
       // the song's cover: on Auto the face takes its two main colours (the 3D shading is kept by mask-mood's own recipe);
       // a colour the host picked stays the face, and the cover only tints the lines and the eyes
-      const sg = st.song; st.songK = ease(st.songK, sg && sg.c1 && (sg.eaten || t - sg.t0 > 1.95) ? 1 : 0, dt, 2.4, 1.5);
+      // (release A: while the Mask eats, the colours are the eaten cover's, also after the song went off air; they fade
+      // out, not snap, when there is no song any more)
+      const sg0 = st.eat && st.eat.c1 ? st.eat : st.song && st.song.c1 ? st.song : null; if (sg0) st.tint = { c1: sg0.c1, c2: sg0.c2 };
+      const sg = st.tint || null; st.songK = ease(st.songK, sg0 ? 1 : 0, dt, 2.4, 1.5); if (!sg0 && st.songK < 0.003) st.tint = null;
       if (st.songK > 0.003 && sg && sg.c1) {
         if (!custom && Mood) { const sp = Mood.custom(ctx.mood || null, sg.c1, true); if (sg.c2) sp.shade2 = lerp3(sp.shade2, mul3(nrm(sg.c2), 1.05), 0.7); for (const k of ['shade', 'shade2', 'key', 'accent']) P[k] = lerp3(P[k], sp[k], st.songK); P.gain = lerp(P.gain, sp.gain, st.songK); }
         else P.accent = lerp3(P.accent, lerp3(WHITE, nrm(sg.c1), 0.55), 0.6 * st.songK);
@@ -276,7 +451,12 @@
       if (L.gone > 0) P.gain *= 1 - L.gone;
       // the flash (decays; its start is rate-limited in flash())
       st.flash[3] *= Math.exp(-dt * 7); const pf = P.flash || [0, 0, 0, 0]; P.flash = st.flash[3] > pf[3] ? st.flash.slice() : pf;
-      U.v8 = [L.crack, L.cosmic, clamp(L.heat + 0.5 * L.demon), 0]; U.gone = L.gone > 0.92; U.fire = fire; st.fire = fire; st.own = own; st.pal = P;
+      U.v8 = [L.crack, L.cosmic, clamp(L.heat + 0.5 * L.demon), 0]; U.gone = L.gone > 0.92; U.fire = fire; st.fire = fire; st.own = own; st.pal = P; if (st.eat) st.eat.col = fire;
+      // V9 viz fix: in the Visualizer the face is not there, so nothing that draws the head's shape may be (the rim of heat was
+      // an outline round nothing). faceK = how much of his FACE is on screen: 1 = the face (every number below is then
+      // exactly what it was), 0 = the Visualizer; it follows mask-fx's own 1.5 s ease. The eyes stay, as two vortexes
+      // that mask-looks.js draws behind the formation: eyeHeat tells it how hot the show has made them.
+      st.faceK = 1 - ss(0, 0.8, ctx.fx && ctx.fx.viz > 0 ? ctx.fx.viz : 0); U.eyeHeat = clamp(Math.max(L.eyeHot * 0.9, L.eyes, L.demon, L.cosmic) * (1 - L.gone));
       st.gooA = gooColour === 'mask' && own && !(own[0] > 0.9 && own[1] < 0.42 && own[2] < 0.18) ? own : TOXIC;      // never a blood red: a red Mask keeps the toxic green st.gooA2 = st.gooA === TOXIC ? TOXIC2 : mul3(own, 0.30);
       // ---- the effects' own state (mask-fx): shatter, the camera's kick, the grow
       st.kickV *= Math.exp(-dt * 9); const kx = st.kickV * Math.sin(t * 61), ky = st.kickV * Math.cos(t * 47);
@@ -297,7 +477,7 @@
       const hA = st.hands && st.hands.angel && st.hands.angel.on, hD = st.hands && st.hands.devil && st.hands.devil.on, two = hA && hD;
       // the fight's bars: at the top the Mask sits a little lower, in the middle it goes small and under them, at the bottom it moves up
       const by = st.barsY || 0, barZ = by > 0.25 && by < 0.75 ? 0.40 : by >= 0.75 ? 0.30 : 0.20, barY = by > 0.25 && by < 0.75 ? 0.20 : by >= 0.75 ? -0.115 : 0.012;
-      const zk = vt ? 0.30 : hd ? (two ? 0.50 : 0.36) : et ? 0.16 : bw ? 0.48 : barZ, yk = vt ? 0.10 : hd ? (two ? -0.085 : -0.05) : et ? -0.055 : bw ? (by >= 0.75 ? -0.16 : by > 0.25 ? 0.16 : -0.10) : barY;
+      const zk = vt ? 0.30 : wordRoom > 0.5 ? 0.36 : hd ? (two ? 0.50 : 0.36) : et ? 0.16 : bw ? 0.48 : barZ, yk = vt ? 0.10 : wordRoom > 0.5 ? 0.17 : hd ? (two ? -0.085 : -0.05) : et ? -0.055 : bw ? (by >= 0.75 ? -0.16 : by > 0.25 ? 0.16 : -0.10) : barY;
       L.aside = ease(L.aside || 0, hd && !two ? (hA ? (st.hands.angel.x < 0.5 ? 1 : -1) : (st.hands.devil.x < 0.5 ? 1 : -1)) : 0, dt, 3, 2.5);
       const place = room > 0.003 || Math.abs(L.aside) > 0.003 ? { zoom: pl0.zoom * (1 - zk * room), x: pl0.x + 0.13 * L.aside, y: pl0.y - yk * room } : ctx.place || null;
       st.lastT = t;
@@ -411,12 +591,12 @@
       return { G, gl, pPts, pSpl, pComp, ptBuf, spBuf, ptVao, spVao, field };
     }
 
-    const HUD = { missiles: [], strikes: [], cover: null, pops: [], anchors: {} };
+    const HUD = { missiles: [], strikes: [], cover: null, vbox: null, pops: [], anchors: {} };
     function render(c) {
       const { G, gl, vp, model: mdl, sc, ps, core, time: t, audio: A } = c;
       if (!GLS || GLS.G !== G) GLS = glInit(G);
       const dt = st.rT === undefined ? 1 / 30 : clamp(t - st.rT, 0, 0.1); st.rT = t;
-      const L = st.L, B = st.boss, fire = st.fire || GOLD, heat = L.heat, VIEW = c.VIEW;
+      const L = st.L, B = st.boss, fire = st.fire || GOLD, heat = L.heat, VIEW = c.VIEW, fk = st.faceK === undefined ? 1 : st.faceK;      // fk: 1 = his face is there, 0 = the Visualizer (no head: nothing head-shaped)
       const tw = (p) => [mdl[0] * p[0] + mdl[4] * p[1] + mdl[8] * p[2] + mdl[12], mdl[1] * p[0] + mdl[5] * p[1] + mdl[9] * p[2] + mdl[13], mdl[2] * p[0] + mdl[6] * p[1] + mdl[10] * p[2] + mdl[14]];
       const scr = (p) => { const w = vp[3] * p[0] + vp[7] * p[1] + vp[11] * p[2] + vp[15]; return [((vp[0] * p[0] + vp[4] * p[1] + vp[8] * p[2] + vp[12]) / w * 0.5 + 0.5) * G.W, (0.5 - (vp[1] * p[0] + vp[5] * p[1] + vp[9] * p[2] + vp[13]) / w * 0.5) * G.H, G.H * 0.5 * c.proj[5] * ps / w]; };      // [x px, y px, px per world unit]
       nP = 0; nS = 0;
@@ -439,28 +619,28 @@
       }
       // ---- the low ranks (Warming Up, Heating Up) must be SEEN on a loud section too: a rim of heat round the whole head
       // that breathes with the beat, and heat-shimmer wisps that climb off it (Heating Up also has small flames: the crown)
-      if (L.halo > 0.02 && L.gone < 0.5) {
-        const q = L.halo * (0.75 + 0.45 * beat + 0.25 * heat), NH = 300;
+      if (L.halo * fk > 0.02 && L.gone < 0.5) {
+        const q = L.halo * fk * (0.75 + 0.45 * beat + 0.25 * heat), NH = 300;
         for (let i = 0; i < NH; i++) {
           const a = i / NH * 6.2832, wob = 1.06 + 0.035 * Math.sin(a * 5 + t * 2.4) + 0.05 * beat, w = tw([1.10 * wob * Math.sin(a), -0.42 + 1.50 * wob * Math.cos(a), -0.1]);
           const tw2 = 0.7 + 0.3 * Math.sin(t * 3.1 + i * 0.37), br = 1.5 * q * tw2;
           put(w[0], w[1], w[2], fire[0] * br, fire[1] * br, fire[2] * br, 1.7); if (i % 6 === 0) put(w[0], w[1], w[2], fire[0] * br * 0.30, fire[1] * br * 0.30, fire[2] * br * 0.30, 11);
         }
-        const nw = L.halo * 1.4; for (let j = 0; j < Math.floor(nw) + (rnd() < nw % 1 ? 1 : 0); j++) { const a = (rnd() * 2 - 1) * 1.5, w = tw([1.14 * Math.sin(a), -0.42 + 1.56 * Math.cos(a), 0]); spawn(SPARK, w[0], w[1], w[2], (rnd() - 0.5) * 0.4, 1.0 + 1.6 * rnd(), 0, 0.9 + 0.8 * rnd(), 0.9, lerp3(fire, WHITE, 0.3), 1); }
+        const nw = L.halo * fk * 1.4; for (let j = 0; j < Math.floor(nw) + (rnd() < nw % 1 ? 1 : 0); j++) { const a = (rnd() * 2 - 1) * 1.5, w = tw([1.14 * Math.sin(a), -0.42 + 1.56 * Math.cos(a), 0]); spawn(SPARK, w[0], w[1], w[2], (rnd() - 0.5) * 0.4, 1.0 + 1.6 * rnd(), 0, 0.9 + 0.8 * rnd(), 0.9, lerp3(fire, WHITE, 0.3), 1); }
       }
       // ---- hot eyes / suns for eyes
       for (const e of eyes) {
-        const k = Math.max(L.eyeHot * 0.9, L.eyes, L.demon) * (1 - L.cosmic) * (0.25 + 0.75 * ss(0.05, 0.3, e.open)) * (1 - L.gone), p = e.p;
+        const k = Math.max(L.eyeHot * 0.9, L.eyes, L.demon) * (1 - L.cosmic) * (0.25 + 0.75 * ss(0.05, 0.3, e.open)) * (1 - L.gone) * fk, p = e.p;
         if (k > 0.02) { const b2 = k * (0.8 + 0.4 * beat); put(p[0], p[1], p[2] + 0.3, fire[0] * 2.6 * b2, fire[1] * 2.6 * b2, fire[2] * 2.6 * b2, 30 * sc); put(p[0], p[1], p[2] + 0.3, 9 * b2, 6.0 * b2, 3.4 * b2, 9 * sc); if (rnd() < 0.45 * k) spawn(SPARK, p[0] + (rnd() - 0.5) * 0.2, p[1] + 0.05, p[2] + 0.3, (rnd() - 0.5) * 0.5, 0.9 + 1.2 * rnd(), 0, 0.7 + 0.5 * rnd(), 0.7, lerp3(fire, WHITE, 0.3), 1); }
-        if (L.cosmic > 0.02) {
-          const q = L.cosmic * (1 - L.gone), b2 = q * (0.85 + 0.3 * beat + 0.2 * bass);
+        if (L.cosmic * fk > 0.02) {
+          const q = L.cosmic * (1 - L.gone) * fk, b2 = q * (0.85 + 0.3 * beat + 0.2 * bass);
           put(p[0], p[1], p[2] + 0.3, fire[0] * 1.5 * b2, fire[1] * 1.5 * b2, fire[2] * 1.5 * b2, 44 * sc); put(p[0], p[1], p[2] + 0.3, fire[0] * 5 * b2 + 2 * b2, fire[1] * 5 * b2 + 1.6 * b2, fire[2] * 5 * b2 + b2, 21 * sc); put(p[0], p[1], p[2] + 0.3, 26 * b2, 24 * b2, 20 * b2, 12.5 * sc);
           for (let j = 0; j < 12; j++) { const a = j / 12 * 6.2832 + t * 0.35, len = (0.34 + 0.10 * Math.sin(t * 3 + j * 2.1) + 0.14 * beat) * (j % 2 ? 0.55 : 1) * sc; for (let m = 1; m <= 12; m++) { const f = m / 12, br = (1 - f) * (1 - f) * 7 * b2; put(p[0] + Math.cos(a) * (0.20 * sc + len * f), p[1] + Math.sin(a) * (0.20 * sc + len * f), p[2] + 0.3, br, br * 0.84, br * 0.50, 2.6 - 1.8 * f); } }
         }
       }
       // ---- MYTHIC: a ring of stars round the head, two worlds on it, the aura; the flare of a "+1"
-      if (L.cosmic > 0.02) {
-        const q = L.cosmic * (1 - L.gone), tilt = 1.25, c0 = [0, -0.22, 0], Rr = 1.62;
+      if (L.cosmic * fk > 0.02) {
+        const q = L.cosmic * (1 - L.gone) * fk, tilt = 1.25, c0 = [0, -0.22, 0], Rr = 1.62;
         for (let i = 0; i < 300; i++) {
           const a = h1(i * 3.3) * 6.2832 + t * (0.22 + 0.05 * h1(i)), rr = Rr * (0.93 + 0.16 * h1(i * 7.1)), x = Math.cos(a) * rr, z0 = Math.sin(a) * rr, y = z0 * Math.cos(tilt) * 0.42 + 0.30 * x * 0.25, z = z0 * Math.sin(tilt);
           if (z < 0 && (x / 1.0) * (x / 1.0) + (y / 1.45) * (y / 1.45) < 1) continue;
@@ -475,28 +655,30 @@
 
       // ---- FIRE: the emitters feed the field (crown, eyes, mouth, the frame's edges, the cracks)
       const hotMul = 0.75 + 0.65 * heat + 0.35 * beat;
-      if (L.eyeHot > 0.3 && L.gone < 0.5 && rnd() < 0.55 * L.eyeHot) { const a = (rnd() * 2 - 1) * 1.1, w = tw([1.02 * Math.sin(a), -0.42 + 1.42 * Math.cos(a), 0]); spawn(SPARK, w[0], w[1], w[2], (rnd() - 0.5) * 0.6, 1.2 + 1.8 * rnd(), 0, 0.9 + 0.7 * rnd(), 0.8, lerp3(fire, WHITE, 0.35), 1); }
+      if (L.eyeHot > 0.3 && L.gone < 0.5 && fk > 0.5 && rnd() < 0.55 * L.eyeHot) { const a = (rnd() * 2 - 1) * 1.1, w = tw([1.02 * Math.sin(a), -0.42 + 1.42 * Math.cos(a), 0]); spawn(SPARK, w[0], w[1], w[2], (rnd() - 0.5) * 0.6, 1.2 + 1.8 * rnd(), 0, 0.9 + 0.7 * rnd(), 0.8, lerp3(fire, WHITE, 0.35), 1); }
       const fireAt = (p, vx, vy, size, life, amt) => spawn(FIRE, p[0], p[1], p[2], vx, vy, 0, life, size, fire, amt);
-      const alive = 1 - L.gone;
-      if (L.crown * alive > 0.02) {
+      const alive = 1 - L.gone, onFace = alive * fk;      // onFace: what burns ON the face (crown, eye flames, the mouth's fire, the cracks) goes with it
+      if (L.crown * onFace > 0.02) {
         // tongues, not a band: nine sites along the top of the face, each a stream that breathes on its own; LEGENDARY
         // makes every second one tall: a crown of five flames
         const K = 9;
         for (let k = 0; k < K; k++) {
           const a = -1.12 + 2.24 * (k + 0.5) / K + 0.06 * Math.sin(t * 1.3 + k * 2.1), hx = 1.02 * Math.sin(a), hy = -0.42 + 1.42 * Math.cos(a);
           let pk = 0.55 + 0.45 * Math.sin(t * 2.1 + k * 1.9); if (L.gold > 0.3) pk = lerp(pk, k % 2 === 0 ? 1.0 : 0.22, L.gold);
-          const rate = (0.9 + 1.3 * L.crown) * hotMul * (0.5 + 0.5 * pk), n = Math.floor(rate) + (rnd() < rate % 1 ? 1 : 0);
+          const thin = st.thin ? 1 : 0, flick = thin ? 0.55 + 0.75 * Math.pow(0.5 + 0.5 * Math.sin(t * (6.1 + 0.9 * k) + k * 3.7), 2) : 1;      // (fix round V-6: under the FIRE verdict the crown is thin, tall, flickering tongues)
+          const rate = (0.9 + 1.3 * L.crown) * hotMul * (0.5 + 0.5 * pk) * (thin ? 2.4 * flick : 1), n = Math.floor(rate) + (rnd() < rate % 1 ? 1 : 0);
           for (let j = 0; j < n; j++) {
             const w = tw([hx * 0.97 + (rnd() - 0.5) * 0.07, hy - 0.08 + (rnd() - 0.5) * 0.05, -0.05]), up = (2.3 + 1.3 * rnd()) * (0.50 + 0.70 * L.crown) * hotMul * (0.40 + 0.80 * pk);
-            fireAt(w, Math.sin(a) * 0.55 + (rnd() - 0.5) * 0.18, up, (0.30 + 0.08 * rnd()) * sc, (0.32 + 0.22 * rnd()) * (0.60 + 0.50 * pk), 0.56);
+            if (thin) fireAt([w[0] * 1 + (rnd() - 0.5) * 0.02, w[1], w[2]], Math.sin(a) * 0.30, up * 1.25 * flick, (0.14 + 0.05 * rnd()) * sc, (0.26 + 0.22 * rnd()) * (0.60 + 0.50 * pk), 0.64);
+            else fireAt(w, Math.sin(a) * 0.55 + (rnd() - 0.5) * 0.18, up, (0.30 + 0.08 * rnd()) * sc, (0.32 + 0.22 * rnd()) * (0.60 + 0.50 * pk), 0.56);
           }
         }
         if (rnd() < 0.5 * L.crown) { const a = (rnd() * 2 - 1) * 1.0, w = tw([1.02 * Math.sin(a), -0.42 + 1.42 * Math.cos(a), 0]); spawn(SPARK, w[0], w[1], w[2], (rnd() - 0.5) * 0.8, 1.6 + 2 * rnd(), 0, 0.8 + 0.6 * rnd(), 0.8, lerp3(fire, WHITE, 0.4), 1); }
       }
-      if (L.eyes * alive > 0.02) for (let ei = 0; ei < 2; ei++) { const e = eyes[ei], side = ei === 0 ? -1 : 1, n = Math.round(5.6 * L.eyes * hotMul + rnd()); for (let j = 0; j < n; j++) fireAt([e.p[0] + side * 0.14 * sc + (rnd() - 0.5) * 0.08, e.p[1] + 0.02 + (rnd() - 0.5) * 0.05, e.p[2] + 0.3], side * (2.0 + 1.0 * rnd()) * L.eyes, (2.7 + 1.3 * rnd()) * hotMul, (0.33 + 0.09 * rnd()) * sc, 0.42 + 0.24 * rnd(), 0.58); }      // (phase 2: the eye flames stand up next to the crown)
-      if (L.mouthFire * alive > 0.02 && mOpen > 0.10) { const jet = st.score && st.score.kind === 'fire' && t - st.score.t0 < 3.9 ? 1 : 0, k = L.mouthFire * ss(0.10, 0.5, mOpen), n = Math.round((6 + 8 * jet) * k * hotMul + rnd()); for (let j = 0; j < n; j++) fireAt([mouth[0] + (rnd() - 0.5) * 0.30 * sc, mouth[1] + (rnd() - 0.5) * 0.10, mouth[2] + 0.3], (rnd() - 0.5) * (1.4 + 3.4 * jet), jet ? (4.2 + 3.6 * rnd()) : (1.3 + 1.9 * rnd()) * hotMul, (0.20 + 0.13 * rnd() + 0.10 * jet) * sc, 0.30 + 0.30 * rnd() + 0.15 * jet, 0.70); }
+      if (L.eyes * onFace > 0.02) for (let ei = 0; ei < 2; ei++) { const e = eyes[ei], side = ei === 0 ? -1 : 1, n = Math.round(5.6 * L.eyes * hotMul + rnd()); for (let j = 0; j < n; j++) fireAt([e.p[0] + side * 0.14 * sc + (rnd() - 0.5) * 0.08, e.p[1] + 0.02 + (rnd() - 0.5) * 0.05, e.p[2] + 0.3], side * (2.0 + 1.0 * rnd()) * L.eyes, (2.7 + 1.3 * rnd()) * hotMul, (0.33 + 0.09 * rnd()) * sc, 0.42 + 0.24 * rnd(), 0.58); }      // (phase 2: the eye flames stand up next to the crown)
+      if (L.mouthFire * onFace > 0.02 && mOpen > 0.10) { const jet = st.score && st.score.kind === 'fire' && t - st.score.t0 < 3.9 ? 1 : 0, k = L.mouthFire * ss(0.10, 0.5, mOpen), n = Math.round((6 + 8 * jet) * k * hotMul + rnd()); for (let j = 0; j < n; j++) fireAt([mouth[0] + (rnd() - 0.5) * 0.30 * sc, mouth[1] + (rnd() - 0.5) * 0.10, mouth[2] + 0.3], (rnd() - 0.5) * (1.4 + 3.4 * jet), jet ? (4.2 + 3.6 * rnd()) : (1.3 + 1.9 * rnd()) * hotMul, (0.20 + 0.13 * rnd() + 0.10 * jet) * sc, 0.30 + 0.30 * rnd() + 0.15 * jet, 0.70); }
       if (L.bgFire > 0.02) for (let k = 0; k < 8; k++) { const side = k < 4 ? -1 : 1, q = k % 4, rate = 0.75 * L.bgFire * hotMul * (0.6 + 0.4 * Math.sin(t * 1.7 + k * 2.3)); if (rnd() < rate) fireAt([side * (hw / ps + 0.04) - c.pox * hw / ps + (rnd() - 0.5) * 0.06, floorY + 0.15 + q * 0.85 + (rnd() - 0.5) * 0.08, -0.5], -side * (0.25 + 0.35 * rnd()), (2.4 + 1.8 * rnd()) * hotMul, 0.38 + 0.12 * rnd(), 0.36 + 0.30 * rnd(), 0.72); }
-      if (L.crack * alive > 0.3 && rnd() < L.crack * 1.2) { const a = rnd() * 6.2832, q = Math.sqrt(rnd()) * 0.85 * L.crack, w = tw([Math.cos(a) * q * 0.85, -0.45 + Math.sin(a) * q * 1.2, 0.35]); fireAt(w, (rnd() - 0.5) * 0.6, (0.8 + 1.2 * rnd()) * hotMul, (0.18 + 0.12 * rnd()) * sc, 0.30 + 0.25 * rnd(), 0.5); if (rnd() < 0.3) spawn(SPARK, w[0], w[1], w[2] + 0.2, (rnd() - 0.5) * 1.6, 1.0 + 1.8 * rnd(), 0, 0.7, 0.7, lerp3(fire, WHITE, 0.3), 1); }
+      if (L.crack * onFace > 0.3 && rnd() < L.crack * 1.2) { const a = rnd() * 6.2832, q = Math.sqrt(rnd()) * 0.85 * L.crack, w = tw([Math.cos(a) * q * 0.85, -0.45 + Math.sin(a) * q * 1.2, 0.35]); fireAt(w, (rnd() - 0.5) * 0.6, (0.8 + 1.2 * rnd()) * hotMul, (0.18 + 0.12 * rnd()) * sc, 0.30 + 0.25 * rnd(), 0.5); if (rnd() < 0.3) spawn(SPARK, w[0], w[1], w[2] + 0.2, (rnd() - 0.5) * 1.6, 1.0 + 1.8 * rnd(), 0, 0.7, 0.7, lerp3(fire, WHITE, 0.3), 1); }
       if (mv.crack.on && t - mv.crack.t0 < dt * 1.5) { burst(faceC, 60, 3.0, lerp3(fire, WHITE, 0.4), { size: 0.9 }); st.kickV = 0.5; }
 
       // ---- GOO: it pours from the mouth, hangs from the chin, strings, pools at the bottom
@@ -504,12 +686,12 @@
       if (st.gooOn && mOpen > 0.2 && alive > 0.5) {
         const wdt = 0.26 * sc * (0.6 + 0.5 * mOpen);
         for (let j = 0; j < 4; j++) spawn(GOO, mouth[0] + (rnd() - 0.5) * wdt, mouth[1] - 0.05 * sc - rnd() * 0.05, mouth[2] + 0.35, (rnd() - 0.5) * 0.30, -(0.5 + 0.9 * rnd()), 0, 3.0, (0.25 + 0.16 * rnd()) * sc, gooA, 0);
-        if (rnd() < 0.22) spawn(HANG, chin[0] + (rnd() - 0.5) * 0.55 * sc, chin[1] + 0.05, chin[2] + 0.2, 0, 0, 0, 3.4, (0.15 + 0.10 * rnd()) * sc, gooA, 0.35 + 0.7 * rnd());
+        if (rnd() < 0.22 && fk > 0.5) spawn(HANG, chin[0] + (rnd() - 0.5) * 0.55 * sc, chin[1] + 0.05, chin[2] + 0.2, 0, 0, 0, 3.4, (0.15 + 0.10 * rnd()) * sc, gooA, 0.35 + 0.7 * rnd());
         st.pool = Math.min(1, st.pool + dt * 0.30);
       } else st.pool = Math.max(0, st.pool - dt * 0.20);
       if (mv.melt.on) {      // the melt: the face runs down into a molten pool, drips fall from it
         const u = t - mv.melt.t0, m = L.melt;
-        if (u < 2.55) { if (rnd() < 0.6 * m) { const x = (rnd() * 2 - 1) * 0.85, w = tw([x, Math.max(MELT_FLOOR + 0.2, -1.8 - Math.pow(m, 1.25) * (0.95 + 1.9 * meltRun(x))), 0.2]); const id = spawn(HANG, w[0], w[1], w[2] + 0.2, 0, 0, 0, 2.6, (0.12 + 0.10 * rnd()) * sc, fire, 0.25 + 0.5 * rnd()); AUX[id] = -AUX[id]; } for (let j = 0; j < 9; j++) { const x = ((j + 0.5) / 9 * 2 - 1) * 0.95 * (0.5 + 0.5 * m), w = tw([x * 1.25, MELT_FLOOR - 0.02 + 0.03 * Math.sin(t * 3 + j), 0.2]); splat(w[0], w[1], w[2] + 0.2, (0.30 + 0.10 * Math.sin(j * 2.1 + t * 2)) * sc * ss(0.25, 1, m), 1.0 * ss(0.3, 0.9, m), 0, 1); } }
+        if (u < 2.55 && fk > 0.5) { if (rnd() < 0.6 * m) { const x = (rnd() * 2 - 1) * 0.85, w = tw([x, Math.max(MELT_FLOOR + 0.2, -1.8 - Math.pow(m, 1.25) * (0.95 + 1.9 * meltRun(x))), 0.2]); const id = spawn(HANG, w[0], w[1], w[2] + 0.2, 0, 0, 0, 2.6, (0.12 + 0.10 * rnd()) * sc, fire, 0.25 + 0.5 * rnd()); AUX[id] = -AUX[id]; } for (let j = 0; j < 9; j++) { const x = ((j + 0.5) / 9 * 2 - 1) * 0.95 * (0.5 + 0.5 * m), w = tw([x * 1.25, MELT_FLOOR - 0.02 + 0.03 * Math.sin(t * 3 + j), 0.2]); splat(w[0], w[1], w[2] + 0.2, (0.30 + 0.10 * Math.sin(j * 2.1 + t * 2)) * sc * ss(0.25, 1, m), 1.0 * ss(0.3, 0.9, m), 0, 1); } }
         if (u >= 2.55 && u < 2.55 + dt * 1.5) { burst(tw([0, -1.3, 0.3]), 110, 3.6, lerp3(fire, WHITE, 0.3), { size: 1.0, up: 0.6 }); st.kickV = 0.7; }
       }
       // ---- step the particles
@@ -554,17 +736,35 @@
         }
         for (const ct of [2.15, 2.5]) if (u >= ct && u < ct + dt * 1.5) { burst([mouth[0], mouth[1], mouth[2] + 0.3], 46, 2.4, lerp3(fire, WHITE, 0.5), { size: 0.8, life: 0.5 }); st.kickV = Math.max(st.kickV, 0.35); }
       }
-      // ---- THE SONG: the cover flies in and is bitten away at the mouth (the 2D layer draws the picture; crumbs fly here)
-      HUD.cover = null;
-      const sg = st.song;
-      if (sg && sg.image && t - sg.t0 < 2.3) {
-        const u = t - sg.t0, k = 1 - Math.pow(1 - clamp(u / 1.0), 3), size = lerp(1.25, 0.92, k) * sc, bites = [1.25, 1.6, 1.95], eaten = (u > bites[2] ? 1 : u > bites[1] ? 0.68 : u > bites[0] ? 0.36 : 0) + (u > bites[0] ? 0 : 0);
-        const slide = eaten * size, px = lerp(hw / ps + 1.0, mouth[0], k), py = lerp(VIEW.targetY + 2.6, mouth[1] + size * 0.5 + 0.05, k) - slide, s2 = scr([px, py, 0.6]), ms = scr([mouth[0], mouth[1], 0.6]);
-        HUD.cover = { image: sg.image, x: s2[0], y: s2[1], size: size * s2[2], rot: (1 - k) * 0.5 + 0.03 * Math.sin(u * 5), clipY: ms[1], bite: eaten, a: 1 - ss(2.0, 2.2, u) };
-        for (let b = 0; b < 3; b++) if (u >= bites[b] && u < bites[b] + dt * 1.5) { const cc = [sg.c1 || fire, sg.c2 || WHITE, WHITE]; for (let q = 0; q < 3; q++) burst([mouth[0], mouth[1], 0.6], 26, 2.6, mul3((cc[q]), 1 / Math.max(cc[q][0], cc[q][1], cc[q][2], 0.05)), { size: 1.0, life: 0.6, white: 0.25 }); st.kickV = Math.max(st.kickV, 0.4); }
-        if (u >= 1.98 && u < 1.98 + dt * 1.5) { st.ringAt = t; flash(t, sg.c1 ? mul3(sg.c1, 1 / Math.max(sg.c1[0], sg.c1[1], sg.c1[2], 0.05)) : WHITE, 0.30); }
+      // ---- THE EAT (release A): the cover (or a glowing record) flies in and is bitten away at the mouth, on the beat; the
+      // Mask chews; his verdict is spat as a word of fire. The 2D layer draws the picture / the record; the light is here.
+      HUD.cover = null; HUD.vbox = null;
+      const eE = st.eat;
+      // FIX ROUND V-5: in the Visualizer there is no face and no mouth: the cover flies into the MIDDLE of the formation and is
+      // swallowed there (it shrinks and turns as it goes in, no bite line), and the word is spat from there.
+      const mE = fk > 0.999 ? mouth : [lerp(0, mouth[0], fk), lerp(VIEW.targetY, mouth[1], fk), lerp(0.4, mouth[2], fk)], inViz = fk < 0.5;
+      if (eE) {
+        const T = EAT, u = t - eE.t0, nb = eE.bites.length, lastB = nb ? t - eE.bites[nb - 1] : 0, nrm1 = (q) => mul3(q, 1 / Math.max(q[0], q[1], q[2], 0.05));
+        const c1n = eE.c1 ? nrm1(eE.c1) : fire, c2n = eE.c2 ? nrm1(eE.c2) : WHITE, mouth = mE;      // (everything of the eat below happens at mE)
+        eE.eatenK = ease(eE.eatenK, nb / T.bites, dt, 26, 26);
+        if (!eE.belch && (nb < T.bites || lastB < 0.3)) {
+          const k = 1 - Math.pow(1 - clamp(u / T.arrive), 3), size = lerp(1.35, 1.0, k) * sc * (inViz ? 1 - 0.93 * eE.eatenK : 1), slide = inViz ? 0 : eE.eatenK * size;
+          const px = lerp(hw / ps + 1.0, mouth[0], k), py = lerp(VIEW.targetY + 2.6, mouth[1] + (inViz ? 0 : size * 0.5 + 0.05), k) - slide, s2 = scr([px, py, 0.6]), ms = scr([mouth[0], mouth[1], 0.6]);
+          HUD.cover = { image: eE.image, record: eE.record, x: s2[0], y: s2[1], size: size * s2[2], rot: (1 - k) * 0.5 + 0.03 * Math.sin(u * 5) + (inViz ? 2.6 * eE.eatenK : 0), clipY: ms[1], bite: inViz ? 0 : eE.eatenK, a: nb < T.bites ? 1 : 1 - ss(0.12, 0.3, lastB), spin: u * 4.2, tint: fire };
+          if (eE.record && k < 1) put(px, py, 0.5, fire[0] * 1.3, fire[1] * 1.3, fire[2] * 1.3, 36 * sc);      // the record glows as it comes
+          if (inViz && eE.eatenK > 0.02) { for (let i = 0; i < 90; i++) { const ph = (t * (1.4 + h1(i * 2.2)) + h1(i * 7.3)) % 1, an = h1(i * 3.9) * 6.2832 + ph * 2.6, rr = 1.5 * sc * (1 - ph) * (0.35 + 0.65 * h1(i * 1.3)), br = 2.8 * ph; put(mouth[0] + Math.cos(an) * rr, mouth[1] + Math.sin(an) * rr, 0.4, br * c1n[0] + 0.3 * br, br * c1n[1] + 0.25 * br, br * c1n[2] + 0.2 * br, 0.8 + 0.8 * (1 - ph)); } }      // the pull of the swallow
+        }
+        for (const ev of eE.ev) {
+          if (ev === 'bite') { const cc = [c1n, c2n, WHITE]; for (let q = 0; q < 3; q++) burst([mouth[0], mouth[1], 0.6], 26, 2.6, cc[q], { size: 1.0, life: 0.6, white: 0.25 }); st.kickV = Math.max(st.kickV, 0.4); }
+          else if (ev === 'lastbite') { st.ringAt = t; st.ringCol = c1n; }
+          else if (ev === 'munch') { burst([mouth[0], mouth[1], mouth[2] + 0.3], 9, 1.4, c1n, { size: 0.7, life: 0.4, up: 0.3, white: 0.2 }); st.kickV = Math.max(st.kickV, 0.10); }
+          else if (ev === 'spit') { burst([mouth[0], mouth[1], mouth[2] + 0.3], 150, 4.4, lerp3(fire, WHITE, 0.4), { size: 1.1, life: 0.9, up: 0.45 }); st.kickV = Math.max(st.kickV, 0.9 * TIER[eE.word].slam); }
+          else if (ev === 'gulp') { burst([mouth[0], mouth[1], mouth[2] + 0.3], 28, 1.3, lerp3(fire, WHITE, 0.5), { size: 0.7, life: 0.6, up: 0.9 }); st.kickV = Math.max(st.kickV, 0.4); }
+        }
+        for (const f of eatFlashes(eE)) flash(t, f.col, f.a);
+        if (eE.wordT !== null && t >= eE.wordT) wordDraw(eE, { put, scr, t, dt, c, VIEW, mouth: mE, fire, beat, G, ps });
       }
-      if (st.ringAt !== undefined && t - st.ringAt < 1.1) { const a = t - st.ringAt, rr = 0.4 + a * 3.6, f = Math.exp(-a * 3), cc = sg && sg.c1 ? mul3(sg.c1, 1 / Math.max(sg.c1[0], sg.c1[1], sg.c1[2], 0.05)) : fire; for (let i = 0; i < 150; i++) { const an = i / 150 * 6.2832; put(faceC[0] + Math.cos(an) * rr, faceC[1] + Math.sin(an) * rr, 0.2, cc[0] * 5 * f + f, cc[1] * 5 * f + f, cc[2] * 5 * f + f, 1.4); } }
+      if (st.ringAt !== undefined && t - st.ringAt < 1.1) { const a = t - st.ringAt, rr = 0.4 + a * 3.6, f = Math.exp(-a * 3), cc = st.ringCol || fire; for (let i = 0; i < 150; i++) { const an = i / 150 * 6.2832; put(faceC[0] + Math.cos(an) * rr, faceC[1] + Math.sin(an) * rr, 0.2, cc[0] * 5 * f + f, cc[1] * 5 * f + f, cc[2] * 5 * f + f, 1.4); } }
       // ---- THE SCORE: fireworks for a high one (the mouth's fire / goo comes from the layers above)
       const sco = st.score;
       if (sco && sco.kind === 'fire') { const u = t - sco.t0; for (let i = 0; i < 5; i++) { const ft = 1.5 + i * 0.42; if (u >= ft && u < ft + dt * 1.5) { const p = [(h1(i * 3.7 + sco.n) * 2 - 1) * hw / ps * 0.7, VIEW.targetY + (1.15 + 0.9 * h1(i * 5.3 + sco.n)) / ps, 0.4]; burst(p, 120, 2.7, i % 2 ? lerp3(fire, WHITE, 0.2) : [1.0, 0.86, 0.5], { size: 1.1, life: 1.1, up: 0.1, white: 0.4 }); put(p[0], p[1], p[2], 24, 22, 18, 9); } } }
@@ -572,13 +772,13 @@
 
       // ---- THE BOSS FIGHT
       HUD.missiles.length = 0; HUD.strikes.length = 0;
-      if (B) bossDraw(B, { tw, scr, put, eyes, mouth, mouthH, faceC, sc, ps, t, dt, hw: hw / ps, hh: hh / ps, VIEW, fire, beat, c });
+      if (B) bossDraw(B, { tw, scr, put, eyes, mouth, mouthH, faceC, sc, ps, t, dt, hw: hw / ps, hh: hh / ps, VIEW, fire, beat, c, fk });
       else { st.seen.clear(); st.stageSeen = 'whole'; st.endSeen = null; st.text = null; }
       // ---- HAND PUPPETS
       if (st.hands) puppetsDraw(st.hands, { put, t, dt, VIEW, faceC, c, sc });
 
       // ---- pops for the HUD (screen places), anchors
-      const m2 = scr(mouth), f2 = scr(faceC); HUD.anchors = { mouth: [m2[0], m2[1]], face: [f2[0], f2[1]], unit: f2[2] };
+      const m2 = scr(st.eat ? mE : mouth), f2 = scr(faceC); HUD.anchors = { mouth: [m2[0], m2[1]], face: [f2[0], f2[1]], unit: f2[2] };
       // ---- draw: the field first (goo covers, fire adds), then the light points
       gl.bindVertexArray(null);
       if (nS > 0) {
@@ -589,7 +789,7 @@
         GLS.pSpl.use().u('uViewProj', vp).u('uPx', F.h * 0.5 * c.proj[5] * ps); gl.bindVertexArray(GLS.spVao); gl.drawArrays(gl.POINTS, 0, nS);
         G.bindScene(); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
         const A2 = st.gooA2 || TOXIC2, mol = lerp3(fire, [1, 0.8, 0.3], 0.35);
-        G.bindTex(0, F.tex); GLS.pComp.use().ui('uField', 0).u('uTexel', [1 / F.w, 1 / F.h]).u('uTime', t).u('uAspect', G.W / G.H).u('uGooA', mul3(gooA, 1.0)).u('uGooA2', A2).u('uGooB', mul3(mol, 1.5)).u('uGooB2', mul3(fire, 0.55)).u('uFire', fire).u('uFireDeep', st.own ? mul3(st.own, 0.5) : [0.9, 0.06, 0.03]);
+        G.bindTex(0, F.tex); GLS.pComp.use().ui('uField', 0).u('uTexel', [1 / F.w, 1 / F.h]).u('uTime', t).u('uAspect', G.W / G.H).u('uGooA', mul3(gooA, 1.0)).u('uGooA2', A2).u('uGooB', mul3(mol, 1.5)).u('uGooB2', mul3(fire, 0.55)).u('uFire', st.thin ? FIRE_GOLD : fire).u('uFireDeep', st.thin ? FIRE_DEEP : st.own ? mul3(st.own, 0.5) : [0.9, 0.06, 0.03]);
         G.fsTri();
       }
       if (nP > 0) {
@@ -641,9 +841,9 @@
         if (s.state === 'fire') { const f = Math.sin(Math.PI * clamp(s.k)), wd = 0.10 + 0.14 * f; for (let i = 0; i < 90; i++) { const y = w[1] + i * 0.062, j = (h1(i * 3.3 + Math.floor(t * 60)) - 0.5) * wd; put(w[0] + j, y, 0.3, 12 * f, 10.5 * f, 8 * f, 2.6); put(w[0] + j * 2.5, y, 0.3, 2.4 * f, 1.5 * f, 0.4 * f, 9); } put(w[0], w[1], 0.4, 30 * f, 26 * f, 20 * f, 12); }
       }
       // the shield: a bubble of points round the face
-      if (mvs.shield && mvs.shield.on) {
+      if (mvs.shield && mvs.shield.on && X.fk > 0.02) {
         const R = (mvs.shield.radius || 1.9) * sc, en = clamp(mvs.shield.energy === undefined ? 1 : mvs.shield.energy), c0 = tw([0, -0.42, 0]);
-        for (let i = 0; i < 620; i++) { const th = h1(i * 1.11) * 6.2832 + t * 0.15, u = h1(i * 2.37) * 2 - 1, q = Math.sqrt(1 - u * u), x = q * Math.cos(th), y = u, z = q * Math.sin(th); if (z < -0.2) continue; const edge = 1 - z, hex = 0.6 + 0.4 * Math.sin(th * 12 + u * 9 + t * 2), br = (0.25 + 2.3 * edge * edge * edge) * hex * (0.35 + 0.65 * en) * (0.8 + 0.4 * beat); put(c0[0] + x * R, c0[1] + y * R * 1.18, c0[2] + z * R, br * 0.9, br * 0.96, br, 0.9 + 0.5 * edge); }
+        for (let i = 0; i < 620; i++) { const th = h1(i * 1.11) * 6.2832 + t * 0.15, u = h1(i * 2.37) * 2 - 1, q = Math.sqrt(1 - u * u), x = q * Math.cos(th), y = u, z = q * Math.sin(th); if (z < -0.2) continue; const edge = 1 - z, hex = 0.6 + 0.4 * Math.sin(th * 12 + u * 9 + t * 2), br = (0.25 + 2.3 * edge * edge * edge) * hex * (0.35 + 0.65 * en) * (0.8 + 0.4 * beat) * X.fk; put(c0[0] + x * R, c0[1] + y * R * 1.18, c0[2] + z * R, br * 0.9, br * 0.96, br, 0.9 + 0.5 * edge); }
       }
       // the shockwave: a ring that runs out from the face
       if (mvs.shockwave && mvs.shockwave.age !== null && mvs.shockwave.age !== undefined && mvs.shockwave.age < 0.75) {
@@ -784,20 +984,78 @@
       }
     }
 
+    // ---------------------------------------------------------------- the verdict: a giant word of fire (release A)
+    // Spat from the mouth letter by letter (left to right as it is read), it lands with a small overshoot, burns for
+    // EAT.hold seconds (flames stand on the letters' top edges, embers rise; FIRE has fireworks, GEM glints, SOLID a bar
+    // under it, PROMISING a softer glow), then is sucked back into the mouth. In the cover's warm colour, white-hot at
+    // the outline. It sits in the frame, not on the Mask: the Mask's own move / zoom is taken out again.
+    function wordDraw(e, X) {
+      const W = e.pts; if (!W || !W.n) return;
+      const { put, t, c, VIEW, mouth, fire, beat, G, ps } = X, w = t - e.wordT, tier = TIER[e.word] || TIER.SOLID;
+      const HH = VIEW.halfH, HW = HH * G.W / G.H, B = wordBox(W, st.mirror, G.W / G.H), mirX = st.mirror ? -1 : 1, sz = 1 / ps;
+      const c0x = (B.cx - c.pox) * HW / ps, c0y = VIEW.targetY + (B.cy - c.poy) * HH / ps, sW = B.hw * HW / ps;      // the word's middle and half width in the Mask's own space
+      const suck = e.suckT !== null ? t - e.suckT : -1, mx0 = mouth[0], my0 = mouth[1], d = W.d, n = W.n, yr = W.yr;
+      HUD.vbox = [X.scr([c0x, c0y + yr * sW, 0.5])[1], X.scr([c0x, c0y - (yr + (tier.bar ? 0.12 : 0)) * sW, 0.5])[1]];      // its top and bottom in the picture, for the 2D layer's words
+      // the colours are the WORD's own (fix round V-6), not the cover's: a ramp from the letters' feet to their heads, and
+      // the outline. The cover's colour only tints the embers.
+      const R4 = tier.ramp, EC = tier.edge, pulse = 1 + 0.30 * beat, soft = tier.soft ? 0.86 + 0.14 * Math.sin(t * 2.6) : 1;
+      for (let i = 0; i < n; i++) {
+        const o = i * 3, lx = d[o], ly = d[o + 1], kind = d[o + 2], a = h1(i * 1.91), b = h1(i * 3.13 + 2);
+        const dl = 0.11 * (lx + 1) + 0.09 * a, k = (w - dl) / 0.30; if (k <= 0) continue;
+        const land = k >= 1 ? Math.exp(-(w - dl - 0.30) * 6.5) : 1, pop = 1 + 0.10 * tier.slam * land * (k >= 1 ? 1 : 0);
+        let x = c0x + lx * mirX * sW * pop, y = c0y + ly * sW * pop;
+        if (k < 1) { const ek = 1 - Math.pow(1 - k, 3), arc = Math.sin(k * Math.PI); x = lerp(mx0, x, ek) + arc * 0.30 * (a - 0.5) * sW; y = lerp(my0, y, ek) + arc * 0.10 * sW; }
+        if (suck >= 0) { const s = clamp((suck - 0.10 * (1 - a) - 0.05 * (1 - lx)) / 0.30); if (s >= 1) continue; const s2 = s * s; x = lerp(x, mx0, s2) + Math.sin(s * Math.PI) * 0.22 * (b - 0.5) * sW; y = lerp(y, my0, s2); }
+        const tv = clamp(0.5 + ly / (2 * yr)), tw2 = 0.84 + 0.16 * Math.sin(t * (5 + 7 * b) + i), br = tier.br * (kind ? 2.9 : 1.85) * tw2 * (1 + 1.5 * land) * pulse * soft;
+        if (kind) put(x, y, 0.52, br * EC[0], br * EC[1], br * EC[2], 0.74 * sz);
+        else { const q = tv * 3, j = q >= 3 ? 2 : Math.floor(q), f = q - j, A0 = R4[j], A1 = R4[j + 1]; put(x, y, 0.5, br * (A0[0] + (A1[0] - A0[0]) * f), br * (A0[1] + (A1[1] - A0[1]) * f), br * (A0[2] + (A1[2] - A0[2]) * f), 1.0 * sz); }
+      }
+      const formed = ss(0.40, 0.75, w) * (suck >= 0 ? 1 - clamp(suck / 0.2) : 1);
+      if (formed <= 0.01) return;
+      // a body of light behind it, so it reads as one thing
+      const GL0 = tier.glow;
+      for (let j = 0; j < 7; j++) { const q = ((j + 0.5) / 7 * 2 - 1) * 0.88, g = (tier.soft ? 0.62 : 0.40) * formed * soft * (0.85 + 0.3 * beat); put(c0x + q * sW, c0y, 0.35, GL0[0] * g, GL0[1] * g, GL0[2] * g, 34 * sz); }
+      // FIRE: thin, tall, flickering tongues stand on the letters' top edges. Each site along the top is its own tongue that
+      // breathes on its own clock (a stream of small fast blobs in the field, which the field's noise tears into a flame).
+      const NT = W.tops.length, at = (i) => [c0x + d[i * 3] * mirX * sW, c0y + d[i * 3 + 1] * sW];
+      if (NT && tier.flame > 0.01) {
+        const K = 22;
+        for (let k = 0; k < K; k++) {
+          const i = W.tops[Math.floor((k + 0.5) / K * NT)], fl = Math.pow(0.5 + 0.5 * Math.sin(t * (5.3 + 3.1 * h1(k * 1.7)) + k * 2.9), 2) * (0.6 + 0.4 * Math.sin(t * 13.7 + k * 5.1));
+          const pk = clamp(0.30 + 0.85 * fl + 0.35 * beat), rate = 1.9 * tier.flame * formed * pk, nf = Math.floor(rate) + (rnd() < rate % 1 ? 1 : 0), p = at(i);
+          for (let j = 0; j < nf; j++) spawn(FIRE, p[0] + (rnd() - 0.5) * 0.018 * sW, p[1] - 0.01 * sW, 0.45, (rnd() - 0.5) * 0.18 * sz, (1.25 + 0.9 * rnd()) * (0.45 + 0.75 * pk) * sz, 0, 0.24 + 0.22 * rnd(), (0.115 + 0.045 * rnd()) * sz, FIRE_GOLD, 0.64);
+        }
+      }
+      if (rnd() < tier.ember * formed) { const p = at(Math.floor(rnd() * n)); spawn(SPARK, p[0], p[1], 0.5, (rnd() - 0.5) * 0.6 * sz, (0.7 + 1.5 * rnd()) * sz, 0, 0.8 + 0.7 * rnd(), 0.75 * sz, [lerp(fire[0], 1, 0.4), lerp(fire[1], 0.96, 0.4), lerp(fire[2], 0.86, 0.4)], 1); }
+      // FIRE: fireworks over the word
+      for (let i = e.works; i < tier.works; i++) { if (w < 0.55 + i * 0.40) break; e.works = i + 1; const p = [c0x + (h1(i * 3.7 + 1.3) * 2 - 1) * 0.8 * sW, c0y + (yr + 0.18 + 0.30 * h1(i * 5.3 + 2.1)) * sW, 0.4]; burst(p, 120, 2.7 * sz, i % 2 ? [1.0, 0.42, 0.06] : [1.0, 0.86, 0.5], { size: 1.1 * sz, life: 1.1, up: 0.1, white: 0.4 }); put(p[0], p[1], p[2], 24, 22, 18, 9 * sz); }
+      // GEM: glints that open and close on the outline (crimson rays, a white heart)
+      if (tier.glint && n > W.nFill) {
+        if (t - e.glintT > 0.07 && formed > 0.5) { e.glintT = t; e.glints.push({ i: W.nFill + Math.floor(rnd() * (n - W.nFill)), t0: t }); if (e.glints.length > 10) e.glints.shift(); }
+        for (const g of e.glints) { const q = (t - g.t0) / 0.42; if (q >= 1) continue; const f = Math.sin(Math.PI * q) * formed, p = at(g.i), L = 0.15 * f * sW; put(p[0], p[1], 0.56, 15 * f, 13 * f, 11 * f, 4.5 * sz); put(p[0], p[1], 0.56, 2.2 * f, 0.16 * f, 0.20 * f, 15 * sz); for (let r = 1; r <= 6; r++) { const v = r / 6, b2 = 8 * f * (1 - v) * (1 - v), gg = 0.20 + 0.6 * (1 - v), bb = 0.22 + 0.5 * (1 - v); put(p[0] + v * L, p[1], 0.56, b2, b2 * gg, b2 * bb, 1.1 * sz); put(p[0] - v * L, p[1], 0.56, b2, b2 * gg, b2 * bb, 1.1 * sz); put(p[0], p[1] + v * L * 1.35, 0.56, b2, b2 * gg, b2 * bb, 1.1 * sz); put(p[0], p[1] - v * L * 1.35, 0.56, b2, b2 * gg, b2 * bb, 1.1 * sz); } }
+      }
+      // SOLID: a bar of steel slams in under it
+      if (tier.bar) { const g = ss(0.30, 0.60, w) * (suck >= 0 ? 1 - clamp(suck / 0.25) : 1), yb = c0y - (yr + 0.085) * sW; if (g > 0.01) for (let i = 0; i < 260; i++) { const q = (i / 259 * 2 - 1) * g, br = 2.5 * (0.85 + 0.15 * Math.sin(t * 6 + i)) * pulse; put(c0x + q * sW * 0.97, yb + ((i % 3) - 1) * 0.011 * sW, 0.5, br * EC[0], br * EC[1], br * EC[2], 0.95 * sz); } }
+    }
+
     function hud() {
-      const t = st.t, B = st.boss, sc = st.score, hy = st.hype;
+      const t = st.t, B = st.boss, sc = st.score, hy = st.hype, e = st.eat, wu = e && e.wordT !== null ? t - e.wordT : -1;
       return {
         t, boss: B, vote: st.vote, missiles: HUD.missiles, strikes: HUD.strikes, cover: HUD.cover, anchors: HUD.anchors,
         pops: st.pops.filter((p) => t - p.t < 1.4),
         score: sc && t - sc.t0 < 4.6 ? { n: sc.n, u: t - sc.t0, kind: sc.kind } : null,
         hype: hy.rank >= 0 ? { rank: hy.rank, label: RANKS[hy.rank].label, k: hy.k, upAge: t - (hy.upAt === undefined ? -99 : hy.upAt), plusAge: t - hy.plusAt } : null,
-        song: st.song && t - st.song.t0 < 5 ? { title: st.song.title, u: t - st.song.t0 } : null,
+        // release A: the song's name while it is eaten; the verdict while the word is up (top / bottom: where the word sits, picture px)
+        eating: e && e.title && e.wordT === null && e.gulpT === null ? { title: e.title, a: ss(0.15, 0.5, t - e.t0) * (e.chewT !== null ? 1 - ss(0.25, 0.75, t - e.chewT) : 1) } : null,
+        // (fix round V-6) the small caption under the Mask while it chews and WAITS for his verdict; it goes when the word lands
+        chewing: e && e.wait && !e.word && !e.wantGulp && e.chewT !== null && e.wordT === null && e.gulpT === null ? { a: ss(0.5, 0.9, t - e.chewT), u: t - e.chewT } : null,
+        verdict: e && wu >= 0 && e.gulpT === null ? { word: e.word, title: e.title, u: wu, a: ss(0.30, 0.65, wu) * (e.suckT !== null ? 1 - ss(0, 0.25, t - e.suckT) : 1), top: HUD.vbox ? HUD.vbox[0] : null, bottom: HUD.vbox ? HUD.vbox[1] : null } : null,
         colour: st.own, fire: st.fire || GOLD,
       };
     }
     function cuesBetween(a, b) { return st.cues.filter((c) => c.t >= a && c.t < b); }
-    function busy() { const m = st.moves; return !!(m.goo.on || m.fire.on || m.melt.on || m.crack.on || m.eat.on || st.boss || (st.song && st.t - st.song.t0 < 2.6) || (st.score && st.t - st.score.t0 < 4.6)); }
-    return { puppet, release, setHype, hypePlus, song, songOff, score, boss, vote, hands, pre, post, hud, cuesBetween, flash, busy, setMirror, setBars, state: st, RANKS, MOVES };
+    function busy() { const m = st.moves; return !!(m.goo.on || m.fire.on || m.melt.on || m.crack.on || m.eat.on || st.boss || st.eat || (st.score && st.t - st.score.t0 < 4.6)); }
+    return { puppet, release, setHype, hypePlus, cover, songOff, eat, verdict, gulp, belch, score, boss, vote, hands, pre, post, hud, cuesBetween, flash, busy, setMirror, setBars, state: st, RANKS, MOVES };
   }
   /**
    * WARM ONLY (phase 2): the colours a cover may give the Mask. The house look is black / crimson / chrome, so a cover
@@ -821,7 +1079,7 @@
     return out;
   }
   /**
-   * The two main colours of a cover picture, linear RGB, for stage.song({ colours }): the picture is read at 24 x 24, its
+   * The two main colours of a cover picture, linear RGB, for stage.cover / stage.eat ({ colours }): the picture is read at 24 x 24, its
    * pixels fall into 12 bins of hue weighted by how rich and bright they are; the heaviest bin is the first colour, the
    * heaviest one at least two bins away the second. A grey picture gives []: the face then keeps its own colour.
    */
@@ -846,7 +1104,7 @@
     for (const o of order.slice(1)) { const dd = Math.min(Math.abs(o.i - order[0].i), 12 - Math.abs(o.i - order[0].i)); if (o.w > order[0].w * 0.08 && dd >= 2) { out.push(lin(bins[o.i])); break; } }
     return out;
   }
-  const api = { create, RANKS, MOVES, FLASH_GAP, coverColours, coloursOf, warmColours, warmHue };
+  const api = { create, RANKS, MOVES, FLASH_GAP, WORDS, EAT, TIER, wordBox, eatFlashes, coverColours, coloursOf, warmColours, warmHue };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.VTMaskV8 = api;
 })(typeof globalThis !== 'undefined' ? globalThis : self);

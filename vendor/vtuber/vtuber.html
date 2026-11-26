@@ -96,6 +96,21 @@
   #v8Fight:disabled { border-color: var(--line2); background: #120d0b; color: #8f8880; cursor: default; }
   #v8Fight:disabled small { color: var(--warn); }
   #v8Fight.run { background: linear-gradient(180deg, #ff3b57, #b3122c); box-shadow: 0 0 22px #e01f3d77; }
+  /* release A: EAT IT (crimson glass: a translucent crimson pane, a bright top edge, a soft glow) */
+  #v8Eat { position: relative; width: 100%; margin-top: 14px; padding: 15px 12px 12px; border-radius: 14px; border: 1px solid #ff6a80aa; color: #fff; overflow: hidden; font-family: "Chakra Petch", Bahnschrift, "Segoe UI", sans-serif; font-size: 24px; font-weight: 700; letter-spacing: .16em; background: linear-gradient(180deg, #ff3b5766 0%, #e01f3d40 46%, #7c102266 100%); box-shadow: inset 0 1px 0 #ffffff59, inset 0 -10px 22px #2a060c99, 0 0 20px #e01f3d55; -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); text-shadow: 0 1px 0 #5a0a16; }
+  #v8Eat::before { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 46%; background: linear-gradient(180deg, #ffffff2e, #ffffff00); pointer-events: none; }
+  #v8Eat small { display: block; margin-top: 5px; font: 600 12px/1.3 Consolas, "Segoe UI", monospace; letter-spacing: .04em; color: #ffd9de; text-shadow: none; }
+  #v8Eat:hover:not(:disabled) { box-shadow: inset 0 1px 0 #ffffff80, inset 0 -10px 22px #2a060c80, 0 0 28px #ff3b5788; }
+  #v8Eat:active:not(:disabled) { transform: translateY(1px); background: linear-gradient(180deg, #ff3b57aa 0%, #e01f3d73 46%, #7c102299 100%); }
+  #v8Eat:disabled { border-color: var(--line2); background: #120d0b; color: #8f8880; box-shadow: none; text-shadow: none; cursor: default; }
+  #v8Eat:disabled small { color: var(--dim); }
+  #v8Eat.busy { box-shadow: inset 0 1px 0 #ffffff59, 0 0 30px #ff3b5799; }
+  #v8EatLine { display: flex; gap: 8px; align-items: baseline; margin: 8px 2px 2px; font-size: 13.5px; line-height: 1.35; color: var(--text); }
+  #v8EatLine i { flex: none; width: 9px; height: 9px; border-radius: 50%; background: var(--dim); transform: translateY(-1px); }
+  #v8EatLine[data-state="ready"] i { background: #ffd27a; box-shadow: 0 0 8px #ffb224; }
+  #v8EatLine[data-state="busy"] i { background: var(--crimson2); box-shadow: 0 0 8px #ff3b57; }
+  #v8EatLine[data-state="no-cover"] i, #v8EatLine[data-state="not-linked"] i { background: var(--warn); }
+  #v8EatLine[data-state="off"], #v8EatLine[data-state="wait"] { color: var(--dim); }
   .voterow { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 8px; }
   .voterow button { min-height: 44px; font-weight: 700; }
   #v8Own input { width: 100%; margin-top: 8px; font: inherit; padding: 9px 10px; border-radius: 8px; border: 1px solid var(--line2); background: #120d0b; color: var(--text); }
@@ -194,6 +209,10 @@
     <h2>Puppet show</h2>
     <button class="plain switch" id="v8On" style="margin-top:0"><span>Puppet show</span><i></i></button>
     <p class="hint" id="v8OnHint"></p>
+    <!-- release A: the Mask eats the song at DONE / ADD TO AI RADIO on his site, or right now with EAT IT. Not tied to the switch above. -->
+    <button id="v8Eat"><span>EAT IT</span><small>Ctrl + Alt + 8 from any window (LIVE Link)</small></button>
+    <p id="v8EatLine" data-state="wait"><i></i><span id="v8EatText"></span></p>
+    <p class="hint">The Mask eats the song's cover when you press DONE or ADD TO AI RADIO on your site, chews on the beat, and spits your verdict as a word. EAT IT makes it eat now. This works with the Puppet show off.</p>
     <div id="v8Body">
       <div class="field">Moves</div>
       <div class="moves" id="v8Moves"></div>

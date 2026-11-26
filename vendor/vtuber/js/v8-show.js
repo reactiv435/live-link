@@ -5,15 +5,21 @@
 //
 //   const show = VTShow.create({ mask, engines: { VTBoss, VTFaceTriggers, VTVotes, VTHandPuppets }, bsNames, seed, pictureOf });
 //   show.settings({ on, chat, hands, rand })     the switches on the Mask card ("Puppet show", "Chat can trigger moves", ...)
-//   show.cmd({ action, name, ... }, t)           a button / a key: 'down' 'up' 'tap' (a move), 'fight', 'stop', 'vote', 'vote-stop'
-//   show.setShow(s, t)                           LIVE Link's show state (C3): song on air, cover, hype rank, his score
+//   show.cmd({ action, name, ... }, t)           a button / a key: 'down' 'up' 'tap' (a move), 'fight', 'stop', 'vote', 'vote-stop',
+//                                                'eat' (EAT IT: works with the Puppet show switched off)
+//   show.setShow(s, t)                           LIVE Link's show state (C3): song on air, cover, hype rank, his verdict, the song's finish
 //   show.ear(level, src, t)                      without LIVE Link: the Mask's own ear (is music playing in the PC sound?)
 //   show.event(ev, t) -> { v4 }                  a viewer event (C1, cleaned): taps, gifts, comments. v4 = also play the V4 effect
 //   show.face(f, t); show.mic(level, t)          a tracker frame ({ bs, mat, lm } or null) and the mic level: his face fights
 //   show.hands(list, o, t)                       the hand model's result (0..2 hands) for the angel / devil puppets
 //   show.step(t) -> status                       once per drawn frame: runs the engines, feeds the Mask, returns what the
 //                                                control page shows (cooldowns, the fight, the vote, why a button is grey)
-//   show.takeActs() -> [{ do, ... }]             what only the PAGE can do: load a cover ('song'), a size / colour for a while ('over')
+//   show.takeActs() -> [{ do, ... }]             what only the PAGE can do: load a cover ('cover' = the colour only, 'eat' = the Mask
+//                                                eats it), a size / colour for a while ('over')
+// RELEASE A, ALBUM EATING: a song going on air only gives the Mask its cover's colour. The cover is EATEN when the host
+// finishes the song on his site (LIVE Link's `finish`: DONE or ADD TO AI RADIO, once per song) or presses EAT IT. The
+// Mask then chews and waits up to 20 s for his verdict (`grade`), which it spits as a word (mask.verdict); no verdict,
+// or the next song going on air = a gulp (mask.gulp), never a word. None of this needs the Puppet show switch.
 // `mask` is mask/mask-live.js's object (or a stand-in with the same V8 calls in tests).
 // TikTok LIVE rules live here too: a comment that is eaten is cleaned first (no links, no @mentions, a word filter,
 // 26 characters), and nothing this file puts on screen asks for gifts (a test reads every string).
@@ -65,6 +71,22 @@
   // waited 3 s. Its taps count and fly, with the placeholder picture; it is never in the top 3 and never named.
   const CROWD = 'crowd';
   const isCrowd = (ev) => ev.type === 'like' && !ev.handle && !ev.uid;      // (also a v1 like, which has neither field: one display name must not collect a whole room's taps)
+
+  // ---------------------------------------------------------------- album eating (release A)
+  // wait: seconds the Mask chews and waits for his verdict; again: between two EAT IT presses; keep: how long a song that
+  // went off air uneaten can still be eaten by EAT IT; show: how long a spat word is the Mask's business
+  const EAT_TEXT = {
+    notLinked: 'LIVE Link is not sending the show, so DONE and ADD TO AI RADIO cannot reach the Mask. EAT IT eats a record.',
+    waiting: 'Waiting for a song. The one on air is eaten at DONE or ADD TO AI RADIO.',
+    ready: 'EAT READY: {song} is eaten at DONE or ADD TO AI RADIO.',
+    noCover: '{song} has no cover the Mask can load: it eats a glowing record at DONE or ADD TO AI RADIO.',
+    eaten: '{song} is eaten. EAT IT eats it again.',
+    chewing: 'Chewing. It spits your verdict when you give it; in {n} s it swallows.',
+    spat: 'It spat your verdict: {word}.',
+    fight: 'A boss fight is on. EAT IT works when it is over.',
+  };
+  const EAT = { wait: 20, again: 3, keep: 90, show: 7, replay: 600, text: EAT_TEXT };      // replay: the same song on air again this long after its eat can be eaten again
+  const idOf = (song) => (song ? song.id || song.title || 'song' : null);
 
   // ---------------------------------------------------------------- votes he can call
   // Colours: warm only (the house look), plus Hot Pink by name. Every `action` is applied by this file.
@@ -120,6 +142,8 @@
       move: {}, queue: [], acts: [], comments: [], lastChatAt: -1e9, lastGiftAt: -1e9, perViewer: new Map(), giftFlip: false,
       bs: null, vs: null, voteDef: null, note: '', noteAt: -1e9, t: 0, lastFight: null, counts: { chatMoves: 0, giftMoves: 0, votes: 0, taps: 0, trig: {} },
       viewers: new Map(),
+      // album eating: the songs seen on air (id -> { title, cover }), the ids already eaten, the eat in progress
+      songs: new Map(), eaten: new Map(), owed: new Map(), finSeen: [], eat: null, eatAt: -1e9, showN: 0, lastId: null, offAt: -1e9,
     };
     for (const m of MOVES) S.move[m] = { held: false, until: 0, coolAt: -1e9 };
     const note = (text, t) => { S.note = text; S.noteAt = t; };
@@ -169,7 +193,9 @@
 
     // ---- commands from the buttons, the page's keys and LIVE Link's global keys
     function cmd(c, t) {
-      if (!c || typeof c !== 'object' || !S.cfg.on) return false;
+      if (!c || typeof c !== 'object') return false;
+      if (c.action === 'eat') { S.t = t; return eatNow(t); }             // EAT IT: not a puppet move, so it does not need the Puppet show switch
+      if (!S.cfg.on) return false;
       S.t = t;
       const name = MOVES.includes(c.name) ? c.name : '';
       if (c.action === 'down' && name) return fireMove(name, { hold: name === 'goo' || name === 'fire', t });
@@ -217,20 +243,97 @@
     function setShow(s, t) {
       if (!s || typeof s !== 'object') { S.show = null; return; }
       S.show = s; S.showAt = t;
+      // a finish that is already there in the very first state this page sees is not news (the page was loaded again
+      // inside the 20 s LIVE Link keeps it): that song is not eaten a second time
+      if (++S.showN === 1 && s.finish && s.finish.id) { S.eaten.set(s.finish.id, t); S.finSeen.push(s.finish.id); }
+    }
+    const freshShow = (t) => (S.show && t - S.showAt < 15 ? S.show : null);
+    /** his verdict for THIS song: the word LIVE Link sends with the song it is for (on air or just ended), or the word on that song's finish */
+    const gradeFor = (id, s) => (!id || !s ? null : s.grade && s.song && idOf(s.song) === id ? s.grade : s.finish && s.finish.id === id && s.finish.grade ? s.finish.grade : null);
+    /** what is known of a song by its id (title, cover): what the message says right now when it has the cover, else what was seen on air. Never another song's. */
+    function songOf(id, s) {
+      const now = id && s && s.song && idOf(s.song) === id ? s.song : null, kept = (id && S.songs.get(id)) || null;
+      return now && now.cover ? { title: now.title || (kept ? kept.title : ''), cover: now.cover } : kept || (now ? { title: now.title || '', cover: null } : null);
+    }
+    /** the Mask eats now: the page loads the cover and feeds the stage. wait = it then chews until mask.verdict / mask.gulp */
+    function startEat(o, t) {
+      const wait = !!o.id && !o.grade && !o.noWait;
+      if (o.id) { S.eaten.delete(o.id); S.eaten.set(o.id, t); if (S.eaten.size > 60) S.eaten.delete(S.eaten.keys().next().value); S.owed.delete(o.id); }
+      S.acts.push({ do: 'eat', id: o.id || null, title: o.title || '', cover: o.cover || null, grade: o.grade || null, why: o.why, wait });
+      S.eatAt = t;
+      S.eat = wait ? { id: o.id, t0: t, until: t + EAT.wait, said: false, word: '', title: o.title || '' } : o.grade ? { id: o.id, t0: t, until: t + EAT.show, said: true, word: o.grade, title: o.title || '' } : null;
+    }
+    /** EAT IT (the button, LIVE Link's key): the song on air, else the one that just went off air uneaten, else a record */
+    function eatNow(t) {
+      if (t - S.eatAt < EAT.again || busyFight()) return false;
+      const s = freshShow(t), air = s && s.onAir && s.song ? idOf(s.song) : null;
+      const id = air || (S.lastId && t - S.offAt < EAT.keep && !S.eaten.has(S.lastId) ? S.lastId : null), sg = id ? songOf(id, s) : null;
+      startEat({ id, title: sg ? sg.title : '', cover: sg ? sg.cover : null, grade: gradeFor(id, s), why: 'button' }, t);
+      return true;
     }
     function followShow(t) {
-      const s = S.show && t - S.showAt < 15 ? S.show : null, on = S.cfg.on;
-      // the song: a new one on air = its cover is eaten (the page loads the picture); off air = the Mask's own colours again
-      const id = s && s.onAir && s.song ? (s.song.id || s.song.title || 'song') : null;
-      if (id !== S.songId && !(id && !on)) {      // (while the puppet show is off a song is not taken: switched on mid-song, its cover is still eaten)
+      const s = freshShow(t), on = S.cfg.on;
+      // the song: a new one on air = its cover gives the Mask its colour (the page loads the picture; nothing is eaten
+      // yet); off air = the Mask's own colours again. Not tied to the Puppet show switch any more.
+      const id = s && s.onAir && s.song ? idOf(s.song) : null;
+      if (id !== S.songId) {
+        if (!id) { S.lastId = S.songId; S.offAt = t; }
         S.songId = id;
-        if (id) S.acts.push({ do: 'song', id, title: s.song.title || '', cover: s.song.cover || null });
-        else S.acts.push({ do: 'songOff' });
+        if (id) {
+          // (fix round V-4: the same song on air again more than 10 minutes after it was eaten is a replay: it can be eaten again)
+          if (S.eaten.has(id) && t - S.eaten.get(id) > EAT.replay) { S.eaten.delete(id); S.owed.delete(id); }
+          S.songs.delete(id); S.songs.set(id, { title: s.song.title || '', cover: s.song.cover || null }); if (S.songs.size > 8) S.songs.delete(S.songs.keys().next().value);
+          S.acts.push({ do: 'cover', id, title: s.song.title || '', cover: s.song.cover || null });
+        } else S.acts.push({ do: 'songOff' });
+      } else if (id) {
+        // (fix round V-1: LIVE Link's first message for a song may have no cover and no title yet; they follow on a later
+        // message for the SAME id. What is learned is kept, and the page is told again.)
+        const k = S.songs.get(id), cv = s.song.cover || null, ti = s.song.title || '';
+        if (k && ((cv && cv !== k.cover) || (ti && ti !== k.title))) { k.cover = cv || k.cover; k.title = ti || k.title; S.acts.push({ do: 'cover', id, title: k.title, cover: k.cover }); }
       }
+      // THE EAT: the host finished the song on his site (DONE = 'played', ADD TO AI RADIO = 'radio'). Once per song:
+      // both buttons, or EAT IT before them, are one eat. A song cleared without either is not eaten.
+      const f = s && s.finish && s.finish.id ? s.finish : null, firstFin = !!(f && !S.finSeen.includes(f.id));
+      if (firstFin) { S.finSeen.push(f.id); if (S.finSeen.length > 60) S.finSeen.shift(); }
+      if (f && !S.eaten.has(f.id)) {
+        const sg = songOf(f.id, s), next = !!(id && id !== f.id), g = gradeFor(f.id, s);
+        // next = another song is already on air. The verdict he gave THIS song before DONE comes with its finish and is
+        // spat with its title (V-3: the climax of its review); with no verdict yet: the bite, a gulp, and no word later.
+        startEat({ id: f.id, title: sg ? sg.title : '', cover: sg ? sg.cover : null, grade: g, why: f.kind, noWait: next && !g }, t);
+      }
+      // ... and what comes out: his verdict as a word when it lands inside the wait; the next song or no verdict = a gulp.
+      // A word that is already out stays for its few seconds.
+      const e = S.eat;
+      if (e) {
+        if (e.said) { if (t >= e.until) S.eat = null; }
+        else if (id && id !== e.id) { mask.gulp(); S.eat = null; }
+        else {
+          const g = t - e.t0 >= 0.25 ? gradeFor(e.id, s) : null;
+          if (g) { mask.verdict(g); e.said = true; e.word = g; e.until = t + EAT.show; }
+          else if (t >= e.until) {
+            // (V-2: eaten in the middle of its song (ADD TO AI RADIO, EAT IT) and swallowed with no word: the word is OWED)
+            mask.gulp(); if (id === e.id) { S.owed.set(e.id, { title: e.title }); if (S.owed.size > 20) S.owed.delete(S.owed.keys().next().value); } S.eat = null;
+          }
+        }
+      }
+      // V-2, the owed word: his verdict lands while that song is still on air, or as it ends (its message, or its finish
+      // seen for the first time): no second bite, a belch and the word with the song's title. Never once another song
+      // has been on air for a while (a verdict that arrives then gives no word).
+      if (!S.eat && S.owed.size) {
+        for (const [oid, o] of S.owed) {
+          const g = gradeFor(oid, s), ok = g && (id === oid || !id || (firstFin && f.id === oid));
+          if (!ok) continue;
+          S.owed.delete(oid); if (typeof mask.belch === 'function') mask.belch(g, { title: o.title || '' });
+          S.eat = { id: oid, t0: t, until: t + EAT.show, said: true, word: g, title: o.title || '' }; S.eatAt = t; break;
+        }
+        if (id) for (const oid of Array.from(S.owed.keys())) if (oid !== id) S.owed.delete(oid);
+      }
+      // A LIVE LINK 2.3.0 sends his score as a number and no word: it shows as it did (a number, fire or goo). With the
+      // word (`grade`) the number is not shown: the verdict is what the Mask spits after the eat.
       // his score: once per song and number
-      if (id && on && s.score !== null && s.score !== undefined) { const k = id + '|' + s.score; if (k !== S.scoreKey) { S.scoreKey = k; mask.score(s.score); } }
+      if (id && on && s.score !== null && s.score !== undefined && !s.grade) { const k = id + '|' + s.score; if (k !== S.scoreKey) { S.scoreKey = k; mask.score(s.score); } }
       // his grade for the song that just ENDED (LIVE Link: onAir false, the song and a score, sent for 10 s): shown once
-      if (!id && on && s && !s.onAir && s.song && s.score !== null && s.score !== undefined) { const k = (s.song.id || s.song.title || 'song') + '|' + s.score; if (k !== S.scoreKey) { S.scoreKey = k; mask.score(s.score); } }
+      if (!id && on && s && !s.onAir && s.song && s.score !== null && s.score !== undefined && !s.grade) { const k = idOf(s.song) + '|' + s.score; if (k !== S.scoreKey) { S.scoreKey = k; mask.score(s.score); } }
       // the hype rank: LIVE Link's 0..6 (0 = nothing yet, 1 = Warming Up ... 6 = MYTHIC) -> the Mask's -1..5; each further MYTHIC (`mythic` counts the EXTRA ones: 0 at 8,000, 1 at 16,000 ...) = a flare
       const rank = s && s.onAir && on ? clamp((s.hype ? s.hype.rank : 0) - 1, -1, 5) : -1, mythic = s && s.hype ? s.hype.mythic || 0 : 0;
       const wasMythic = S.hypeRank === 5;
@@ -351,6 +454,7 @@
       }
       const bs = S.bs, v = S.vs;
       return {
+        eat: eatStatus(t),
         on: S.cfg.on, song: S.songOn, songSrc: S.songSrc, title: S.show && S.songOn && S.show.song ? S.show.song.title || '' : '',
         hype: S.hypeRank, moves: mv, attack: f,
         fight: bs && bs.phase !== 'idle' ? { phase: bs.phase, boss: Math.round(bs.boss.hp * 100), chat: Math.round(bs.chat.hp * 100), stage: bs.boss.stage, left: Math.round(bs.fightLeft || 0), tappers: bs.chat.tappers || 0, winner: bs.ending ? bs.ending.winner : undefined } : null,
@@ -360,6 +464,17 @@
         face: t - S.faceAt < 1, note: t - S.noteAt < 8 ? S.note : '', counts: S.counts,
       };
     }
+    /** why the Mask will or will not eat, in one line, for the window (release A): ready | waiting | no-cover | not-linked */
+    function eatStatus(t) {
+      const s = freshShow(t), air = s && s.onAir && s.song ? s.song : null, e = S.eat;
+      const name = (sg) => { const x = Array.from(String((sg && sg.title) || '').replace(/["“”]/g, '')).slice(0, 36).join('').trim(); return x ? '"' + x + '"' : 'The song on air'; };
+      const state = !s ? 'not-linked' : !air ? 'waiting' : !air.cover ? 'no-cover' : 'ready';
+      let reason = !s ? EAT_TEXT.notLinked : !air ? EAT_TEXT.waiting : S.eaten.has(idOf(air)) ? EAT_TEXT.eaten.replace('{song}', name(air)) : (air.cover ? EAT_TEXT.ready : EAT_TEXT.noCover).replace('{song}', name(air));
+      if (busyFight()) reason = EAT_TEXT.fight;
+      else if (e && e.said) reason = EAT_TEXT.spat.replace('{word}', e.word.toUpperCase());
+      else if (e) reason = EAT_TEXT.chewing.replace('{n}', String(Math.max(1, Math.ceil(e.until - t))));
+      return { state, reason, busy: !!e, eaten: !!(air && S.eaten.has(idOf(air))) };
+    }
     return {
       settings(c) { if (!c || typeof c !== 'object') return; for (const k of ['on', 'chat', 'hands', 'rand', 'swap']) if (typeof c[k] === 'boolean') S.cfg[k] = c[k]; if (puppets && puppets.setSourceMirrored) puppets.setSourceMirrored(S.cfg.swap);      // (swap: the angel showed on his left hand)
         if (!S.cfg.on) { for (const m of MOVES) releaseMove(m, S.t); S.queue = []; } },
@@ -368,5 +483,5 @@
       get songOn() { return S.songOn; }, state: S, boss, votes, trig, puppets,
     };
   }
-  return { create, createEar, cleanComment, chatWord, giftMove, viewerOf, customVote, VOTES, MOVES, MOVE_LABEL, CHAT_WORDS, LIMITS, COOL, TAP_LEN, OVER };
+  return { create, createEar, cleanComment, chatWord, giftMove, viewerOf, customVote, VOTES, MOVES, MOVE_LABEL, CHAT_WORDS, LIMITS, COOL, TAP_LEN, OVER, EAT };
 });

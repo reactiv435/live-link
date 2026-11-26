@@ -101,7 +101,17 @@
     return out;
   }
   const HYPE_LABELS = ['', 'WARMING UP', 'HEATING UP', 'ON FIRE', 'WILDFIRE', 'LEGENDARY', 'MYTHIC'];
-  /** C3, the show state: { type: 'show', onAir, song: { id, title, cover } | null, hype: { taps, rank, label, mythic }, score, at } or null */
+  // RELEASE A (album eating): two ADDITIVE fields of the same v 2 message. `grade` = his verdict as a word, `finish` =
+  // the song was finished on his site (DONE = 'played', ADD TO AI RADIO = 'radio'). A LIVE Link 2.3.0 sends neither:
+  // both then read null and nothing is eaten.
+  const GRADES = ['fire', 'gem', 'solid', 'promising'], FINISH_KINDS = ['played', 'radio'];
+  function finishOf(f) {
+    if (!f || typeof f !== 'object' || Array.isArray(f) || !FINISH_KINDS.includes(f.kind)) return null;
+    const id = text(typeof f.id === 'number' ? String(f.id) : f.id, 64);
+    // (fix round: `grade` = the verdict word of THAT song, as LIVE Link knows it while the finish is kept; null when absent or odd)
+    return id ? { id, kind: f.kind, at: int(f.at, 0, 1e14) || 0, grade: typeof f.grade === 'string' && GRADES.includes(f.grade) ? f.grade : null } : null;
+  }
+  /** C3, the show state: { type: 'show', onAir, song: { id, title, cover } | null, hype: { taps, rank, label, mythic }, score, at, grade, finish } or null */
   function cleanShow(e) {
     if (!e || typeof e !== 'object' || Array.isArray(e) || e.v !== 2 || e.type !== 'show') return null;
     const s = e.song && typeof e.song === 'object' && !Array.isArray(e.song) ? e.song : null, h = e.hype && typeof e.hype === 'object' ? e.hype : {};
@@ -112,12 +122,14 @@
       hype: { taps: int(h.taps, 0, 1e9) || 0, rank, label: HYPE_LABELS[rank], mythic: int(h.mythic, 0, 9999) || 0 },
       score: typeof e.score === 'number' && Number.isFinite(e.score) ? Math.max(0, Math.min(100, Math.round(e.score))) : null,
       at: int(e.at, 0, 1e14) || 0,
+      grade: typeof e.grade === 'string' && GRADES.includes(e.grade) ? e.grade : null,
+      finish: finishOf(e.finish),
     };
   }
   const PUPPET_MOVES = ['goo', 'fire', 'melt', 'crack', 'eat'];
-  /** C4, a key pressed in LIVE Link: { type: 'control', action: 'puppet' | 'fight' | 'vote', name } or null */
+  /** C4, a key pressed in LIVE Link: { type: 'control', action: 'puppet' | 'fight' | 'vote' | 'eat', name } or null ('eat' = EAT IT: the Mask eats the song's cover now) */
   function cleanControl(e) {
-    if (!e || typeof e !== 'object' || Array.isArray(e) || e.v !== 2 || e.type !== 'control' || !['puppet', 'fight', 'vote'].includes(e.action)) return null;
+    if (!e || typeof e !== 'object' || Array.isArray(e) || e.v !== 2 || e.type !== 'control' || !['puppet', 'fight', 'vote', 'eat'].includes(e.action)) return null;
     if (e.action === 'puppet' && !PUPPET_MOVES.includes(e.name)) return null;
     return { type: 'control', action: e.action, name: e.action === 'puppet' ? e.name : '' };
   }
@@ -193,5 +205,5 @@
   /** OBS's meter (a multiplier, 0..1 and above) as a level 0..1: -50 dB and below = 0, -6 dB and above = 1 */
   const meterLevel = (mul) => { const db = 20 * Math.log10(Math.max(1e-6, Number(mul) || 0)); return Math.max(0, Math.min(1, (db + 50) / 44)); };
 
-  return { BS_NAMES, MAGIC, FACE_BYTES: FULL, packFace, unpackFace, EVENT_TYPES, cleanEvent, cleanShow, cleanControl, cleanAny, picUrl, PIC_HOSTS, COVER_HOSTS, HYPE_LABELS, PUPPET_MOVES, EFFECTS, EFFECT_LABEL, cleanGiftRows, effectFor, TRY_EVENTS, TRY_LABEL, levelFollower, meterLevel };
+  return { BS_NAMES, MAGIC, FACE_BYTES: FULL, packFace, unpackFace, EVENT_TYPES, cleanEvent, cleanShow, cleanControl, cleanAny, picUrl, PIC_HOSTS, COVER_HOSTS, HYPE_LABELS, GRADES, PUPPET_MOVES, EFFECTS, EFFECT_LABEL, cleanGiftRows, effectFor, TRY_EVENTS, TRY_LABEL, levelFollower, meterLevel };
 });

@@ -1049,6 +1049,12 @@
     if (k && k.song) { v8Say(k.songSrc === 'ear' ? V8T.fightEar : V8T.fightSong); return; }
     v8Cmd({ action: 'fight' });
   }
+  /** RELEASE A, EAT IT: the Mask eats the song now. The Mask must be picked and the avatar on; the Puppet show switch is not asked. */
+  function v8Eat() {
+    if (KILL.v8 || !settings.mask) return;
+    if (!L.eatLine({ on: live.on, ack: live.on ? v8Ack() : null }).can) return;
+    v8.eatAt = performance.now(); v8Cmd({ action: 'eat' }); renderV8();
+  }
   function v8Vote() {
     if (KILL.v8 || !settings.mask || !settings.v8.on) return;
     if (!live.on) { v8Say(V8T.off); return; }
@@ -1085,6 +1091,7 @@
     $('v8Hands').addEventListener('click', () => { v8Set({ hands: !settings.v8.hands }); $('v8Hands').blur(); });
     $('v8Swap').addEventListener('click', () => { v8Set({ swap: !settings.v8.swap }); $('v8Swap').blur(); });
     $('v8Fight').addEventListener('click', () => { v8Fight(); $('v8Fight').blur(); });
+    $('v8Eat').addEventListener('click', () => { v8Eat(); $('v8Eat').blur(); });
     $('v8Vote').addEventListener('click', () => { v8Vote(); $('v8Vote').blur(); });
     $('v8KeysReset').addEventListener('click', () => { settings.v8Keys = { ...L.V8_KEYS }; v8.keyWait = ''; save(); renderV8(); $('v8KeysReset').blur(); });
     for (const a of L.V8_ACTIONS) {
@@ -1119,6 +1126,10 @@
     if (card.hidden) return;
     const c = settings.v8, k = live.on ? v8Ack() : null, age = k ? (performance.now() - st.maskAckAt) / 1000 : 0, keys = settings.v8Keys;
     $('v8On').classList.toggle('sel', c.on); $('v8OnHint').textContent = V8T.onHint; $('v8Body').hidden = !c.on;
+    // release A: EAT IT and why the Mask will or will not eat (drawn before the return below: it works with the Puppet show off)
+    const el = L.eatLine({ on: live.on, ack: k }), pressed = performance.now() - (v8.eatAt || -1e9) < 3000;
+    $('v8Eat').disabled = !el.can || pressed; $('v8Eat').classList.toggle('busy', el.state === 'busy');
+    $('v8EatLine').dataset.state = el.state; if ($('v8EatText').textContent !== el.text) $('v8EatText').textContent = el.text;
     if (!c.on) { $('v8Note').textContent = ''; return; }
     const fighting = !!(k && k.fight), attack = !!(k && k.attack);
     for (const b of $('v8Moves').children) {

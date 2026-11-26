@@ -1352,6 +1352,72 @@
       VZ.move[3] += dt * (0.30 + 0.70 * A.level + 0.35 * A.bass + 1.8 * kv);            // the black hole's disc and the helix turn (whole turns of every lane fit in 4 pi)
       VZ.move[0] %= 1; VZ.move[1] %= 25.132741; VZ.move[3] %= 12.566370614; if (VZ.move[2] > 30000) VZ.move[2] -= 30000;      // kept small: hours of show must not wear the numbers out
     }
+    // ---- V9 viz fix: THE EYES IN THE VISUALIZER. His face is gone, his eyes stay: two hypnotic vortexes at his tracked eyes,
+    // BEHIND the formation (drawn before its points and set back in depth, so the visuals pass in front of them). Each
+    // is a funnel of light seen from its mouth: two spiral arms (crimson and gold; the gold one takes the cover's warm
+    // colour once the Mask has eaten a song) that wind down into a white-hot core, pulses of light running down the
+    // arms, a dashed rim turning the other way, sparks in orbit. They turn with the music (the same sum over the song
+    // that turns the black hole's disc), swell on a kick, shut with his blinks, lean with his gaze, and burn hotter as
+    // the show's hype climbs (heat = the stage's eyeHeat). k = how much of them is there (the Visualizer's own ease).
+    const VX_CRIM = [1.0, 0.050, 0.030], VX_GOLD = [1.0, 0.50, 0.10], VX_HOT = [1.0, 0.93, 0.80];
+    const vxh = (x) => { const v = Math.sin(x * 127.1 + 311.7) * 43758.5453; return v - Math.floor(v); };
+    function vortexEyes(k, t, A, mdl, sc, fire, heat) {
+      let n = 0;
+      const put = (x, y, z, r, g, b, sz) => { if (n >= FXMAX) return; const o = n * 7; fxData[o] = x; fxData[o + 1] = y; fxData[o + 2] = z; fxData[o + 3] = r; fxData[o + 4] = g; fxData[o + 5] = b; fxData[o + 6] = sz; n++; };
+      const sm = (a, b, x) => { const q = Math.min(1, Math.max(0, (x - a) / (b - a))); return q * q * (3 - 2 * q); };
+      const kick = VZ.env[0], drop = VZ.env[1], turn = VZ.move[3], gold = fire || VX_GOLD;
+      const R = 0.66 * (0.72 + 0.28 * k) * (1 + 0.09 * kick + 0.04 * A.bass + 0.07 * heat), turns = 1.30 + 0.70 * k + 0.22 * kick, DEEP = 0.95, BACK = -1.25;
+      const lum = 2.6 * k * (0.62 + 0.30 * A.level + 0.50 * kick + 0.35 * drop + 0.40 * heat);
+      // (lead's look note: bigger (1.6x: two at a full 2x do not fit side by side in a 9:16 picture), and their PLACE is damped toward the formation's middle: each eye sits 0.6 of the
+      // way from his tracked eye to its own side of the middle, so a moving head only nudges them. Blinks, the music, the heat: as before.)
+      const VX_DAMP = 0.6, wc = core.eyes.map((e) => [mdl[0] * e.c[0] + mdl[4] * e.c[1] + mdl[8] * e.c[2] + mdl[12], mdl[1] * e.c[0] + mdl[5] * e.c[1] + mdl[9] * e.c[2] + mdl[13]]), midX = wc.length > 1 ? (wc[0][0] + wc[1][0]) / 2 : 0;
+      for (let ei = 0; ei < core.eyes.length; ei++) {
+        const side = wc.length > 1 && Math.abs(wc[ei][0] - midX) > 1e-4 ? Math.sign(wc[ei][0] - midX) : ei === 0 ? -1 : 1, shx = (side * 0.80 * sc - wc[ei][0]) * VX_DAMP, shy = (VIEW.targetY + 0.30 * sc - wc[ei][1]) * VX_DAMP;
+        const e = core.eyes[ei], dir = ei === 0 ? 1 : -1, lid = sm(0.04, 0.34, e.open), sq = 0.05 + 0.95 * lid, L = lum * (0.10 + 0.90 * lid);
+        const gx = Math.max(-1, Math.min(1, e.gaze[0])) * 0.16, gy = Math.max(-1, Math.min(1, e.gaze[1])) * 0.12, spin = turn * 2;      // (the right eye is the left one in a mirror: they turn against each other)
+        // a point of the funnel: (radius, angle, how far down 0..1) -> the world. The deep end leans to where he looks.
+        const at = (r, a, u) => { const d = Math.pow(u, 1.6), p = [e.c[0] + dir * r * Math.cos(a) + gx * d, e.c[1] + r * Math.sin(a) * sq + gy * d, e.c[2] - DEEP * d]; return [mdl[0] * p[0] + mdl[4] * p[1] + mdl[8] * p[2] + mdl[12] + shx, mdl[1] * p[0] + mdl[5] * p[1] + mdl[9] * p[2] + mdl[13] + shy, mdl[2] * p[0] + mdl[6] * p[1] + mdl[10] * p[2] + mdl[14] + BACK]; };
+        // the arms: a spine of light (so the spiral reads, the hypnotist's line), and round it the arm itself, made the way
+        // the Mask is made: fine points scattered across its width that drift down the funnel and are swallowed
+        const NA = 170, ND = 190, drift = turn * 0.159155;      // (0.159155 = 2 / 4 pi: whole trips of an arm in the song's sum, so a point never jumps)
+        for (let arm = 0; arm < 2; arm++) {
+          const c0 = arm ? gold : VX_CRIM, a0 = arm * Math.PI - spin;      // (minus: the bands run INWARD, down the funnel)
+          const rad = (u) => R * (0.035 + 0.965 * Math.pow(1 - u, 1.22));
+          for (let i = 0; i < NA; i++) {
+            const u = (i + 0.5) / NA, a = a0 + turns * 6.2832 * u;
+            const pulse = 0.72 + 0.28 * Math.pow(0.5 + 0.5 * Math.sin(6.2832 * 3.0 * u - 3.0 * turn + arm * 2.1), 2.0);
+            const w = sm(0.0, 0.16, u) * (0.30 + 0.70 * Math.pow(u, 1.15)) * pulse, hot = sm(0.42, 1.0, u), br = 0.40 * L * w;
+            const p = at(rad(u), a, u), cr = c0[0] + (VX_HOT[0] - c0[0]) * hot, cg = c0[1] + (VX_HOT[1] - c0[1]) * hot, cb = c0[2] + (VX_HOT[2] - c0[2]) * hot;
+            put(p[0], p[1], p[2], cr * br, cg * br, cb * br, (2.3 - 1.1 * u) * sc);
+            if (i % 3 === 1) put(p[0], p[1], p[2], c0[0] * br * 0.26, c0[1] * br * 0.26, c0[2] * br * 0.26, (11.0 - 6.0 * u) * sc);      // the arm's own glow
+          }
+          for (let i = 0; i < ND; i++) {
+            const h = vxh(i * 1.37 + arm * 31.7 + ei * 9.1), h2 = vxh(i * 2.91 + arm * 17.3 + 5.0), h3 = vxh(i * 4.30 + arm * 7.7 + 9.0), h4 = vxh(i * 6.10 + arm * 3.3 + 2.0);
+            const u = (h + drift) % 1, off = (h2 + h3 - 1), a = a0 + turns * 6.2832 * u + off * 0.34 * (1 - 0.5 * u), r = rad(u) * (1 + 0.20 * (h4 - 0.5) * (1 - u));
+            const tw = 0.60 + 0.40 * Math.sin(t * (2.5 + 6.0 * h4) + i * 2.3), fall = 1 - Math.abs(off), hot = Math.max(sm(0.60, 1.0, u), h4 > 0.86 ? 0.75 : 0);
+            const br = L * sm(0.0, 0.10, u) * sm(1.0, 0.94, u) * (0.40 + 0.90 * u) * fall * fall * (0.45 + 3.0 * h4 * h4 * h4) * tw, p = at(r, a, u);
+            put(p[0], p[1], p[2], (c0[0] + (VX_HOT[0] - c0[0]) * hot) * br, (c0[1] + (VX_HOT[1] - c0[1]) * hot) * br, (c0[2] + (VX_HOT[2] - c0[2]) * hot) * br, (0.85 + 0.95 * h4) * sc);
+          }
+        }
+        // the rim: dashes that turn against the arms
+        for (let i = 0; i < 150; i++) {
+          const a = i / 150 * 6.2832, d = Math.pow(0.5 + 0.5 * Math.sin(a * 5.0 + 1.5 * turn), 2.0), br = L * (0.05 + 0.17 * d) * (0.8 + 0.5 * kick), p = at(R * 1.085, a, 0);
+          put(p[0], p[1], p[2], VX_CRIM[0] * br + gold[0] * br * 0.35 * d, VX_CRIM[1] * br + gold[1] * br * 0.35 * d, VX_CRIM[2] * br + gold[2] * br * 0.35 * d, (0.75 + 0.35 * d) * sc);
+        }
+        // sparks in orbit: the nearer the core, the faster (whole and half turns of the song's sum, so they never jump)
+        for (let i = 0; i < 40; i++) {
+          const h = vxh(i * 1.37 + ei * 9.1 + 77.0), h2 = vxh(i * 2.91 + 55.0), h3 = vxh(i * 4.30 + 99.0), u = 0.04 + 0.90 * h * h, r = R * (1 - u) * 1.02, a = h2 * 6.2832 - turn * 0.5 * Math.round(2 + 5 * u);
+          const tw = 0.55 + 0.45 * Math.sin(t * (2.0 + 7.0 * h3) + i * 2.3), br = L * (0.25 + 1.5 * h3 * h3 * h3) * tw * (0.5 + 0.5 * u), p = at(r, a, u * 0.9);
+          put(p[0], p[1], p[2], (gold[0] * 0.6 + 0.4) * br, (gold[1] * 0.6 + 0.4 * 0.9) * br, (gold[2] * 0.6 + 0.4 * 0.7) * br, (0.75 + 0.6 * h3) * sc);
+        }
+        // the core: white-hot, in a gold glow, in a wide breath of crimson (the well of the funnel)
+        const pc = at(0, 0, 1), cb2 = L * (1.0 + 0.5 * A.beat);
+        put(pc[0], pc[1], pc[2], VX_CRIM[0] * 0.07 * cb2, VX_CRIM[1] * 0.07 * cb2, VX_CRIM[2] * 0.07 * cb2, 34 * sc * (0.75 + 0.25 * sq));
+        put(pc[0], pc[1], pc[2], gold[0] * 0.75 * cb2, gold[1] * 0.75 * cb2, gold[2] * 0.75 * cb2, 12.5 * sc * (0.6 + 0.4 * sq));
+        put(pc[0], pc[1], pc[2], 6.5 * cb2, 5.9 * cb2, 4.9 * cb2, 4.0 * sc * (0.5 + 0.5 * sq));
+      }
+      return n;
+    }
     const VIEW = { fov: 19.5 * Math.PI / 180, dist: 14, targetY: -0.60, halfH: 2.405 };
     const DMG0 = new Float32Array(64), V80 = [0, 0, 0, 0], V8FIRE0 = [1.0, 0.55, 0.12];
     function draw(look, S) {
@@ -1448,6 +1514,12 @@
         for (let i = 0; i < nF; i++) { pd[i * 4] = P[i * 3]; pd[i * 4 + 1] = P[i * 3 + 1]; pd[i * 4 + 2] = P[i * 3 + 2]; pd[i * 4 + 3] = act[i]; nd[i * 4] = Nn[i * 3]; nd[i * 4 + 1] = Nn[i * 3 + 1]; nd[i * 4 + 2] = Nn[i * 3 + 2]; }
         pt.posTex.set(pd); pt.nrmTex.set(nd);
         gl.depthMask(false); gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE);
+        // V9 viz fix: his eyes in the Visualizer, two vortexes, BEFORE the formation's points (the visuals pass in front). Nothing at all with his face on.
+        if (VIZ > 0.25 && S.vizEyes !== false) {
+          const vk = Math.min(1, (VIZ - 0.25) / 0.70), nV = vortexEyes(vk * vk * (3 - 2 * vk), t, A, model, sc, V8U ? V8U.fire : null, V8U && V8U.eyeHeat ? V8U.eyeHeat : 0);
+          gl.bindBuffer(gl.ARRAY_BUFFER, fxBuf); gl.bufferSubData(gl.ARRAY_BUFFER, 0, fxData.subarray(0, nV * 7));
+          pFx.use().u('uViewProj', vp).u('uPx', G.H * 0.066 * ps); gl.bindVertexArray(fxVao); gl.disable(gl.DEPTH_TEST); gl.drawArrays(gl.POINTS, 0, nV); gl.enable(gl.DEPTH_TEST);
+        }
         common(pPart2); G.bindTex(0, pt.posTex.tex); G.bindTex(1, pt.nrmTex.tex);
         pPart2.ui('uPosTex', 0).ui('uNrmTex', 1).u('uPx', G.H * v2.px).u('uFocus', VIEW.dist - 0.35 * sc).u('uDof', G.H * v2.dof)
           .u('uKey', v2.key).u('uAmb', v2.amb).u('uRim', v2.rim).u('uLine', v2.line).u('uLineWhite', v2.lineWhite).u('uBurst', v2.burst).u('uKickAmt', v2.kick).u('uSparkle', v2.sparkle).u('uWave', v2.wave);

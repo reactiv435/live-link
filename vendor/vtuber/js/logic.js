@@ -321,6 +321,19 @@
     const b = (x, d) => (typeof x === 'boolean' ? x : d);
     return { on: b(q.on, true), chat: b(q.chat, true), hands: b(q.hands, false), rand: b(q.rand, false), bars: typeof q.bars === 'number' && Number.isFinite(q.bars) ? Math.round(clamp(q.bars, 0, 1) * 100) / 100 : 0, swap: b(q.swap, false) };
   }
+  /**
+   * RELEASE A, the line under EAT IT in the VTuber window: what the Mask will do with the song and why, in one line.
+   * on = the avatar is ON; ack = what the avatar page last reported about the show (its `v8`), or null.
+   * -> { text, state: 'off' | 'wait' | 'ready' | 'waiting' | 'no-cover' | 'not-linked' | 'busy', can: the button may be pressed }
+   * It does not look at the Puppet show switch: eating works with it off.
+   */
+  function eatLine({ on, ack } = {}) {
+    if (!on) return { text: 'Turn the avatar ON first.', state: 'off', can: false };
+    const e = ack && typeof ack === 'object' && ack.eat && typeof ack.eat === 'object' ? ack.eat : null;
+    if (!e) return { text: 'Waiting for the Mask in OBS ...', state: 'wait', can: false };
+    const text = typeof e.reason === 'string' ? Array.from(e.reason.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ')).slice(0, 160).join('') : '';
+    return { text, state: e.busy ? 'busy' : ['ready', 'waiting', 'no-cover', 'not-linked'].includes(e.state) ? e.state : 'waiting', can: true };
+  }
   // THE KEYS (while the VTuber window has the focus). One plain key each, no Ctrl / Alt: nothing a browser or OBS uses
   // when this window is in front (OBS's own hotkeys only fire while OBS has the focus, unless he made them global;
   // none of OBS's defaults is a bare letter). Space stays ON / OFF. He can change every one.
@@ -394,6 +407,6 @@
     clamp, seededRandom, CHARACTERS, FACE_KEYS, BACKGROUNDS, MASK_BACKGROUNDS, MASK_VISUALIZERS, PLACE, PLACE_HOME, placeUp, cleanPlace, cleanHex, MASK_SWATCHES, SHUFFLE_LEVELS, hsvToHex, hexToHsv, HANDS_HINT, handsRarelySeen, isCharacter, validFace, moodFace,
     MOUTH_DEFAULTS, MouthGate, BLINK, BlinkClock, TRACKED_BLINK, TrackedBlink, HEAD_LIMIT, headTarget, Damped, pickFace, readAvatarMessage,
     lumaOf, pictureLook, PictureWatch,
-    V8_DEFAULTS, V8_BARS, cleanV8, V8_ACTIONS, V8_KEYS, keyAllowed, keyLabel, cleanKeys, setKey, keyAction,
+    V8_DEFAULTS, V8_BARS, cleanV8, eatLine, V8_ACTIONS, V8_KEYS, keyAllowed, keyLabel, cleanKeys, setKey, keyAction,
   };
 });

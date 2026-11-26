@@ -67,7 +67,7 @@ test('2.2.0 vendor/vtuber is exactly the pinned VTuber commit, complete, and hol
   assert.ok(pkg.build.extraResources.some((r) => r.from === 'vendor/vtuber' && r.to === 'vtuber'));
   assert.ok(!pkg.build.files.some((f) => /vendor|test/.test(f)), 'the copy is never packed twice, the test helpers never ship');
   assert.match(pkg.build.mac.extendInfo.NSMicrophoneUsageDescription, /microphone/i);
-  assert.equal(pkg.version, '2.3.0');
+  assert.equal(pkg.version, '2.3.1');
 });
 
 // ------------------------------------------------------------------------------------------------ the card

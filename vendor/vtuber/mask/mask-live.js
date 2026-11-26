@@ -43,7 +43,7 @@
 // with one, expressions are boosted exactly as in the demos.
 (function (root) {
   'use strict';
-  function create(canvas, { neutral = null, bsNames = [], restR = null, width = 1080, height = 1920, look = 'particlesC', giftMap = null, giftSounds = true, background = 'black', visualizer = 'orb', eyeLock = true, v8 = true, gooColour = 'toxic' } = {}) {
+  function create(canvas, { neutral = null, bsNames = [], restR = null, width = 1080, height = 1920, look = 'particlesC', giftMap = null, giftSounds = true, background = 'black', visualizer = 'orb', eyeLock = true, v8 = true, gooColour = 'toxic', vizEyes = true } = {}) {
     const Core = root.VTMaskCore, GL = root.VTMaskGL, Looks = root.VTMaskLooks, Mood = root.VTMaskMood, Fx = root.VTMaskFx, Sfx = root.VTMaskSfx;
     canvas.width = width; canvas.height = height;
     const G = GL.create(canvas);
@@ -81,7 +81,7 @@
       try {
         const w = Fx.create(), I = [1, 0, 0, 0, 1, 0, 0, 0, 1];
         w.fire({ type: 'gift', gift: 'warm', coins: 100000, count: 1 }, 0); w.fire({ type: 'gift', gift: 'warm', coins: 30, count: 1 }, 0.4); w.fire({ type: 'like', value: 5 }, 1.2); w.setMode('visualizer', 0.2);
-        for (const t of [1.3, 1.75, 2.4]) looks.draw(look, { time: t, audio: { bass: 0.5, mid: 0.5, high: 0.5, beat: 0.5, level: 0.5, bright: 0.8 }, kicks: [[0.1, 0.8]], hits: [[0.2, 0.8]], head: { R: I, x: 0, y: 0, scale: 1 }, palette: null, fx: w.sample(t), eyeStyle: 1, bg: S.bg, headPart: 'none' });
+        for (const t of [1.3, 1.75, 2.4]) looks.draw(look, { time: t, audio: { bass: 0.5, mid: 0.5, high: 0.5, beat: 0.5, level: 0.5, bright: 0.8 }, kicks: [[0.1, 0.8]], hits: [[0.2, 0.8]], head: { R: I, x: 0, y: 0, scale: 1 }, palette: null, fx: w.sample(t), eyeStyle: 1, bg: S.bg, headPart: 'none', vizEyes: false });      // (vizEyes: the vortex eyes need no warming: they are drawn with the gift's own program and buffer)
         const gl = G.gl; gl.finish();
         gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT);
         S.warm = true;
@@ -199,7 +199,7 @@
       palette = S.colour ? Mood.custom(moodNow, S.colour.c, S.colour.music) : Mood.tint(moodNow, S.bg);
       sounds(t);
       const fxS = fx.sample(t), o = stage ? stage.pre(t, { core, palette, fx: fxS, head, place: S.place || null, mood: moodNow, colour: S.colour ? S.colour.c : null, audio: au }) : null;
-      looks.draw(look, { time: t, audio: au, kicks: live ? ks : [], hits: live ? hs : [], head: o ? o.head : head, palette: o ? o.palette : palette, fx: o ? o.fx : fxS, eyeStyle: 1, bg: S.bg, headPart: S.head || 'none', place: o ? o.place : S.place || null, vizCol: S.colour ? S.colour.viz : null, v8: o ? o.v8 : null });
+      looks.draw(look, { time: t, audio: au, kicks: live ? ks : [], hits: live ? hs : [], head: o ? o.head : head, palette: o ? o.palette : palette, fx: o ? o.fx : fxS, eyeStyle: 1, bg: S.bg, headPart: S.head || 'none', place: o ? o.place : S.place || null, vizCol: S.colour ? S.colour.viz : null, v8: o ? o.v8 : null, vizEyes: vizEyes !== false });
       if (stage) stage.post();
       S.drawMs += (performance.now() - b - S.drawMs) * 0.05;
       return true;
@@ -211,7 +211,14 @@
       // V8: the puppet show. All of these are no-ops (false / null) when the mask was made with v8: false.
       puppet: (name, o) => (stage ? stage.puppet(name, o || {}, now()) : false), release: (name) => (stage ? stage.release(name, now()) : false),
       setHype: (rank, k) => { if (stage) stage.setHype(rank, k, now()); return !!stage; }, hypePlus: () => (stage ? stage.hypePlus(now()) : false),
-      song: (o) => { if (stage) stage.song(o, now()); return !!stage; }, songOff: () => { if (stage) stage.songOff(); }, score: (n) => { if (stage) stage.score(n, now()); return !!stage; },
+      // release A (album eating): cover = a song on air gives the Mask its colour only; eat = the Mask eats the cover (no image =
+      // a glowing record), chomps on the beat and chews; verdict = it spits his word ('fire' | 'gem' | 'solid' | 'promising');
+      // gulp = it swallows, no word. score = a LIVE Link 2.3.0's number, as before.
+      cover: (o) => { if (stage) stage.cover(o, now()); return !!stage; }, songOff: () => { if (stage) stage.songOff(); },
+      eat: (o) => (stage ? stage.eat(o, now()) : false), verdict: (word) => (stage ? stage.verdict(word, now()) : false), gulp: () => (stage ? stage.gulp(now()) : false),
+      /** fix round V-2: a word that was owed (the song was eaten earlier and swallowed with no word): a belch, then the word with its title */
+      belch: (word, o) => (stage ? stage.belch(word, o || {}, now()) : false),
+      score: (n) => { if (stage) stage.score(n, now()); return !!stage; },
       boss: (s) => { if (stage) stage.boss(s); }, vote: (v) => { if (stage) stage.vote(v); }, hands: (p, o) => { if (stage) stage.hands(p, o); },
       /** what the 2D layer over the canvas draws this frame (mask-hud.js): bars, the vote, names on missiles, the cover, the score */
       hud: () => (stage ? stage.hud() : null), v8: () => stage, clock: now,
