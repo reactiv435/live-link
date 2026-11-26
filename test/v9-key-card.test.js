@@ -10,7 +10,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
-const { PuppetKeys, DEFAULT_KEYS, keyLine, galaxyLine } = require('../src/core/puppet-keys');
+const { PuppetKeys, DEFAULT_KEYS, STREAM_DECK_KEYS, keyLine, galaxyLine } = require('../src/core/puppet-keys');
 
 const UI = path.join(__dirname, '..', 'src', 'ui');
 const HTML = fs.readFileSync(path.join(UI, 'index.html'), 'utf8');
@@ -169,4 +169,23 @@ test('the line itself (core/puppet-keys.js keyLine): one rule for every state; t
   const st = keysIn();
   assert.equal(st.galaxy, keyLine('galaxy', 'Ctrl+Alt+9', 'held'));
   assert.equal(st.sign, keyLine('sign', 'Ctrl+Alt+0', 'held'));
+});
+
+test('fix round 1: the keys part\'s summary names the keys he set in plain words (was "Ctrl+Alt+1 to Ctrl+Alt+0")', () => {
+  const p = page();
+  const sum = (keys) => { p.render(keysIn({ keys, on: false })); return p.$('vtkeys-sum').textContent; };
+  const all = (k) => Object.fromEntries(Object.keys(DEFAULT_KEYS).map((id) => [id, k]));
+  assert.equal(sum(DEFAULT_KEYS), 'Ctrl+Alt+1 to 9 and 0', 'the usual keys (as the preset button says)');
+  assert.equal(sum(STREAM_DECK_KEYS), 'F13 to F23', 'the Stream Deck keys');
+  // a 2.3.1 Stream Deck file: its eight F keys, then the galaxy's and the sign's usual keys
+  assert.equal(sum({ ...STREAM_DECK_KEYS, galaxy: 'Ctrl+Alt+9', sign: 'Ctrl+Alt+0', overlay: 'off' }), 'Ctrl+Alt+9 and 0, F13 to F20');
+  assert.equal(sum({ ...DEFAULT_KEYS, melt: 'off' }), 'Ctrl+Alt+1, 2, 4 to 9 and 0', 'a gap');
+  assert.equal(sum({ ...all('off'), sign: 'F22' }), 'F22');
+  assert.equal(sum({ ...all('off'), goo: 'F13', fire: 'F14' }), 'F13 and F14');
+  assert.equal(sum(all('off')), 'No keys set');
+  // the other states keep their words
+  p.render(keysIn());
+  assert.equal(p.$('vtkeys-sum').textContent, 'Working now');
+  p.render(keysIn({ enabled: false }));
+  assert.equal(p.$('vtkeys-sum').textContent, 'Off');
 });

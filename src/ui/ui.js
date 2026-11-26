@@ -940,6 +940,27 @@
   // Mask and a show is on (2.3.1: a song on air, up to 30 minutes after one, or the TikTok LIVE connected); every
   // sentence here says so in plain words.
   const KEY_STATE = { held: 'ready', taken: 'taken', off: 'off', idle: '' };
+  // V9 fix round 1: the keys he set, in plain words: "Ctrl+Alt+1 to 9 and 0", "F13 to F23", "Ctrl+Alt+9 and 0, F13 to
+  // F20". Runs of three or more read "a to b"; Ctrl+Alt+0 comes after 9 but never joins its run (it is not "10").
+  function keysSummary(keys) {
+    const and = (xs) => (xs.length < 2 ? xs.join('') : `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}`);
+    const runs = (ns, name) => {
+      const out = [];
+      for (const n of [...new Set(ns)].sort((a, b) => a - b)) { const r = out[out.length - 1]; if (r && n === r[1] + 1 && n !== 10) r[1] = n; else out.push([n, n]); }
+      return out.flatMap(([a, b]) => (b - a >= 2 ? [`${name(a)} to ${name(b)}`] : b > a ? [name(a), name(b)] : [name(a)]));
+    };
+    const digits = [], fkeys = [];
+    for (const k of keys) {
+      let m = /^Ctrl\+Alt\+(\d)$/.exec(k);
+      if (m) { digits.push(m[1] === '0' ? 10 : Number(m[1])); continue; }
+      m = /^F(\d+)$/.exec(k);
+      if (m) fkeys.push(Number(m[1]));
+    }
+    const d = runs(digits, (n) => (n === 10 ? '0' : String(n)));
+    if (d.length) d[0] = 'Ctrl+Alt+' + d[0];
+    const f = runs(fkeys, (n) => `F${n}`);
+    return [d.length ? and(d) : '', f.length ? and(f) : ''].filter(Boolean).join(', ') || keys.join(', ');
+  }
   let puppetKey = '';
   function renderPuppetKeys(p) {
     const box = $('vtkeys');
@@ -957,7 +978,7 @@
     box.classList.toggle('live', !!p.active && !taken.length);
     box.classList.toggle('taken', !!p.active && !!taken.length);
     const set = p.rows.filter((r) => r.key !== 'off');
-    $('vtkeys-sum').textContent = !p.enabled ? 'Off' : p.active ? (taken.length ? `${taken.length} taken by another program` : 'Working now') : (set.length ? `${set[0].key} to ${set[set.length - 1].key}` : 'No keys set');
+    $('vtkeys-sum').textContent = !p.enabled ? 'Off' : p.active ? (taken.length ? `${taken.length} taken by another program` : 'Working now') : (set.length ? keysSummary(set.map((r) => r.key)) : 'No keys set');
     $('vtkeys-note').textContent = !p.enabled ? 'Off. The buttons in the VTuber window still work.'
       : p.active ? (taken.length ? 'Another program already uses the keys marked "taken". Pick a different key for those.' : 'These keys work right now, in any window: press one and the Mask does the move.')
         : 'Press a key in any window (OBS, TikTok, a browser) and the Mask does the move. They work during your show: VTuber open with the Mask, and a song on air (or up to 30 minutes after one) or your TikTok LIVE connected. The rest of the time the keys belong to your other programs.';
