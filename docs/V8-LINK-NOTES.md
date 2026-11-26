@@ -385,3 +385,52 @@ Tests: `test/v8-show-feed.test.js` (the song on air without TikTok 4, the finish
 (eight keys, EAT IT with the Puppet show off), `test/v8-vendor.test.js` (the real vendored VTuber: eight keys, no
 TikTok needed, EAT IT accepted without an error, the keys stay at a LIVE drop). All against the stand-in site and
 stand-in VTubers on random ports.
+
+### The fix round (Nov 26, after the independent review): L-1 ... L-8
+
+These replace what the section above says where they differ.
+
+- **L-1, the cover (the blocker).** A new song's FIRST `show` message now carries its title and cover: nothing is
+  sent about a new song until its `submissions_public` read has answered or failed once (a fraction of a second; never
+  longer than 7 s). Before, the first message had `cover: null` (and `title: ''` without TikTok) and the real cover
+  was never eaten. If that read fails the song is said with what is known and the cover follows in a later message.
+- **Contract change + L-2.** `finish` is `{ id, kind, at, grade }`: `grade` = THAT song's verdict word or null, as
+  known when the finish is seen, and filled in on later messages while the finish is kept, also with the next song
+  already on air. With the next song on air only a verdict given BEFORE that song's `activated_at` counts (the host
+  gave it for the song he finished; LIVE Link had only not read it yet); the top-level `score` / `grade` then belong
+  to the song on air.
+- **L-3.** The verdict no longer needs a `hype_plays` row: "during this airing" starts at
+  `active_projects.activated_at` when the table said it (else the song's open play, as in 2.3.0). A song nobody
+  opened a play for, or whose play was closed early, gets its verdict on air and after DONE. With no play row there
+  is no host to compare a verdict's `host_id` with, so any host's verdict given during the airing counts.
+- **L-4.** ADD TO AI RADIO in the song's first seconds: a `radio_tracks` row with `preview_only` false and
+  `added_at` not before this airing's `activated_at` is a 'radio' finish even on the first read. The starting-point
+  rule stays for everything else (an old row: no finish; a preview-only row that goes live during the airing: finish).
+- **L-5.** `stream_status?select=is_live,active_submission_id&host_id=eq.{hostId}` is read with every
+  `active_projects` look: `is_live === false` = nothing on air. No row, or that read failing, changes nothing (and a
+  failure of it does not slow the other reads).
+- **L-6.** The eight keys (EAT IT too) are held only while a show is plausible: a song on air, or up to 30 minutes
+  after one went off air, or a TikTok LIVE connected (`showFeed.plausible`; `main.js` passes it as `show` to
+  `puppetWanted` / `eatWanted`, and `onPlausible` re-syncs the keys when it changes). The card says it in one line.
+- **L-7.** After a finish its verdict is looked for at 1.5 / 4 / 7 / 10 / 14 / 18 s (counted from the moment LIVE
+  Link saw the finish, which is when the VTuber starts chewing). These replace 2.3.0's two looks for a finished song;
+  a song cleared without DONE keeps the two looks (1.5 s, 5 s).
+- **L-8.** Pace: every 2.5 s with a song on air, every 5 s with none. Nothing is read while another character than
+  the Mask is chosen and no show is plausible (`mask` in `main.js`; a desktop-shortcut VTuber does not say which
+  character: taken as the Mask).
+
+**Decided here, beyond the fix list**
+1. For 2 minutes after a song went off air the next one is still looked for every 2.5 s (not 5 s): between the songs
+   of a show a 5 s pace delayed the next song's cover by up to 5 s and let a verdict given in that gap be taken for
+   the song before. Outside a show it is 5 s as asked.
+2. A verdict given in the up to 2.5 s between the next song really going on air and LIVE Link seeing it can still
+   land on `finish.grade` of the song before.
+3. With no usable start time for the airing (no host id AND no open play) the verdict is not asked for at all (it
+   could not be placed); 2.3.0 asked and dropped the answer.
+4. `active_submission_id` is selected (the contract's query) but not used.
+5. EAT IT pressed with no show plausible does nothing (its key is not held then): outside a show he uses the EAT IT
+   button in the VTuber window.
+
+Tests: 8 more in `test/v8-show-feed.test.js` (one per item; each fails on 1be13dd), the older ones adapted to the held
+first message and the new `finish` shape. The reviewer's contract script with a case per item:
+`D:/claude-cache/claude-scratch/review-release-a/contract-fix.js` (30 of 30 checks pass).
