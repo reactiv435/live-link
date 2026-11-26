@@ -52,10 +52,26 @@ const STREAM_DECK_KEYS = Object.freeze(Object.fromEntries(ACTIONS.map((a, i) => 
 const REPEAT_MS = 250;
 const RETRY_TAKEN_MS = 30000;      // a key another program holds is tried again this often while it is still wanted
 
-/** V9: the card's line that names the galaxy key ('' when he gave it no key) */
-const galaxyLine = (key) => (typeof key === 'string' && key !== 'off' && Object.prototype.hasOwnProperty.call(KEY_CHOICES, key) ? `Galaxy: press ${key} to call the galaxy up. Press it again to send it away.` : '');
-
 const isChoice = (k) => typeof k === 'string' && Object.prototype.hasOwnProperty.call(KEY_CHOICES, k);
+
+// V9: the card's lines that name a key (the galaxy's, the sign's). "Press <key>" ONLY while LIVE Link really holds it;
+// otherwise the line says in plain words why the key does nothing right now. state = the key's row state ('held' |
+// 'taken' | 'idle' | 'off'); not said = 'idle' (a line never claims a key works by default). '' = no line: no key, or
+// his "Use these keys" switch off (the card already says so).
+const KEY_LINES = Object.freeze({
+  galaxy: Object.freeze({ name: 'Galaxy', press: 'to call the galaxy up. Press it again to send it away.', does: 'calls the galaxy up' }),
+  sign: Object.freeze({ name: 'Show sign', press: 'to hide the show sign, and again to bring it back (once the sign is on in the VTuber window).', does: 'hides and shows the show sign' }),
+});
+const DURING_SHOW = 'during your show (VTuber open with the Mask, and a song on air or your TikTok LIVE connected). Right now it does nothing.';
+function keyLine(id, key, state = 'idle', enabled = true) {
+  const L = Object.prototype.hasOwnProperty.call(KEY_LINES, id) ? KEY_LINES[id] : null;
+  if (!L || !isChoice(key) || key === 'off' || !enabled || state === 'off') return '';
+  if (state === 'held') return `${L.name}: press ${key} ${L.press}`;
+  if (state === 'taken') return `${L.name}: another program already uses ${key}, so it does nothing here. Pick another key for ${L.name} in Puppet show keys.`;
+  return `${L.name}: ${key} ${L.does} ${DURING_SHOW}`;
+}
+/** V9: the galaxy's line (kept for the galaxy build's callers) */
+const galaxyLine = (key, state, enabled) => keyLine('galaxy', key, state, enabled);
 
 /** Saved keys -> a full, valid map { goo: 'Ctrl+Alt+1', ... }: unknown values fall back to the usual key; a key used twice stays with the first action, the second goes 'off'. */
 function cleanKeys(saved) {
@@ -197,16 +213,13 @@ class PuppetKeys {
     return took;
   }
 
-  /** for the card: { enabled, active, rows: [{ id, label, key, state: 'held' | 'taken' | 'off' | 'idle' }], choices, galaxy: <the line that names the galaxy key> } */
+  /** for the card: { enabled, active, rows: [{ id, label, key, state: 'held' | 'taken' | 'off' | 'idle' }], choices, galaxy, sign: <the lines that name those keys, keyLine> } */
   getState() {
-    return {
-      enabled: this.enabled, active: this.active,
-      rows: ACTIONS.map((a) => ({ id: a.id, label: a.label, key: this.keys[a.id],
-        state: this.keys[a.id] === 'off' ? 'off' : this.held.has(a.id) ? 'held' : this.taken.has(a.id) ? 'taken' : 'idle' })),
-      choices: Object.keys(KEY_CHOICES),
-      galaxy: galaxyLine(this.keys.galaxy),
-    };
+    const rows = ACTIONS.map((a) => ({ id: a.id, label: a.label, key: this.keys[a.id],
+      state: this.keys[a.id] === 'off' ? 'off' : this.held.has(a.id) ? 'held' : this.taken.has(a.id) ? 'taken' : 'idle' }));
+    const line = (id) => { const r = rows.find((x) => x.id === id); return keyLine(id, r.key, r.state, this.enabled); };
+    return { enabled: this.enabled, active: this.active, rows, choices: Object.keys(KEY_CHOICES), galaxy: line('galaxy'), sign: line('sign') };
   }
 }
 
-module.exports = { PuppetKeys, puppetWanted, eatWanted, galaxyLine, ACTIONS, KEY_CHOICES, DEFAULT_KEYS, STREAM_DECK_KEYS, REPEAT_MS, RETRY_TAKEN_MS, cleanKeys, setKey };
+module.exports = { PuppetKeys, puppetWanted, eatWanted, keyLine, galaxyLine, ACTIONS, KEY_CHOICES, DEFAULT_KEYS, STREAM_DECK_KEYS, REPEAT_MS, RETRY_TAKEN_MS, cleanKeys, setKey };

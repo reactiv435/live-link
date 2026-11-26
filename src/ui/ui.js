@@ -944,10 +944,12 @@
   function renderPuppetKeys(p) {
     const box = $('vtkeys');
     if (!box) return;
-    const gx = $('vtkeys-galaxy');
-    if (!p || !Array.isArray(p.rows)) { box.classList.add('hidden'); if (gx) gx.classList.add('hidden'); return; }
+    // V9: the galaxy and sign lines. Their words come from the app (core/puppet-keys.js keyLine): "press" only while the
+    // key is really held, otherwise why it does nothing right now; '' = no line (no key, or the keys switched off).
+    const lines = [['vtkeys-galaxy', 'galaxy'], ['vtkeys-sign', 'sign']];
+    if (!p || !Array.isArray(p.rows)) { box.classList.add('hidden'); for (const [id] of lines) { const el = $(id); if (el) el.classList.add('hidden'); } return; }
     box.classList.remove('hidden');
-    if (gx) { $('vtkeys-galaxy').textContent = p.galaxy || ''; gx.classList.toggle('hidden', !p.galaxy || !p.enabled); }
+    for (const [id, k] of lines) { const el = $(id); if (!el) continue; const t = typeof p[k] === 'string' ? p[k] : ''; el.textContent = t; el.classList.toggle('hidden', !t); }
     const key = JSON.stringify(p);
     if (key === puppetKey) return;
     puppetKey = key;
@@ -1110,9 +1112,10 @@
         const labels = { goo: 'Goo', fire: 'Fire head', melt: 'Melt', crack: 'Crack open', eat: 'Eat a comment', fight: 'Boss fight', vote: 'Vote', 'eat-now': 'Eat it (the song)', galaxy: 'Galaxy', sign: 'Show sign: show / hide', overlay: 'Live overlay: show / hide' };
         const usual = [...['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'].map((d) => 'Ctrl+Alt+' + d), 'off'];   // core/puppet-keys.js DEFAULT_KEYS
         const choices = ['off', ...['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'].map((d) => 'Ctrl+Alt+' + d), ...Array.from({ length: 12 }, (_, i) => 'F' + (13 + i))];
-        const on = pick === 'puppet' || pick === 'puppet-taken';
+        const on = pick === 'puppet' || pick === 'puppet-taken', during = 'during your show (VTuber open with the Mask, and a song on air or your TikTok LIVE connected). Right now it does nothing.';
         const p = { enabled: pick !== 'puppet-off', active: on, choices,
-          galaxy: 'Galaxy: press Ctrl+Alt+9 to call the galaxy up. Press it again to send it away.',
+          galaxy: pick === 'puppet-off' ? '' : on ? 'Galaxy: press Ctrl+Alt+9 to call the galaxy up. Press it again to send it away.' : 'Galaxy: Ctrl+Alt+9 calls the galaxy up ' + during,
+          sign: pick === 'puppet-off' ? '' : on ? 'Show sign: press Ctrl+Alt+0 to hide the show sign, and again to bring it back (once the sign is on in the VTuber window).' : 'Show sign: Ctrl+Alt+0 hides and shows the show sign ' + during,
           rows: Object.keys(labels).map((id, i) => ({ id, label: labels[id], key: usual[i], state: usual[i] === 'off' ? 'off' : pick === 'puppet-taken' && id === 'melt' ? 'taken' : on ? 'held' : 'idle' })) };
         const card = () => ({ show: true, tone: 'on', title: 'VTuber', text: 'VTuber is ON: your viewers see the Mask instead of your camera. Press OFF in the VTuber window, or close it, to show your camera again.', button: 'Show VTuber', open: true, puppet: p });
         return {

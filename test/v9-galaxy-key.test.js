@@ -141,24 +141,22 @@ test('galaxy: the key sends the control message, and ONLY in the show-plausible 
   pk2.release();
 });
 
-test('galaxy: the VTuber card has a line that names the key, in plain words; it follows the key he picked', () => {
-  assert.equal(PK.galaxyLine('Ctrl+Alt+9'), 'Galaxy: press Ctrl+Alt+9 to call the galaxy up. Press it again to send it away.');
-  assert.equal(PK.galaxyLine('F21'), 'Galaxy: press F21 to call the galaxy up. Press it again to send it away.');
-  assert.equal(PK.galaxyLine('off'), '', '"No key": no line');
+test('galaxy: the VTuber card has a line that names the key, in plain words; it follows the key he picked, and says "press" only while the key is held', () => {
+  assert.equal(PK.galaxyLine('Ctrl+Alt+9', 'held'), 'Galaxy: press Ctrl+Alt+9 to call the galaxy up. Press it again to send it away.');
+  assert.equal(PK.galaxyLine('F21', 'held'), 'Galaxy: press F21 to call the galaxy up. Press it again to send it away.');
+  assert.equal(PK.galaxyLine('off', 'off'), '', '"No key": no line');
   assert.equal(PK.galaxyLine(undefined), '');
-  assert.equal(PK.galaxyLine('Ctrl+Alt+G'), '', 'not a key LIVE Link offers');
+  assert.equal(PK.galaxyLine('Ctrl+Alt+G', 'held'), '', 'not a key LIVE Link offers');
   const kb = keyboard();
   const pk = new PuppetKeys({ register: kb.register, unregister: kb.unregister, send: () => true });
-  assert.equal(pk.getState().galaxy, PK.galaxyLine('Ctrl+Alt+9'));
+  // V9: not held yet (no show): the line does not say "press" (the card is RENDERED in each state in test/v9-key-card.test.js)
+  assert.equal(pk.getState().galaxy, PK.galaxyLine('Ctrl+Alt+9', 'idle'));
+  assert.ok(!/press/.test(pk.getState().galaxy));
+  pk.setEatWanted(true);
+  assert.equal(pk.getState().galaxy, PK.galaxyLine('Ctrl+Alt+9', 'held'));
   pk.setKeys({ ...DEFAULT_KEYS, galaxy: 'F21' });
-  assert.equal(pk.getState().galaxy, PK.galaxyLine('F21'));
+  assert.equal(pk.getState().galaxy, PK.galaxyLine('F21', 'held'));
   pk.setKeys({ ...DEFAULT_KEYS, galaxy: 'off' });
   assert.equal(pk.getState().galaxy, '');
-  // the card shows it: an element for the line, filled from the state; the two preset buttons name the new keys
-  const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'ui', 'index.html'), 'utf8');
-  const ui = fs.readFileSync(path.join(__dirname, '..', 'src', 'ui', 'ui.js'), 'utf8');
-  assert.match(html, /<p class="vtkeys-galaxy[^"]*" id="vtkeys-galaxy"/);
-  assert.match(ui, /\$\('vtkeys-galaxy'\)\.textContent = p\.galaxy \|\| ''/);
-  assert.match(html, /Usual keys: Ctrl\+Alt\+1 to 9 and 0</);
-  assert.match(html, /Stream Deck keys: F13 to F23</);
+  pk.release();
 });
