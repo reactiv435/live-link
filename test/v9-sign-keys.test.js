@@ -10,7 +10,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
-const { PuppetKeys, puppetWanted, eatWanted, ACTIONS, KEY_CHOICES, DEFAULT_KEYS, STREAM_DECK_KEYS, cleanKeys, setKey } = require('../src/core/puppet-keys');
+const { PuppetKeys, puppetWanted, eatWanted, ACTIONS, KEY_CHOICES, DEFAULT_KEYS, STREAM_DECK_KEYS, TOGGLE_MS, cleanKeys, setKey } = require('../src/core/puppet-keys');
 const { buildControl, CONTROL_ACTIONS } = require('../src/core/vtuber-link');
 
 const SIGN = 'Control+Alt+0';
@@ -127,10 +127,27 @@ test('sign + overlay: held with EAT IT\'s rule (the Mask chosen, a show plausibl
   t += 1000;
   assert.equal(kb.press('F23'), true);
   assert.deepEqual(sent[sent.length - 1], ['overlay', '']);
-  // a held-down key sends at most 4 a second
-  const n = sent.length;
+  // fix round 1: an on/off switch fires ONCE per press. Held down (the OS repeats it every 33 ms for a second): one
+  // message, so the sign does not flip back and forth
+  let n = sent.length;
   for (let i = 0; i < 30; i++) { t += 33; kb.press(SIGN); }
-  assert.ok(sent.length - n >= 3 && sent.length - n <= 5, `${sent.length - n}`);
+  assert.equal(sent.length - n, 1, 'a one-second hold of the sign key: one toggle');
+  // let go, and pressed again 0.6 s later: the next toggle goes out
+  t += TOGGLE_MS; n = sent.length;
+  assert.equal(kb.press(SIGN), true);
+  assert.equal(sent.length - n, 1);
+  // a repeat inside 0.6 s of the last one (sent or not) is still the same press
+  t += TOGGLE_MS - 1;
+  assert.equal(kb.press(SIGN), false);
+  // the overlay too (F23); EAT IT and the puppet moves keep their 4 a second (test/v8-keys.test.js)
+  t += 1000; n = sent.length;
+  for (let i = 0; i < 30; i++) { t += 33; kb.press('F23'); }
+  assert.deepEqual(sent.slice(n), [['overlay', '']]);
+  assert.equal(TOGGLE_MS, 600);
+  assert.deepEqual(ACTIONS.filter((a) => a.toggle).map((a) => a.id), ['sign', 'overlay']);
+  n = sent.length;
+  for (let i = 0; i < 30; i++) { t += 33; kb.press('Control+Alt+8'); }
+  assert.ok(sent.length - n >= 3 && sent.length - n <= 5, `EAT IT held: ${sent.length - n}`);
   // Ryo: none; the Mask again: back; quit: every key given back
   sync({ ...mask, vt: { character: 'ryo' } });
   assert.equal(kb.held.size, 0);

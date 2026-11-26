@@ -35,8 +35,8 @@ const ACTIONS = Object.freeze([
   { id: 'vote', action: 'vote', name: '', label: 'Vote' },
   { id: 'eat-now', action: 'eat', name: '', label: 'Eat it (the song)', always: true },
   { id: 'galaxy', action: 'tap', name: 'galaxy', label: 'Galaxy', always: true },
-  { id: 'sign', action: 'sign', name: '', label: 'Show sign: show / hide', always: true, key: 'Ctrl+Alt+0' },
-  { id: 'overlay', action: 'overlay', name: '', label: 'Live overlay: show / hide', always: true, key: 'off' },
+  { id: 'sign', action: 'sign', name: '', label: 'Show sign: show / hide', always: true, key: 'Ctrl+Alt+0', toggle: true },
+  { id: 'overlay', action: 'overlay', name: '', label: 'Live overlay: show / hide', always: true, key: 'off', toggle: true },
 ]);
 
 // what the host sees -> Electron's accelerator
@@ -50,6 +50,10 @@ const KEY_CHOICES = (() => {
 const DEFAULT_KEYS = Object.freeze(Object.fromEntries(ACTIONS.map((a, i) => [a.id, a.key || `Ctrl+Alt+${i + 1}`])));
 const STREAM_DECK_KEYS = Object.freeze(Object.fromEntries(ACTIONS.map((a, i) => [a.id, `F${13 + i}`])));
 const REPEAT_MS = 250;
+// V9 fix round 1: an on/off switch (`toggle`: the sign, the overlay) fires ONCE per press. A press within this long of
+// the last one (sent or ignored) is the OS repeating a held key, so a held key sends once and never flips back and
+// forth; let go for 0.6 s and the next press toggles again. The other keys keep REPEAT_MS (Goo pours longer).
+const TOGGLE_MS = 600;
 const RETRY_TAKEN_MS = 30000;      // a key another program holds is tried again this often while it is still wanted
 
 const isChoice = (k) => typeof k === 'string' && Object.prototype.hasOwnProperty.call(KEY_CHOICES, k);
@@ -148,6 +152,7 @@ class PuppetKeys {
     this.held = new Map();          // action id -> accelerator held right now
     this.taken = new Set();         // action ids whose key another program holds
     this.lastAt = new Map();        // action id -> when it last went out
+    this.seenAt = new Map();        // V9: toggle action id -> when its key was last pressed (sent or ignored)
     this.stats = { presses: 0, sent: 0 };
   }
 
@@ -205,7 +210,11 @@ class PuppetKeys {
     if (!a || !this._on(a) || !this.held.has(id)) return false;   // V9: only a key LIVE Link holds right now (an action with "No key", e.g. the overlay's default, sends nothing)
     this.stats.presses++;
     const now = this.mono(), last = this.lastAt.get(id);
-    if (last !== undefined && now - last < REPEAT_MS) return false;
+    if (a.toggle) {   // V9: an on/off switch fires once per press (TOGGLE_MS)
+      const seen = this.seenAt.get(id);
+      this.seenAt.set(id, now);
+      if (seen !== undefined && now - seen < TOGGLE_MS) return false;
+    } else if (last !== undefined && now - last < REPEAT_MS) return false;
     this.lastAt.set(id, now);
     let took = false;
     try { took = this.send(a.action, a.name) === true; } catch { took = false; }
@@ -222,4 +231,4 @@ class PuppetKeys {
   }
 }
 
-module.exports = { PuppetKeys, puppetWanted, eatWanted, keyLine, galaxyLine, ACTIONS, KEY_CHOICES, DEFAULT_KEYS, STREAM_DECK_KEYS, REPEAT_MS, RETRY_TAKEN_MS, cleanKeys, setKey };
+module.exports = { PuppetKeys, puppetWanted, eatWanted, keyLine, galaxyLine, ACTIONS, KEY_CHOICES, DEFAULT_KEYS, STREAM_DECK_KEYS, REPEAT_MS, TOGGLE_MS, RETRY_TAKEN_MS, cleanKeys, setKey };
