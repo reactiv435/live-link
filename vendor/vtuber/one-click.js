@@ -100,6 +100,8 @@ async function startOneClick(opts = {}) {
   let chromeArgs = opts.chromeArgs || [];
   if (!opts.chromeArgs && process.env.VTUBER_CHROME_ARGS) { try { chromeArgs = JSON.parse(process.env.VTUBER_CHROME_ARGS); } catch { chromeArgs = []; } }
   const noChrome = embedded ? true : opts.noChrome !== undefined ? opts.noChrome : process.env.VTUBER_NO_CHROME === '1';
+  // the primary screen's work area, for the VTuber window's size: read once while the rest starts (opts.workArea: tests)
+  const workArea = opts.workArea !== undefined ? Promise.resolve(opts.workArea) : noChrome || opts.chromeCmd ? Promise.resolve(null) : primaryWorkArea();
   const stay = embedded ? true : opts.stay !== undefined ? opts.stay : process.env.VTUBER_STAY === '1';
   const W = opts.windows || (process.platform === 'win32' ? win : NO_WINDOWS);
   const logFile = opts.logFile !== undefined ? opts.logFile : kept('vtuber.log', test ? path.join(testDir, 'vtuber.log') : path.join(ROOT, 'tmp', 'vtuber.log'));
@@ -118,6 +120,9 @@ async function startOneClick(opts = {}) {
   const giftsDefault = path.join(ROOT, 'mask', 'gifts.json');
   const giftsOwner = opts.giftsFile || kept('gifts-owner.json', test ? path.join(testDir, 'gifts-owner.json') : path.join(ROOT, 'gifts-owner.json'));
   const restFile = opts.restFile || kept('mask-rest.json', test ? path.join(testDir, 'mask-rest.json') : path.join(ROOT, 'tracking', 'mask-rest.json'));
+  // V9: the host's own show signs (uploaded in the VTuber window). Inside LIVE Link: its data folder (never the app's own
+  // files, which are read-only once packaged); the desktop-shortcut VTuber: a git-ignored folder next to it; a test: its own.
+  const signDir = opts.signDir || kept('signs', test ? path.join(testDir, 'signs') : path.join(ROOT, 'signs-owner'));
   let soundCmd = opts.soundCmd || null;
   if (!soundCmd && process.env.VTUBER_SOUND_CMD) { try { const c = JSON.parse(process.env.VTUBER_SOUND_CMD); if (Array.isArray(c) && c.length) soundCmd = c.map(String); } catch { soundCmd = null; } }
   const base = 'http://127.0.0.1:' + port;
@@ -232,6 +237,8 @@ async function startOneClick(opts = {}) {
       // (a key also goes on while the avatar is OFF in OBS: the pages decide; the avatar page only acts while it is on air)
       // (release A: the control 'eat' = EAT IT goes on as action 'eat'; it is not the puppet move "eat a comment", which is 'tap' + name 'eat')
       if (!app) return 'off';
+      // V9: the show sign's and the live overlay's keys go to the VTuber window (it owns the two switches and says so in its next `avatar` message)
+      if (ev.action === 'sign' || ev.action === 'overlay') { app.broadcast({ t: 'v9-sign-cmd', what: ev.action, from: 'key' }); return S.on ? 'ok' : 'off'; }
       app.broadcast({ t: 'v8-cmd', action: ev.action === 'puppet' ? 'tap' : ev.action, name: ev.name, from: 'key' });
       return S.on ? 'ok' : 'off';
     }
@@ -474,6 +481,8 @@ async function startOneClick(opts = {}) {
       try { old.kill(); } catch { /* gone */ }
       await sleep(1200);
     }
+    // the control deck's size: 1366 x 768, never bigger than the primary screen's work area, never under 1000 x 640
+    const size = windowSizeFor(await Promise.race([workArea, sleep(3000).then(() => null)]));
     if (S.chrome) return;
     const pretend = opts.chromeCmd || null;              // tests only
     const exe = pretend ? pretend[0] : findChrome();
@@ -488,7 +497,7 @@ async function startOneClick(opts = {}) {
     // (a test run never starts its Chrome with the general name: that would pick ANY OBS camera window on this PC)
     const needle = S.projector.title || record.lastTitle || (test ? 'VTuber test: no camera window yet' : GENERIC_NEEDLE);
     const args = [
-      '--user-data-dir=' + profileDir, '--app=' + url, '--window-size=600,940', '--no-first-run', '--no-default-browser-check',
+      '--user-data-dir=' + profileDir, '--app=' + url, '--window-size=' + size.w + ',' + size.h, '--no-first-run', '--no-default-browser-check',
       '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows',
       '--disable-features=CalculateNativeWinOcclusion', '--autoplay-policy=no-user-gesture-required',
       '--disable-blink-features=GetDisplayMediaRequiresUserActivation', '--disable-background-networking', '--disable-component-update',
@@ -755,7 +764,7 @@ async function startOneClick(opts = {}) {
     return true;
   };
 
-  app = await serverJs.start(port, { api, onRelay, upgrade, accept, headers, ...(test && typeof opts.picFetch === 'function' ? { picFetch: opts.picFetch } : {}), ...(dataDir ? { calibFile: path.join(dataDir, 'calib-saved.json') } : {}), ...(embedded ? { ownOriginOnly: true, onMissing: (p) => log('a file the page asked for is not there: ' + p) } : {}) });
+  app = await serverJs.start(port, { api, onRelay, upgrade, accept, headers, ...(test && typeof opts.picFetch === 'function' ? { picFetch: opts.picFetch } : {}), ...(dataDir ? { calibFile: path.join(dataDir, 'calib-saved.json') } : {}), signDir, ...(embedded ? { ownOriginOnly: true, onMissing: (p) => log('a file the page asked for is not there: ' + p) } : {}) });
   if (!embedded) S.chromeMajor = chromeMajor(findChrome() || '');
   log('started on ' + base + (obsUrl ? ' (test OBS)' : ''));
   // Inside LIVE Link: the parent hears "ready" NOW, the moment the page can be served. What follows (finding OBS, adding
@@ -887,6 +896,30 @@ async function startOneClick(opts = {}) {
 const run = (exe, args, ms) => new Promise((resolve) => {
   execFile(exe, args, { windowsHide: true, timeout: ms, encoding: 'utf8' }, (err, out) => resolve(err && !out ? '' : String(out || '')));
 });
+
+// ---------------------------------------------------------------- the VTuber window's size
+/** the control deck's size (js/v9-deck-logic.js: its wide layout from 1000 px); LIVE Link opens its window by the same rule */
+const VT_WINDOW = Object.freeze({ w: 1366, h: 768, minW: 1000, minH: 640 });
+/**
+ * the VTuber window: 1366 x 768, never bigger than the primary screen's work area (the screen without the taskbar), and
+ * never smaller than 1000 x 640. `work` = { w, h } in Chrome's --window-size units, or null (unknown: 1366 x 768).
+ */
+function windowSizeFor(work) {
+  const fit = (want, have, min) => (Number(have) > 0 ? Math.max(min, Math.min(want, Math.floor(Number(have)))) : want);
+  return { w: fit(VT_WINDOW.w, work && work.w, VT_WINDOW.minW), h: fit(VT_WINDOW.h, work && work.h, VT_WINDOW.minH) };
+}
+/**
+ * the primary screen's work area in device-independent pixels (what Chrome's --window-size counts, at any Windows
+ * scaling: the pixels Windows reports, times 96 / the screen's dpi), or null. Read-only: it only asks Windows.
+ */
+async function primaryWorkArea() {
+  if (process.platform !== 'win32') return null;
+  const ps = 'Add-Type -AssemblyName System.Windows.Forms, System.Drawing; $a = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea; ' +
+    '$g = [System.Drawing.Graphics]::FromHwnd([IntPtr]::Zero); $d = $g.DpiX; $g.Dispose(); if (-not $d) { $d = 96 }; ' +
+    "'' + [int][Math]::Floor($a.Width * 96 / $d) + 'x' + [int][Math]::Floor($a.Height * 96 / $d)";
+  const m = /(\d+)x(\d+)/.exec(await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], 10000));
+  return m && Number(m[1]) > 0 && Number(m[2]) > 0 ? { w: Number(m[1]), h: Number(m[2]) } : null;
+}
 /** the process listening on 127.0.0.1:<port> (0 = none) */
 async function listeningPid(port) {
   const out = await run('netstat', ['-ano', '-p', 'tcp'], 8000);
@@ -1046,4 +1079,4 @@ function createRate() {
   };
 }
 
-module.exports = { createRate, puppetOn, startOneClick, bootOneClick, bootEmbedded, vtuberAnswers, closeOldServer, findChrome, chromeMajor, EMBED_PORTS };
+module.exports = { createRate, puppetOn, startOneClick, bootOneClick, bootEmbedded, vtuberAnswers, closeOldServer, findChrome, chromeMajor, EMBED_PORTS, VT_WINDOW, windowSizeFor, primaryWorkArea };

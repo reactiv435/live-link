@@ -1,0 +1,49 @@
+{
+ "blender": "5.1.1",
+ "bake": 1024,
+ "size": 512,
+ "points": 172705,
+ "height_cm": [
+  -0.402,
+  0.357
+ ],
+ "light_gamma": 1.6,
+ "channels": {
+  "core-form.R": {
+   "is": "ao",
+   "mean": 0.6552,
+   "min": 0.0,
+   "max": 1.0
+  },
+  "core-form.G": {
+   "is": "curv",
+   "mean": 0.3482,
+   "min": 0.0,
+   "max": 1.0
+  },
+  "core-form.B": {
+   "is": "light",
+   "mean": 0.3664,
+   "min": 0.0,
+   "max": 1.0
+  },
+  "core-lines.R": {
+   "is": "lines",
+   "mean": 0.047,
+   "min": 0.0,
+   "max": 0.9945
+  },
+  "core-lines.G": {
+   "is": "height",
+   "mean": 0.3349,
+   "min": 0.0,
+   "max": 0.8572
+  },
+  "core-lines.B": {
+   "is": "opening",
+   "mean": 0.0103,
+   "min": 0.0,
+   "max": 1.0
+  }
+ }
+}

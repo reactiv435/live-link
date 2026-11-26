@@ -135,10 +135,10 @@
     const st = {
       t: 0, lastT: null, moves: {}, hype: { rank: -1, k: 0, plusAt: -99 }, song: null, eat: null, pend: null, tint: null, score: null, boss: null, vote: null, hands: null, handOpt: { aspect: 0.5625 },
       L: { halo: 0, crown: 0, eyes: 0, mouthFire: 0, embers: 0, eyeHot: 0, bgFire: 0, gold: 0, cosmic: 0, crack: 0, demon: 0, jaw: 0, melt: 0, heat: 0, room: 0, gone: 0, shatter: 0 },
-      flashAt: -9, flash: [0, 0, 0, 0], cues: [], pops: [], kick: [0, 0, 0], kickV: 0, pool: 0, seen: new Map(), strikeSeen: new Map(), dmgN: 0, songK: 0, stageSeen: 'whole', endSeen: null, text: null, handSeen: { angel: false, devil: false },
+      hypeStyle: 'classic', hypeTone: 'classic', flashAt: -9, flash: [0, 0, 0, 0], cues: [], pops: [], kick: [0, 0, 0], kickV: 0, pool: 0, seen: new Map(), strikeSeen: new Map(), dmgN: 0, songK: 0, stageSeen: 'whole', endSeen: null, text: null, handSeen: { angel: false, devil: false },
     };
     for (const k in MOVES) st.moves[k] = { on: false, t0: -99, t1: -99, held: false, text: '' };
-    const cue = (t, kind, size = 1, dur = 0) => { if (sounds) { st.cues.push({ t, kind, size, dur }); if (st.cues.length > 200) st.cues.splice(0, 100); } };
+    const cue = (t, kind, size = 1, dur = 0, pitch = 0) => { if (sounds) { st.cues.push(pitch ? { t, kind, size, dur, pitch } : { t, kind, size, dur }); if (st.cues.length > 200) st.cues.splice(0, 100); } };
     /** a full-frame flash, never closer than FLASH_GAP to the one before (TikTok: under 3 a second) -> true when it was taken */
     function flash(t, col, a) { if (t - st.flashAt < FLASH_GAP) return false; st.flashAt = t; st.flash = [col[0], col[1], col[2], Math.min(0.6, a)]; return true; }
     const pop = (t, text, at, kind) => { st.pops.push({ t, text: String(text).slice(0, 28), at, kind }); if (st.pops.length > 12) st.pops.shift(); };
@@ -155,12 +155,28 @@
       return true;
     }
     function release(name, t = st.t) { const m = st.moves[name], M = MOVES[name]; if (!m || !m.on || !m.held) return false; m.held = false; m.t1 = Math.max(t, m.t0 + (M.min || 0.8)); return true; }
+    const HYPE_NOTE = [1, 1.1225, 1.2599, 1.4983, 1.6818];      // WARMING UP .. LEGENDARY: a five-note scale going up
     function setHype(rank, progress = 0, t = st.t) {
       let r = typeof rank === 'string' ? RANKS.findIndex((x) => x.id === rank) : Math.round(Number(rank));
       if (!(r >= 0)) r = -1; r = Math.min(5, r);
-      if (r > st.hype.rank && r >= 0) { cue(t, r >= 4 ? 'rise' : 'whoosh', 0.8 + 0.25 * r, 0.9); if (r === 5) { cue(t + 0.5, 'boom', 1.6); } st.hype.upAt = t; }
+      if (r > st.hype.rank && r >= 0) {
+        // (a new hype look: a rise that is one note higher with every rank, under the transformation; the hit comes at the lock, in pre())
+        if (HY && st.hypeStyle !== 'classic' && r < 5) { cue(t, 'rise', 0.7 + 0.22 * r, 0.95, HYPE_NOTE[r]); if (r >= 3) cue(t, 'charge', 0.6 + 0.3 * (r - 3), 0.95); }
+        else { cue(t, r >= 4 ? 'rise' : 'whoosh', 0.8 + 0.25 * r, 0.9); if (r === 5) { cue(t + 0.5, 'boom', 1.6); } }
+        st.hype.upAt = t;
+      }
       st.hype.rank = r; st.hype.k = clamp(progress);
+      if (HY) HY.setRank(r, t);
     }
+    // V9 HYPE (mask-hype.js): another look for the ranks. 'classic' = this file's own ladder, exactly as it was; nothing of
+    // the new module is made until a style or a gifter asks for it.
+    let HY = null;
+    const hyOn = () => { if (!HY && root.VTMaskHype) { HY = root.VTMaskHype.create({ seed }); HY.setTone(st.hypeTone, st.hypeSolo); HY.setRank(st.hype.rank, st.t); } return HY; };
+    function setHypeStyle(name) { const M = root.VTMaskHype; if (!M || !M.STYLES.includes(name)) return false; if (HY && HY.state.failed && name !== 'classic') return false;      // (this card would not take the looks' shaders: classic only)
+      if (name === 'classic' && !HY) { st.hypeStyle = name; return true; } const h = hyOn(); if (!h) return false; st.hypeStyle = name; return h.setStyle(name); }
+    function setHypeTone(name, solo) { st.hypeTone = name || 'classic'; st.hypeSolo = !!solo; if (HY) HY.setTone(st.hypeTone, st.hypeSolo); }
+    /** a gift: the viewer's picture joins the orbit round the Mask (any hype style, the classic one too) */
+    function gifter(viewer, coins, t = st.t) { const h = hyOn(); return h ? h.gifter(viewer, coins, t) : false; }
     function hypePlus(t = st.t) { if (st.hype.rank < 5 || t - st.hype.plusAt < 1.2) return false; st.hype.plusAt = t; cue(t, 'boom', 1.2); cue(t, 'rise', 1, 0.6); return true; }
     /** Mirror is on: the page flips the whole canvas, so the words spelled in points are drawn flipped (they then read right) */
     function setMirror(on) { on = !!on; if (on === !!st.mirror) return; st.mirror = on; st.text = null; if (st.moves.eat) st.moves.eat.pts = null; }
@@ -387,6 +403,9 @@
         crack: Math.max(crackMv, stage === 'demon' ? 0.80 : stage === 'cracked' ? 0.58 : 0), demon: stage === 'demon' ? 1 : 0,
         room: Math.max(st.vote ? 1 : 0, st.hands && (st.hands.angel.on || st.hands.devil.on) ? 1 : 0, B ? (E && E.winner === 'boss' && (E.stage === 'laugh' || E.stage === 'credits') ? 1 : (st.barsY || 0) > 0.25 ? 1 : 0.35) : 0, mv.eat.on && t - mv.eat.t0 < 2.9 ? 1 : 0, wordRoom),
       };
+      // V9 HYPE: a new style takes the ranks' layers over (the puppet moves and the fight keep their fire)
+      const hyp = HY ? HY.pre(t, dt, { audio: A, fire: st.fire || GOLD, own: st.own || null, viz: ctx.fx && ctx.fx.viz > 0 ? ctx.fx.viz : 0 }) : null; st.hyp = hyp;
+      if (hyp && hyp.on) { tg.halo = 0; tg.crown = Math.max(fireMv, stage === 'demon' ? 0.75 : stage === 'cracked' ? 0.3 : 0, spFire); tg.eyes = Math.max(fireMv, stage === 'demon' ? 0.9 : 0, spFire * 0.8); tg.mouthFire = Math.max(fireMv, scoreFire, spFire); tg.bgFire = 0; tg.embers = Math.max(hyp.embers, stage !== 'whole' ? 0.5 : 0); tg.gold = hyp.gold; }
       if (E && (E.stage === 'explode' || E.stage === 'rain' || E.stage === 'credits') && E.winner === 'chat') { tg.crown = 0; tg.eyes = 0; tg.mouthFire = 0; tg.crack = 0; tg.demon = 0; }
       if (E && E.stage === 'reform') { tg.crack = 0; tg.demon = 0; tg.crown = 0; tg.eyes = 0; }
       // the boss wins: he heals as he gulps the raid down (the cracks seal, the demon red goes), so he laughs with a whole face
@@ -451,12 +470,14 @@
       if (L.gone > 0) P.gain *= 1 - L.gone;
       // the flash (decays; its start is rate-limited in flash())
       st.flash[3] *= Math.exp(-dt * 7); const pf = P.flash || [0, 0, 0, 0]; P.flash = st.flash[3] > pf[3] ? st.flash.slice() : pf;
-      U.v8 = [L.crack, L.cosmic, clamp(L.heat + 0.5 * L.demon), 0]; U.gone = L.gone > 0.92; U.fire = fire; st.fire = fire; st.own = own; st.pal = P; if (st.eat) st.eat.col = fire;
+      U.v8 = [L.crack, L.cosmic, clamp(L.heat + 0.5 * L.demon), 0]; U.gone = L.gone > 0.92; U.fire = fire; st.fire = fire; st.own = own; st.pal = P; if (st.eat) st.eat.col = fire; U.hy = hyp && hyp.on ? hyp.face : null;
       // V9 viz fix: in the Visualizer the face is not there, so nothing that draws the head's shape may be (the rim of heat was
       // an outline round nothing). faceK = how much of his FACE is on screen: 1 = the face (every number below is then
       // exactly what it was), 0 = the Visualizer; it follows mask-fx's own 1.5 s ease. The eyes stay, as two vortexes
       // that mask-looks.js draws behind the formation: eyeHeat tells it how hot the show has made them.
       st.faceK = 1 - ss(0, 0.8, ctx.fx && ctx.fx.viz > 0 ? ctx.fx.viz : 0); U.eyeHeat = clamp(Math.max(L.eyeHot * 0.9, L.eyes, L.demon, L.cosmic) * (1 - L.gone));
+      if (hyp && hyp.on && hyp.lockNow && hyp.rank >= 0 && hyp.rank < 5) { const r = hyp.rank; cue(t, r >= 3 ? 'boom' : 'bang', 0.55 + 0.26 * r); cue(t, 'ping', 0.6 + 0.12 * r, 0, HYPE_NOTE[r] * 0.75); if (r === 4) cue(t + 0.04, 'glass', 0.55); }      // the transformation's hit, on the lock
+      if (hyp && hyp.on) { if (hyp.kick) st.kickV = Math.max(st.kickV, hyp.kick); P.gain *= 1 + 0.25 * hyp.pulse; }
       st.gooA = gooColour === 'mask' && own && !(own[0] > 0.9 && own[1] < 0.42 && own[2] < 0.18) ? own : TOXIC;      // never a blood red: a red Mask keeps the toxic green st.gooA2 = st.gooA === TOXIC ? TOXIC2 : mul3(own, 0.30);
       // ---- the effects' own state (mask-fx): shatter, the camera's kick, the grow
       st.kickV *= Math.exp(-dt * 9); const kx = st.kickV * Math.sin(t * 61), ky = st.kickV * Math.cos(t * 47);
@@ -468,6 +489,7 @@
         fx.scale = fx0.scale * (1 + 0.10 * L.cosmic + 0.10 * plus + 0.06 * (st.meltSnap || 0));
         fx.kick = [fx0.kick[0] + kx + shake * Math.sin(t * 53) * 0.8, fx0.kick[1] + ky + shake * Math.cos(t * 41) * 0.8, fx0.kick[2] + st.kickV * 0.8 + plus * 0.5];
         fx.pulse = fx0.pulse + plus * 0.8;
+        if (hyp && hyp.on) { fx.scale *= 1 + hyp.push; fx.pulse += hyp.pulse; }
       }
       L.dodge = ease(L.dodge || 0, B && B.moves && B.moves.dodge && B.moves.dodge.on ? (B.moves.dodge.dir || 1) : 0, dt, 13, 5); st.dodgeX = 0.40 * L.dodge;
       const head = ctx.head ? { R: ctx.head.R, x: ctx.head.x + st.dodgeX + shake * 0.03 * Math.sin(t * 67), y: ctx.head.y + shake * 0.03 * Math.cos(t * 59) + (E && E.winner === 'boss' && E.stage === 'laugh' ? 0.035 * Math.sin(E.t * 2 * Math.PI * 3.1) : 0), scale: ctx.head.scale } : null;
@@ -479,7 +501,8 @@
       const by = st.barsY || 0, barZ = by > 0.25 && by < 0.75 ? 0.40 : by >= 0.75 ? 0.30 : 0.20, barY = by > 0.25 && by < 0.75 ? 0.20 : by >= 0.75 ? -0.115 : 0.012;
       const zk = vt ? 0.30 : wordRoom > 0.5 ? 0.36 : hd ? (two ? 0.50 : 0.36) : et ? 0.16 : bw ? 0.48 : barZ, yk = vt ? 0.10 : wordRoom > 0.5 ? 0.17 : hd ? (two ? -0.085 : -0.05) : et ? -0.055 : bw ? (by >= 0.75 ? -0.16 : by > 0.25 ? 0.16 : -0.10) : barY;
       L.aside = ease(L.aside || 0, hd && !two ? (hA ? (st.hands.angel.x < 0.5 ? 1 : -1) : (st.hands.devil.x < 0.5 ? 1 : -1)) : 0, dt, 3, 2.5);
-      const place = room > 0.003 || Math.abs(L.aside) > 0.003 ? { zoom: pl0.zoom * (1 - zk * room), x: pl0.x + 0.13 * L.aside, y: pl0.y - yk * room } : ctx.place || null;
+      let place = room > 0.003 || Math.abs(L.aside) > 0.003 ? { zoom: pl0.zoom * (1 - zk * room), x: pl0.x + 0.13 * L.aside, y: pl0.y - yk * room } : ctx.place || null;
+      if (hyp && hyp.zoom < 0.999) { const b = place || pl0; place = { zoom: b.zoom * hyp.zoom, x: b.x, y: b.y }; }      // (orbits and gifters need room at the sides: the Mask steps back a little)
       st.lastT = t;
       return { palette: P, fx, head, place, v8: { u: U, render } };
     }
@@ -606,6 +629,9 @@
       const hh = VIEW.halfH, hw = hh * G.W / G.H, floorY = VIEW.targetY - hh / ps - c.poy * hh / ps;
       const beat = A.beat || 0, bass = A.bass || 0;
       const mv = st.moves;
+      // ---- V9 HYPE: the new styles' own layers (behind the face, round it, in orbit), before the stage's light
+      if (HY && HY.state.failed && st.hypeStyle !== 'classic') st.hypeStyle = 'classic';      // (the looks could not be made on this card: the stage's own ladder from here on)
+      if (HY) HY.render(c, { fire, own: st.own || null, burst, spark: (w, v, life, size, col) => spawn(SPARK, w[0], w[1], w[2], v[0], v[1], v[2], life, size, col, 1) });
 
       // ---- embers (hype): they rise through the frame, more and brighter with each rank
       if (L.embers > 0.02) {
@@ -1050,12 +1076,12 @@
         // (fix round V-6) the small caption under the Mask while it chews and WAITS for his verdict; it goes when the word lands
         chewing: e && e.wait && !e.word && !e.wantGulp && e.chewT !== null && e.wordT === null && e.gulpT === null ? { a: ss(0.5, 0.9, t - e.chewT), u: t - e.chewT } : null,
         verdict: e && wu >= 0 && e.gulpT === null ? { word: e.word, title: e.title, u: wu, a: ss(0.30, 0.65, wu) * (e.suckT !== null ? 1 - ss(0, 0.25, t - e.suckT) : 1), top: HUD.vbox ? HUD.vbox[0] : null, bottom: HUD.vbox ? HUD.vbox[1] : null } : null,
-        colour: st.own, fire: st.fire || GOLD,
+        colour: st.own, fire: st.fire || GOLD, gifters: HY ? HY.names() : null,
       };
     }
     function cuesBetween(a, b) { return st.cues.filter((c) => c.t >= a && c.t < b); }
     function busy() { const m = st.moves; return !!(m.goo.on || m.fire.on || m.melt.on || m.crack.on || m.eat.on || st.boss || st.eat || (st.score && st.t - st.score.t0 < 4.6)); }
-    return { puppet, release, setHype, hypePlus, cover, songOff, eat, verdict, gulp, belch, score, boss, vote, hands, pre, post, hud, cuesBetween, flash, busy, setMirror, setBars, state: st, RANKS, MOVES };
+    return { setHypeStyle, setHypeTone, gifter, hypeStyles: () => (root.VTMaskHype ? root.VTMaskHype.STYLES.slice() : ['classic']), hype: () => HY, puppet, release, setHype, hypePlus, cover, songOff, eat, verdict, gulp, belch, score, boss, vote, hands, pre, post, hud, cuesBetween, flash, busy, setMirror, setBars, state: st, RANKS, MOVES };
   }
   /**
    * WARM ONLY (phase 2): the colours a cover may give the Mask. The house look is black / crimson / chrome, so a cover

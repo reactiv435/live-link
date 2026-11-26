@@ -25,4 +25,11 @@ sold or used anywhere else without written permission from ReactivVibeAI.
 Finding them in a public source repository or in an installed copy of LIVE
 Link gives no licence to them.
 
+The countdown song, music/countdown-music.mp3 ("Reactiv Awakening
+(Countdown)"), is the owner's own song. It is all rights reserved as well,
+and it is NOT licensed for any other host's stream: it is not one of the
+files above that hosts may use. LIVE Link's countdown music switch is OFF by
+default for every host; it plays only where the owner turns it on for his
+own stream.
+
 The full notes: docs/licenses/VTUBER.md in the LIVE Link repository.

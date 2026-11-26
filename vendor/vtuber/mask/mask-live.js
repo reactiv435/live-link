@@ -20,6 +20,9 @@
 //                                                     changed while it is on, the points fly from one into the other
 //   mask.setBackground('black' | 'summer' | 'ice' | 'forge' | 'nebula' | 'studio' | 'street')   the list is stats().backgrounds
 //   mask.setHead('none' | 'head' | 'hair' | 'horns' | 'flames' | 'demon')   what is round the face (none = the mask alone)
+//   mask.setStyle('classic' | 'core')                 V9: a high-end style on top of the Mask (mask-v9.js, loaded after mask-looks.js;
+//                                                     without that file only 'classic' exists). 'core' = Reactiv Core, the gold particle
+//                                                     face. The change is a transform, never a cut; styles() lists them
 //   mask.setEyeLock(true | false)                     eyes on camera (default true): the eyes point at the lens; stats().eyeLock
 //   mask.setPlace({ zoom, x, y })                     V7: where the face sits (x / y in parts of the picture, + = right / up) and how
 //                                                     big; the background stays full frame. null = home
@@ -43,12 +46,23 @@
 // with one, expressions are boosted exactly as in the demos.
 (function (root) {
   'use strict';
-  function create(canvas, { neutral = null, bsNames = [], restR = null, width = 1080, height = 1920, look = 'particlesC', giftMap = null, giftSounds = true, background = 'black', visualizer = 'orb', eyeLock = true, v8 = true, gooColour = 'toxic', vizEyes = true } = {}) {
+  function create(canvas, { neutral = null, bsNames = [], restR = null, width = 1080, height = 1920, look = 'particlesC', giftMap = null, giftSounds = true, background = 'black', visualizer = 'orb', eyeLock = true, v8 = true, gooColour = 'toxic', vizEyes = true, style = 'classic' } = {}) {
     const Core = root.VTMaskCore, GL = root.VTMaskGL, Looks = root.VTMaskLooks, Mood = root.VTMaskMood, Fx = root.VTMaskFx, Sfx = root.VTMaskSfx;
     canvas.width = width; canvas.height = height;
     const G = GL.create(canvas);
     const t0 = performance.now(), now = () => (performance.now() - t0) / 1000;
     let core = null, looks = null, provisional = false;
+    // V9 (mask-v9.js): a high-end STYLE switched on top of the look. Nothing of it is made until one is asked for.
+    let v9 = null;
+    // V9 HANDS (mask-hands.js + an effect file): his hands and a live visual between them. Nothing of it is made until it is switched on.
+    let hfx = null;
+    const handsOn = () => { if (!hfx && root.VTMaskHands) hfx = root.VTMaskHands.create(G); return hfx; };
+    let scam = null;      // V9 SMART CAMERA (js/v9/smart-camera.js): made the first time he switches it on; null = the Mask's own camera, untouched
+    const styleOn = () => { if (!v9 && root.VTMaskV9) { v9 = root.VTMaskV9.create(G); if (core) v9.setCore(core); } return v9; };
+    // V9 CAMERA MODE (mask-cam.js): his real camera is the picture, only the effects are drawn (on a see-through canvas of
+    // the page's). Nothing of it is made until the page asks for it; never asked = the Mask exactly as before.
+    let cam = null;
+    const camOn = () => { if (!cam && root.VTMaskCam) cam = root.VTMaskCam.create(); return cam; };
     let fx = Fx.create(giftMap ? { map: giftMap } : {});
     const mood = Mood.create();
     // V8 (mask-v8.js): puppet moves, hype layers, the song, the boss fight's look, hand puppets. `v8: false` at create = none of it.
@@ -67,6 +81,7 @@
       core = Core.create({ neutral: n, bsNames, restR, boost: provisional ? 0 : 1 });
       core.eyeLock = S.eyeLock;
       looks = Looks.create(G, core);
+      if (v9) v9.setCore(core);
       head = null; cx = null;
       warm();
     }
@@ -102,6 +117,7 @@
     }
     function setNeutral(n) { provisional = false; build(n); }
     if (neutral) build(neutral);
+    if (style && style !== 'classic') setStyle(style);
 
     function frame(lm, bs, mat, size, tMs) {
       S.frames++;
@@ -114,9 +130,10 @@
       }
       const b = performance.now();
       const ok = core.process(lm, bs, mat, size, tMs);
+      if (hfx) hfx.face(lm, size);
       S.coreMs += (performance.now() - b - S.coreMs) * 0.05;
       if (!ok) return false;
-      S.faces++; lastBs = bs; lastSeen = now();
+      S.faces++; lastBs = bs; lastSeen = now(); S.pic = size;
       const P = core.pose, k = cx === null ? 1 : 0.004;                   // where he usually sits: a slow average (about 8 s at 30 fps)
       if (cx === null) { cx = P.x; cy = P.y; cs = P.size; } else { cx += (P.x - cx) * k; cy += (P.y - cy) * k; cs += (P.size - cs) * k; }
       const soft = (v, lim) => lim * Math.tanh(v / lim);
@@ -127,6 +144,7 @@
       const t = now();
       a = { bass: f.bass, mid: f.mid, high: f.high, beat: f.beat, level: f.level, bright: f.bright === undefined ? 0.8 : f.bright };
       S.audioAt = t;
+      if (scam && scam.on) scam.audio(f, t);      // V9 SMART CAMERA: the director hears the music (only while it is on)
       if (f.kick) { kicks.push([t, f.kick, f.hit || 0]); if (kicks.length > 64) kicks.splice(0, 32); }
       if (f.hit) S.hit = Math.max(S.hit || 0, f.hit);                    // kept until the next draw: the colour turns on the hit itself
     }
@@ -151,6 +169,12 @@
     function setPlace(p) { S.place = p && typeof p === 'object' ? { zoom: Math.min(2, Math.max(0.15, Number(p.zoom) || 1)), x: Math.min(0.5, Math.max(-0.5, Number(p.x) || 0)), y: Math.min(0.5, Math.max(-0.5, Number(p.y) || 0)) } : null; return true; }
     function setColour(hex, music) { const c = Mood.hexLinear(hex); S.colour = c ? { hex: hex.toLowerCase(), c, music: music !== false, viz: Mood.customViz(c) } : null; return !!c || hex === null || hex === ''; }
     function busy() { const s = fx.sample(now()); return !!((stage && stage.busy()) || s.busy > 0 || s.missiles.length || s.glints.length || s.lock || Math.abs(s.scale - 1) > 0.02 || s.shatter > 0.05 || s.brace > 0.05 || s.rainbow > 0.05); }
+    /** V9: 'classic' (what the Mask has always been) or a style on top of it ('core' = Reactiv Core). The change is a transform, about 1.5 s. */
+    function setStyle(name) {
+      if (name === 'classic') { S.style = name; if (v9) v9.setStyle(name); if (stage && stage.setHypeTone) stage.setHypeTone('classic', false); return true; }
+      const m = styleOn(); if (!m || !m.setStyle(name)) return false;
+      S.style = name; if (stage && stage.setHypeTone) stage.setHypeTone(name === 'quantum' ? 'quantum' : 'classic', name !== 'classic'); return true;
+    }
     function setHead(h) { if (!['none', 'head', 'hair', 'horns', 'flames', 'demon'].includes(h)) return false; S.head = h; return true; }
     function setGiftMap(rows) {
       // a new list takes effect for the next gift; what is in the air finishes with the old one
@@ -198,8 +222,18 @@
       // a colour he picked wins over the light of the background (the background still shows, in its own colours)
       palette = S.colour ? Mood.custom(moodNow, S.colour.c, S.colour.music) : Mood.tint(moodNow, S.bg);
       sounds(t);
+      // V9 CAMERA MODE: the effects go onto his real face; once the change is over the Mask itself is not drawn at all
+      if (cam && cam.active(t) && cam.frame(t, { core, fx: fx.sample(t), pic: S.pic }) >= 1) { S.drawMs += (performance.now() - b - S.drawMs) * 0.05; return true; }
       const fxS = fx.sample(t), o = stage ? stage.pre(t, { core, palette, fx: fxS, head, place: S.place || null, mood: moodNow, colour: S.colour ? S.colour.c : null, audio: au }) : null;
-      looks.draw(look, { time: t, audio: au, kicks: live ? ks : [], hits: live ? hs : [], head: o ? o.head : head, palette: o ? o.palette : palette, fx: o ? o.fx : fxS, eyeStyle: 1, bg: S.bg, headPart: S.head || 'none', place: o ? o.place : S.place || null, vizCol: S.colour ? S.colour.viz : null, v8: o ? o.v8 : null, vizEyes: vizEyes !== false });
+      const scene = { time: t, audio: au, kicks: live ? ks : [], hits: live ? hs : [], head: o ? o.head : head, palette: o ? o.palette : palette, fx: o ? o.fx : fxS, eyeStyle: 1, bg: S.bg, headPart: S.head || 'none', place: o ? o.place : S.place || null, vizCol: S.colour ? S.colour.viz : null, v8: o ? o.v8 : null, vizEyes: vizEyes !== false };
+      // V9: a style that is on (or on its way in or out) takes the palette and the effects through its own hands and draws itself into the same scene
+      const sty = v9 ? v9.pre(t, dt, { palette: scene.palette, fx: scene.fx, v8u: scene.v8 && scene.v8.u ? scene.v8.u : null, audio: au, hits: scene.hits }) : null;
+      if (sty) { scene.palette = sty.palette; scene.fx = sty.fx; scene.v9 = sty.hook; }
+      // V9 HANDS: off or no hand up = null = the scene is what it was
+      const hf = hfx ? hfx.pre(t, dt, { audio: au, kicks: scene.kicks, hits: scene.hits }) : null;
+      if (hf) { scene.hfx = hf; scene.place = hfx.place(scene.place); }
+      if (scam) { try { scam.frame(t, dt, scene, stage, v9); } catch (e) { scene.cam = null; if (!scam.err) { scam.err = String(e); console.warn('V9 SMART CAMERA:', e); } } }      // V9 SMART CAMERA: off = it touches nothing; an error in it = said once, the Mask draws on
+      looks.draw(look, scene);
       if (stage) stage.post();
       S.drawMs += (performance.now() - b - S.drawMs) * 0.05;
       return true;
@@ -219,6 +253,11 @@
       /** fix round V-2: a word that was owed (the song was eaten earlier and swallowed with no word): a belch, then the word with its title */
       belch: (word, o) => (stage ? stage.belch(word, o || {}, now()) : false),
       score: (n) => { if (stage) stage.score(n, now()); return !!stage; },
+      /** V9 HYPE: the look of the ranks ('classic' = as it always was, 'aura' | 'orbit' | 'smoke' | 'material' | 'stage'); a gifter's picture joins the orbit */
+      setHypeStyle: (name) => (stage && stage.setHypeStyle ? stage.setHypeStyle(name) : false), hypeStyles: () => (stage && stage.hypeStyles ? stage.hypeStyles() : ['classic']),
+      /** the hype look that is REALLY drawing ('classic' when a look could not be made on this card) */
+      hypeStyle: () => (stage && stage.state && stage.state.hypeStyle ? stage.state.hypeStyle : 'classic'),
+      gifter: (viewer, coins) => (stage && stage.gifter ? stage.gifter(viewer, coins, now()) : false),
       boss: (s) => { if (stage) stage.boss(s); }, vote: (v) => { if (stage) stage.vote(v); }, hands: (p, o) => { if (stage) stage.hands(p, o); },
       /** what the 2D layer over the canvas draws this frame (mask-hud.js): bars, the vote, names on missiles, the cover, the score */
       hud: () => (stage ? stage.hud() : null), v8: () => stage, clock: now,
@@ -228,10 +267,20 @@
       setBars: (y) => { if (stage && stage.setBars) stage.setBars(Number(y) || 0); },
       /** one soft full-frame flare (a big gift); goes through the stage's own limit (never 3 a second) */
       flare: () => (stage ? stage.flash(now(), [1.0, 0.82, 0.5], 0.45) : false),
-      frame, audio, fire, setMode, setVisualizer, setBackground, setHead, setPlace, setColour, busy, setGiftSounds, setGiftMap, setNeutral, learnNeutral, draw, setEyeLock,
+      frame, audio, fire, setMode, setVisualizer, setBackground, setHead, setStyle,
+      /** V9 HANDS: the hand effect on / off ({ effect: 'particle-play', room: true }); handsInput = the hand model's hands as the tracker sends them
+       *  ({ aspect, face? }); handsState = his hands for other modules (place, speed, pose: a gift missile can ask where a hand is) */
+      handsFx: (on, o) => { const h = on ? handsOn() : hfx; if (!h) return false; if (o && o.effect) h.setEffect(o.effect); if (o && o.room !== undefined) h.setRoom(o.room); if (o && o.gain) h.setGain(o.gain); h.setOn(!!on); return true; },
+      handsInput: (hands, o) => { if (hfx) hfx.input(hands, o, now()); }, handsState: () => (hfx ? hfx.state() : null), handsStats: () => (hfx ? hfx.stats() : { on: false }),
+      /** V9 SMART CAMERA: on / off (off = the Mask's own camera, untouched) -> the camera (stats, aside, fire), or null on a page without smart-camera.js */ smartCam: (on, o) => { if (on && !scam && root.VTSmartCam) scam = root.VTSmartCam.create(o); if (scam) scam.setOn(!!on); return scam; },
+      handEffects: () => (root.VTMaskHands ? root.VTMaskHands.effects() : []),
+      /** V9 CAMERA MODE: the effects-only layer (mask-cam.js: layer, set, align, showAlign, face, k, anchor, hooks), or null when that file is not loaded */
+      camera: () => camOn(),
+      /** V9: the styles this build has (the first is the classic Mask) and what the style is doing right now */
+      styles: () => (root.VTMaskV9 ? root.VTMaskV9.STYLES.slice() : ['classic']), styleStats: () => (v9 ? v9.stats() : { style: 'classic', shown: 0, ready: false, points: 0 }), setPlace, setColour, busy, setGiftSounds, setGiftMap, setNeutral, learnNeutral, draw, setEyeLock,
       /** the short-lived names to show right now: [{ text, kind: 'follow' | 'share' | 'gift', age (s, of 2.5) }], at most two. The page draws them. */
       names: () => fx.sample(now()).names,
-      stats: () => ({ drawMs: S.drawMs, coreMs: S.coreMs, frames: S.frames, faces: S.faces, mode: S.mode, visualizer: S.viz, visualizers: Fx.VISUALIZERS.slice(), background: S.bg, backgrounds: BACKGROUNDS.slice(), audio: now() - S.audioAt < 1.5, warm: !!S.warm, eyeLock: S.eyeLock, place: S.place || null, colour: S.colour ? S.colour.hex : '', colourMusic: S.colour ? S.colour.music : true, sfxLevel: sfxLevel(), neutral: core ? (provisional ? 'provisional' : 'set') : 'none', renderer: G.info.renderer }),
+      stats: () => ({ drawMs: S.drawMs, coreMs: S.coreMs, frames: S.frames, faces: S.faces, mode: S.mode, visualizer: S.viz, visualizers: Fx.VISUALIZERS.slice(), background: S.bg, backgrounds: BACKGROUNDS.slice(), audio: now() - S.audioAt < 1.5, warm: !!S.warm, eyeLock: S.eyeLock, place: S.place || null, colour: S.colour ? S.colour.hex : '', colourMusic: S.colour ? S.colour.music : true, sfxLevel: sfxLevel(), neutral: core ? (provisional ? 'provisional' : 'set') : 'none', renderer: G.info.renderer, style: S.style || 'classic', ...(cam ? { camera: cam.stats() } : null) }),
       destroy() { try { if (actx) actx.close(); } catch (e) { /* ignore */ } const lose = G.gl.getExtension('WEBGL_lose_context'); if (lose) lose.loseContext(); },
     };
   }

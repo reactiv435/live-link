@@ -46,6 +46,27 @@
     return mix(mix(mix(hash1(i), hash1(i + vec3(1, 0, 0)), f.x), mix(hash1(i + vec3(0, 1, 0)), hash1(i + vec3(1, 1, 0)), f.x), f.y),
                mix(mix(hash1(i + vec3(0, 0, 1)), hash1(i + vec3(1, 0, 1)), f.x), mix(hash1(i + vec3(0, 1, 1)), hash1(i + vec3(1, 1, 1)), f.x), f.y), f.z);
   }
+  // V9 HYPE (mask-hype.js; uHyW.w = 0 = nothing changes): the face's own material per rank, and the front of a rank-up crossing it.
+  // uHyA / uHyB = the material before / behind the front: (coal edges, magma veins, molten, shards); uHyA2 / uHyB2 = (gold, stained
+  // dark, a light crossing the face, glow); uHyW = (the front 0..1 or -1, how it crosses, lift, on); uHyP = (shards open, the light's
+  // height, held breath, spare); uHyC = what burns, uHyC2 = the gold
+  uniform vec4 uHyA, uHyB, uHyA2, uHyB2, uHyW, uHyP; uniform vec3 uHyC, uHyC2;
+  float hyFront(vec3 at, out float band) {
+    band = 0.0; if (uHyW.x < 0.0) return 1.0;
+    float kd = uHyW.y, d;
+    if (kd < 0.5) d = length(at - vec3(0.0, -0.45, 0.45)) / 1.80;
+    else if (kd < 1.5) d = (1.10 - at.y) / 3.1;
+    else if (kd < 2.5) d = 1.0 - length((at.xy - vec2(0.0, -0.45)) / vec2(1.05, 1.52));
+    else if (kd < 3.5) d = min(length(at.xy - vec2(-0.5, 0.15)), length(at.xy - vec2(0.5, 0.15))) / 2.2;
+    else if (kd < 5.5) d = length(at.xy - vec2(0.0, -0.95)) / 2.2;
+    else d = length(at.xy - vec2(0.0, 0.55)) / 2.6;
+    d = clamp(d, 0.0, 1.06) + (vnoise(at * 3.3 + 7.0) - 0.5) * 0.14;
+    float f = uHyW.x * 1.42 - 0.15, x = (d - f) / 0.070;
+    band = exp(-x * x) * smoothstep(0.06, 0.34, f) * (1.0 - smoothstep(0.92, 1.0, uHyW.x));
+    return 1.0 - smoothstep(f - 0.03, f + 0.03, d);
+  }
+  float hyVein(vec3 at) { float rv = abs(vnoise(at * 3.0 + 11.0) - 0.5) * 2.0, rv2 = abs(vnoise(at * 6.5 + 3.0) - 0.5) * 2.0; return max(1.0 - smoothstep(0.0, 0.17, rv), 0.6 * (1.0 - smoothstep(0.0, 0.10, rv2))); }
+  vec3 hyLava(vec3 at, float t) { float ln = vnoise(at * vec3(2.6, 1.7, 2.6) + vec3(0.0, t * 0.55, 0.0)) * 0.6 + 0.4 * vnoise(at * 6.0 + vec3(0.0, t * 0.9, 1.0)); return mix(vec3(0.9, 0.07, 0.02), mix(uHyC, vec3(1.0, 0.9, 0.55), 0.4), smoothstep(0.35, 0.75, ln)) * (0.35 + 2.4 * ln * ln); }
   `;
   const FACE_VS = COMMON + `
   in vec3 aPos, aNrm, aRest; in vec4 aMask; in vec2 aMask2; in float aAct;
@@ -694,6 +715,13 @@
     if (uNDmg > 0 && uMode != 1) dmg = v8dmg(at0, aRnd.w);
     if (uV8.x > 0.0 && uMode != 1) { crk = v8crack(at0, cid); P += N * ((cid - 0.5) * 0.07 * uV8.x * (1.0 - crk)) * (1.0 - 0.6 * hold); }
     P += dir * uShatter * (0.22 + 2.4 * aRnd.z * aRnd.z) + cross(dir, vec3(0.0, 1.0, 0.0)) * uShatter * 0.5 * sin(t * 2.0 + aRnd.x * 6.28) * aRnd.z;
+    // V9 HYPE: the front of a rank-up lifts the points it passes; WILDFIRE's shards float apart (each cell as one piece)
+    float hyBand = 0.0; vec4 hyS = vec4(0.0), hyS2 = vec4(0.0); vec2 hyCe = vec2(1.0, 0.0);
+    if (uHyW.w > 0.0 && uMode == 0) {
+      float hk = hyFront(at0, hyBand); hyS = mix(uHyA, uHyB, hk); hyS2 = mix(uHyA2, uHyB2, hk);
+      if (hyS.w > 0.001) { hyCe = v8cell(at0 * 1.9 + 1.3); vec3 hr = hash3(vec3(hyCe.y * 17.0, 3.0, 9.0)) - 0.5; P += (vec3(0.0, 0.03, 0.16) + hr * vec3(0.42, 0.42, 0.30)) * ((0.45 + 0.9 * hyCe.y) * hyS.w * uHyP.x); }
+      P += N * ((hyBand * uHyW.z * (0.4 + 1.3 * aRnd.z) - uHyP.z * 0.035) * (1.0 - 0.5 * hold));
+    }
     // taps: each one is a small ring that runs through the points from where it landed
     float tapRing = 0.0;
     for (int i = 0; i < 6; i++) { float ta = uTap[i].w; if (ta < 1.3) { float dT = length(at0 - uTap[i].xyz), x = (dT - ta * 1.5) / 0.095; float rg = exp(-x * x) * exp(-ta * 2.0); tapRing += rg * 1.25 + exp(-dT * dT / 0.030) * exp(-ta * 7.0) * 0.9; P += N * rg * 0.050 * (1.0 - hold); } }
@@ -737,6 +765,26 @@
     col = mix(col, SH * (dot(col, vec3(0.5, 0.3, 0.2)) * 1.6 + 0.25), flying);            // what flies takes the shade colour
     col += impCol * (2.2 + 2.0 * aRnd.x);
     if (crk > 0.0) col = col * (1.0 - 0.5 * crk) + mix(uV8Fire, vec3(1.0, 0.96, 0.88), crk * crk * 0.7) * (crk * (1.6 + 2.6 * uV8.z + 1.2 * uBeat));
+    if (uHyW.w > 0.0 && uMode == 0) {
+      vec2 he = (at0.xy - vec2(0.0, -0.45)) / vec2(1.05, 1.52); float hEdge = smoothstep(0.50, 0.98, length(he)), hn = vnoise(at0 * 7.0 + vec3(0.0, -t * 0.5, t * 0.2));
+      vec3 hHot = mix(uHyC, vec3(1.0, 0.95, 0.85), 0.25);
+      // coals: the middle cools and darkens, the edges glow
+      if (hyS.x > 0.001) { col *= 1.0 - 0.62 * hyS.x * (1.0 - hEdge) * (1.0 - 0.7 * line); col += mix(CRIM, uHyC, 0.45 + 0.4 * hn) * (hEdge * hyS.x * (0.5 + 3.4 * hn * hn) * (0.9 + 0.7 * uBeat + 0.5 * uBass)); }
+      // veins of magma
+      if (hyS.y > 0.001) { float vein = hyVein(at0), flow = 0.65 + 0.35 * sin(length(he) * 16.0 - t * 3.2 + hn * 4.0); col = col * (1.0 - 0.55 * hyS.y * (1.0 - vein)) + mix(mix(CRIM, uHyC, 0.6), vec3(1.0, 0.90, 0.6), vein * vein * 0.6) * (vein * hyS.y * flow * (2.6 + 1.8 * uBeat)); }
+      // molten
+      if (hyS.z > 0.001) col = mix(col, hyLava(at0, t) * (1.0 + 0.5 * uBass) + col * 0.35, hyS.z * 0.85);
+      // shards: each one a facet, its edge lit by what burns between them
+      if (hyS.w > 0.001) { float ed = 1.0 - smoothstep(0.0, 0.11, hyCe.x); col = col * (0.55 + 0.9 * hyCe.y) * (1.0 - 0.3 * hyS.w) + hHot * (ed * hyS.w * (1.6 + 1.5 * uBeat)); }
+      // gold: polished, with glints
+      if (hyS2.x > 0.001) { float glint = step(0.90, aRnd.x) * (0.5 + 0.5 * sin(t * (3.0 + aRnd.y * 9.0) + aRnd.z * 50.0)); vec3 g = uHyC2 * (0.22 + 1.5 * kd + 1.2 * rim) + vec3(1.0, 0.97, 0.9) * (pow(kd, 5.0) * 1.8 + glint * 2.2); col = mix(col, g + col * 0.25, hyS2.x * 0.85); }
+      if (hyS2.y > 0.001) col *= 1.0 - 0.62 * hyS2.y * (1.0 - 0.8 * line) * (0.6 + 0.4 * hn);
+      // a light crossing the face (a ring's, a spotlight's)
+      if (hyS2.z > 0.001) { float sx = (at0.y - uHyP.y) / 0.11; col += hHot * (exp(-sx * sx) * hyS2.z * 2.4) + uHyC * (hyS2.z * 0.10); }
+      col *= 1.0 + hyS2.w;
+      col += mix(uHyC, vec3(1.0, 0.97, 0.9), 0.55) * (hyBand * 4.6);
+      col *= 1.0 - 0.35 * uHyP.z;
+    }
     if (uV8.y > 0.0) {
       // MYTHIC: the skin of points thins to starlight so the galaxy inside shows; the lines of the face are drawn in gold light
       float st = step(0.90, aRnd.x) * (0.55 + 0.45 * sin(t * (1.5 + aRnd.y * 5.0) + aRnd.z * 40.0));
@@ -795,6 +843,18 @@
         star += step(ly == 0 ? 0.80 : 0.72, sh) * exp(-dot(sf, sf) * (ly == 0 ? 55.0 : 30.0)) * (0.40 + 0.60 * sin(uTime * (1.0 + sh * 5.0) + sh * 40.0)) * (ly == 0 ? 3.0 : 1.2);
       }
       col = mix(col, vec3(0.0), uV8.y * 0.96); v8c += (uShade * (wisp * 0.9 + 0.012) + gal + vec3(1.0, 0.95, 0.86) * star) * (uV8.y * (0.85 + 0.35 * uBass + 0.25 * uBeat));
+    }
+    if (uHyW.w > 0.0) {
+      // V9 HYPE: under the points the surface carries the same material (the veins are solid lines, fire shows between the shards)
+      float hb; float hk = hyFront(vRest, hb); vec4 s = mix(uHyA, uHyB, hk), s2 = mix(uHyA2, uHyB2, hk);
+      vec2 he = (vRest.xy - vec2(0.0, -0.45)) / vec2(1.05, 1.52);
+      if (s.y > 0.001) { float flow = 0.65 + 0.35 * sin(length(he) * 16.0 - uTime * 3.2); v8c += mix(CRIM, uHyC, 0.65) * (hyVein(vRest) * s.y * flow * (1.3 + 0.9 * uBeat)); }
+      if (s.z > 0.001) v8c += hyLava(vRest, uTime) * (s.z * 0.42);
+      if (s.w > 0.001) { vec2 ce = v8cell(vRest * 1.9 + 1.3); float gap = 1.0 - smoothstep(0.0, 0.05 + 0.20 * s.w * uHyP.x, ce.x), fn = vnoise(vRest * 6.0 + vec3(0.0, -uTime * 2.2, uTime));
+        col *= 1.0 - 0.7 * s.w; v8c += mix(uHyC, vec3(1.0, 0.95, 0.85), gap * gap * mix(0.45, 1.0, s2.x)) * (gap * s.w * (0.8 + 1.7 * fn + 1.2 * uBeat)); }
+      if (s2.x > 0.001) col = mix(col, uHyC2 * (0.04 + 0.45 * kd * kd + 0.8 * rim) * uGain, s2.x * 0.8);
+      if (s2.y > 0.001) col *= 1.0 - 0.6 * s2.y;
+      v8c += mix(uHyC, vec3(1.0), 0.6) * (hb * 1.5);
     }
     col = col * (1.0 - dmgS) + v8c * (1.0 - dmgS);
     // no edge: the surface is gone before the outline, and at grazing angles
@@ -1419,16 +1479,17 @@
       return n;
     }
     const VIEW = { fov: 19.5 * Math.PI / 180, dist: 14, targetY: -0.60, halfH: 2.405 };
-    const DMG0 = new Float32Array(64), V80 = [0, 0, 0, 0], V8FIRE0 = [1.0, 0.55, 0.12];
+    const DMG0 = new Float32Array(64), V80 = [0, 0, 0, 0], V8FIRE0 = [1.0, 0.55, 0.12], HYW0 = [-1, 0, 0, 0];
     function draw(look, S) {
       const { time: t, audio: A } = S;
       for (let i = 0; i < 8; i++) { const k = S.kicks[i] || [99, 0]; kickU[i * 2] = k[0]; kickU[i * 2 + 1] = k[1]; }
       for (let i = 0; i < 4; i++) { const k = S.hits[i] || [99, 0]; hitU[i * 2] = k[0]; hitU[i * 2 + 1] = k[1]; }
       // camera: a long lens, a slow drift so a still face is never a still picture, a small push on the beat
       const sway = S.still ? 0 : 1, beatPush = 1 - 0.012 * A.beat - 0.010 * A.bass;
-      const FX0 = S.fx || null, KK = FX0 ? FX0.kick : [0, 0, 0], HEADP = HEADS[S.headPart] || [], back = (FX0 ? 1 + 0.34 * Math.max(0, FX0.scale - 1) : 1) * (HEADP.length ? (S.headPart === 'head' ? 1.16 : 1.32) : 1), hUp = HEADP.length ? (S.headPart === 'head' ? 0.10 : 0.34) : 0;
+      const FX0 = S.fx || null, KK = FX0 ? FX0.kick : [0, 0, 0], HEADP = HEADS[S.headPart] || [], back = (FX0 ? 1 + 0.34 * Math.max(0, FX0.scale - 1) : 1) * (HEADP.length ? (S.headPart === 'head' ? 1.16 : 1.32) : 1) * (S.v9 ? S.v9.back : 1), hUp = HEADP.length ? (S.headPart === 'head' ? 0.10 : 0.34) : 0;
       const cam = [Math.sin(t * 0.31) * 0.42 * sway + KK[0] * 0.16, VIEW.targetY + 0.10 + Math.sin(t * 0.23 + 1.0) * 0.16 * sway + KK[1] * 0.12, VIEW.dist * beatPush * back * (1 - 0.035 * KK[2])];
       cam[1] += hUp;
+      if (S.cam) S.cam(cam, S, VIEW, hUp);      // V9 SMART CAMERA (js/v9/smart-camera.js; S.cam not given = nothing changes): the eye moved round the point it looks at
       const view = M4.lookAt(cam, [-KK[0] * 0.05, VIEW.targetY - KK[1] * 0.04 + hUp, 0], [0, 1, 0]);
       const proj = M4.perspective(VIEW.fov, G.W / G.H, 2, 60);
       // V7: where the face sits and how big it is (S.place = { zoom, x, y }, x / y in parts of the picture, + = right / up).
@@ -1438,7 +1499,7 @@
       const vp0 = M4.mul(proj, view), PLC = S.place || null, ps = PLC ? PLC.zoom : 1, pox = PLC ? 2 * PLC.x : 0, poy = PLC ? 2 * PLC.y : 0;
       let vp = vp0;
       if (PLC && (ps !== 1 || pox || poy)) { vp = vp0.slice(); for (let c = 0; c < 4; c++) { vp[c * 4] = ps * vp0[c * 4] + pox * vp0[c * 4 + 3]; vp[c * 4 + 1] = ps * vp0[c * 4 + 1] + poy * vp0[c * 4 + 3]; } }
-      const FX = S.fx || null, PAL = S.palette || null, V8U = S.v8 && S.v8.u ? S.v8.u : null;
+      const FX = S.fx || null, PAL = S.palette || null, V8U = S.v8 && S.v8.u ? S.v8.u : null, HY = V8U && V8U.hy ? V8U.hy : null;
       const hx = S.head.x, hy = S.head.y, sc = S.head.scale * (FX ? FX.scale * (1 + 0.03 * FX.pulse) : 1);
       const model = M4.trs(S.head.R, sc, [hx, hy, 0]);
       const BGI = Math.max(0, BG_NAMES.indexOf(S.bg)), VIZ = FX ? FX.viz : 0;
@@ -1447,13 +1508,17 @@
       const VZF = [Math.max(0, VIZ_NAMES.indexOf(FORM[0])), Math.max(0, VIZ_NAMES.indexOf(FORM[1]))], VZK = FORM[2], VC = S.vizCol || VIZ_COL[BGI];
       vizStep(t, A, S.kicks, S.hits);
       const fa = FX ? FX.flash : [0, 0, 0, 0], fb = PAL && PAL.flash ? PAL.flash : [0, 0, 0, 0], flashU = fa[3] >= fb[3] ? fa : fb;
+      // V9 (mask-v9.js; S.v9 not given = nothing changes): a style drawn on top of this look. fade = how much of the classic face
+      // is still shown, solo = none of it (its points are not drawn at all), back = the camera steps back, render = the style itself
+      const V9 = S.v9 || null; let gainK = 1;
       const envRot = 0.22 * Math.sin(t * 0.19) + 0.10 * Math.sin(t * 0.43 + 2.0);
       const common = (p) => p.use().u('uModel', model).u('uViewProj', vp).u('uCam', cam).u('uTime', t).u('uBass', A.bass).u('uMid', A.mid).u('uHigh', A.high).u('uBeat', A.beat).u('uLevel', A.level).u('uEnvRot', envRot).uv('uKick', 2, kickU).uv('uHit', 2, hitU)
-        .u('uShade', PAL ? PAL.shade : CRIM3).u('uShade2', PAL ? PAL.shade2 : CRIM3).u('uKeyCol', PAL ? PAL.key : CHROME3).u('uAccent', PAL ? PAL.accent : CHROME3).u('uGain', (PAL ? PAL.gain : 1) * (FX ? 1 - 0.42 * FX.brace : 1))
+        .u('uShade', PAL ? PAL.shade : CRIM3).u('uShade2', PAL ? PAL.shade2 : CRIM3).u('uKeyCol', PAL ? PAL.key : CHROME3).u('uAccent', PAL ? PAL.accent : CHROME3).u('uGain', (PAL ? PAL.gain : 1) * (FX ? 1 - 0.42 * FX.brace : 1) * gainK)
         .u('uLock', FX && FX.lock ? [FX.lock.pos[0], FX.lock.pos[1], FX.lock.pos[2], FX.lock.r] : [0, 0, 0, 9]).u('uLockCol', FX && FX.lock ? [FX.lock.col[0], FX.lock.col[1], FX.lock.col[2], FX.lock.a] : [0, 0, 0, 0])
         .u('uFlash', flashU).u('uRainbow', FX ? FX.rainbow : 0).u('uPulse', FX ? FX.pulse : 0).u('uShatter', FX ? FX.shatter : 0).u('uRing', FX ? FX.ring : [99, 0]).u('uRingCol', FX ? FX.ringCol : CRIM3)
         .ui('uNImp', FX ? FX.nImp : 0).uv('uTap', 4, FX ? FX.taps : TAP0).u('uStreak', FX ? FX.streak : 0).u('uViz', FX ? FX.viz : 0).ui('uVizFa', VZF[0]).ui('uVizFb', VZF[1]).u('uVizK', VZK).u('uVizEnv', VZ.env).u('uVizMove', VZ.move).u('uVizC1', VC[0]).u('uVizC2', VC[1]).ui('uBg', BGI).uv('uImp', 4, FX ? FX.imp : IMP0).uv('uImpT', 4, FX ? FX.impT : IMPT0).uv('uImpC', 3, FX ? FX.impC : IMPC0)
-        .ui('uNDmg', V8U ? V8U.nDmg : 0).uv('uDmg', 4, V8U ? V8U.dmg : DMG0).u('uV8', V8U ? V8U.v8 : V80).u('uV8Fire', V8U ? V8U.fire : V8FIRE0);
+        .ui('uNDmg', V8U ? V8U.nDmg : 0).uv('uDmg', 4, V8U ? V8U.dmg : DMG0).u('uV8', V8U ? V8U.v8 : V80).u('uV8Fire', V8U ? V8U.fire : V8FIRE0)
+        .u('uHyA', HY ? HY.a : V80).u('uHyB', HY ? HY.b : V80).u('uHyA2', HY ? HY.a2 : V80).u('uHyB2', HY ? HY.b2 : V80).u('uHyW', HY ? HY.w : HYW0).u('uHyP', HY ? HY.p : V80).u('uHyC', HY ? HY.c : V8FIRE0).u('uHyC2', HY ? HY.c2 : V8FIRE0);
       // where the head is on screen (for the background)
       const hc = [hx, hy - 0.45 * sc, 0];
       const cw = vp[3] * hc[0] + vp[7] * hc[1] + vp[11] * hc[2] + vp[15];
@@ -1481,6 +1546,7 @@
       const hole = [(vp[0] * bc[0] + vp[4] * bc[1] + vp[8] * bc[2] + vp[12]) / bw, (vp[1] * bc[0] + vp[5] * bc[1] + vp[9] * bc[2] + vp[13]) / bw, 0.50 * (1.0 + 0.05 * A.bass - 0.10 * VZ.env[0]) * ps * proj[5] / bw, Math.max(0, Math.min(1, holeW * 1.6 - 0.6))];
       common(pBg).u('uHead', hs).u('uAspect', G.W / G.H).u('uHeadR', headR).ui('uStyle', bgStyle).u('uHole', hole);
       G.fsTri();
+      if (V9) gainK = V9.fade;
       gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LEQUAL); gl.depthMask(true);
       const v2 = V2[look] || null;
       const style = v2 ? 2 : look === 'obsidian' ? 1 : look === 'particles' ? 2 : 0;
@@ -1490,7 +1556,7 @@
       if (solid) { gl.bindVertexArray(faceVao[faceProg]); gl.drawElements(gl.TRIANGLES, M.index.length, gl.UNSIGNED_INT, 0); }
       common(pEye).ui('uStyle', style); gl.bindVertexArray(eyeVao);
       if (solid) for (const e of core.eyes) { pEye.u('uCenter', e.c).u('uRadius', look === 'particles' ? e.r * 0.94 : e.r).u('uGaze', e.gaze); gl.drawElements(gl.TRIANGLES, si.length, gl.UNSIGNED_SHORT, 0); }
-      common(pMouth).ui('uStyle', v2 ? 3 : style).u('uOpen', core.mouth.open); gl.bindVertexArray(mouthVao); if (solid) gl.drawElements(gl.TRIANGLES, mi.length, gl.UNSIGNED_SHORT, 0);
+      common(pMouth).ui('uStyle', v2 ? 3 : style).u('uOpen', core.mouth.open); gl.bindVertexArray(mouthVao); if (solid && !(V9 && V9.solo)) gl.drawElements(gl.TRIANGLES, mi.length, gl.UNSIGNED_SHORT, 0);
 
       if (look === 'particles') {
         if (!part) buildParticles();
@@ -1515,7 +1581,7 @@
         pt.posTex.set(pd); pt.nrmTex.set(nd);
         gl.depthMask(false); gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE);
         // V9 viz fix: his eyes in the Visualizer, two vortexes, BEFORE the formation's points (the visuals pass in front). Nothing at all with his face on.
-        if (VIZ > 0.25 && S.vizEyes !== false) {
+        if (VIZ > 0.25 && S.vizEyes !== false && !(V9 && V9.solo)) {
           const vk = Math.min(1, (VIZ - 0.25) / 0.70), nV = vortexEyes(vk * vk * (3 - 2 * vk), t, A, model, sc, V8U ? V8U.fire : null, V8U && V8U.eyeHeat ? V8U.eyeHeat : 0);
           gl.bindBuffer(gl.ARRAY_BUFFER, fxBuf); gl.bufferSubData(gl.ARRAY_BUFFER, 0, fxData.subarray(0, nV * 7));
           pFx.use().u('uViewProj', vp).u('uPx', G.H * 0.066 * ps); gl.bindVertexArray(fxVao); gl.disable(gl.DEPTH_TEST); gl.drawArrays(gl.POINTS, 0, nV); gl.enable(gl.DEPTH_TEST);
@@ -1523,8 +1589,9 @@
         common(pPart2); G.bindTex(0, pt.posTex.tex); G.bindTex(1, pt.nrmTex.tex);
         pPart2.ui('uPosTex', 0).ui('uNrmTex', 1).u('uPx', G.H * v2.px).u('uFocus', VIEW.dist - 0.35 * sc).u('uDof', G.H * v2.dof)
           .u('uKey', v2.key).u('uAmb', v2.amb).u('uRim', v2.rim).u('uLine', v2.line).u('uLineWhite', v2.lineWhite).u('uBurst', v2.burst).u('uKickAmt', v2.kick).u('uSparkle', v2.sparkle).u('uWave', v2.wave);
-        pPart2.ui('uMode', 2).u('uViewProj', vp0).u('uModel', M4.trs([1, 0, 0, 0, 1, 0, 0, 0, 1], 1, [0, 0, 0])); gl.bindVertexArray(pt.dust.vao); gl.drawArrays(gl.POINTS, 0, pt.dust.n);
+        pPart2.ui('uMode', 2).u('uViewProj', vp0).u('uModel', M4.trs([1, 0, 0, 0, 1, 0, 0, 0, 1], 1, [0, 0, 0])); gl.bindVertexArray(pt.dust.vao); if (!(V9 && V9.dust === false)) gl.drawArrays(gl.POINTS, 0, pt.dust.n);      // (V9 INTEGRATION: only a style that says dust: false hides the dust; Quantum Flow says nothing and keeps it, as built)
         pPart2.u('uViewProj', vp).u('uModel', model).u('uPx', G.H * v2.px * ps).u('uDof', G.H * v2.dof * ps);
+        if (!(V9 && V9.solo)) {
         pPart2.ui('uMode', 3); gl.bindVertexArray(pt.tail.vao); gl.drawArrays(gl.POINTS, 0, pt.tail.n);
         pPart2.ui('uMode', 4);
         for (const k of HEADP) { const hs = headSets[k] || (headSets[k] = buildHeadSet(k)); gl.bindVertexArray(hs.vao); gl.drawArrays(gl.POINTS, 0, hs.n); }
@@ -1532,6 +1599,7 @@
         const eyeSetNow = pt.eyes[S.eyeStyle === 2 ? 2 : 1];
         pPart2.ui('uMode', 1); gl.bindVertexArray(eyeSetNow.vao);
         for (const e of core.eyes) { pPart2.u('uEyeC', e.c).u('uEyeR', e.r).u('uGaze', e.gaze).u('uEyeOpen', e.open); gl.drawArrays(gl.POINTS, 0, eyeSetNow.n); }
+        }
         if (FX && (FX.missiles.length || FX.bursts.length || FX.glints.length || FX.taps[3] < 0.3)) {
           // A missile is light: a white-hot core inside a wide glow (it blooms), and a thick tail of points along the
           // curve it has flown, in the colour of the gift, that keeps burning for a moment after it lands. A landing is a flash.
@@ -1603,12 +1671,16 @@
           gl.bindBuffer(gl.ARRAY_BUFFER, fxBuf); gl.bufferSubData(gl.ARRAY_BUFFER, 0, fxData.subarray(0, n * 7));
           pFx.use().u('uViewProj', vp).u('uPx', G.H * 0.066 * ps); gl.bindVertexArray(fxVao); gl.disable(gl.DEPTH_TEST); gl.drawArrays(gl.POINTS, 0, n); gl.enable(gl.DEPTH_TEST);
         }
+        if (V9 && V9.render) { V9.render({ G, gl, vp, vp0, proj, model, cam, sc, ps, core, time: t, audio: A, kicks: S.kicks, hits: S.hits, palette: PAL, fx: FX, VIEW }); gl.enable(gl.DEPTH_TEST); gl.depthMask(false); gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE); }
         gl.disable(gl.BLEND); gl.depthMask(true);
         // V8: the stage (goo, fire, sparks, puppets ...) is drawn into the same HDR scene, so it blooms with the face
         if (S.v8 && S.v8.render) S.v8.render({ G, gl, vp, vp0, proj, model, cam, sc, ps, pox, poy, core, time: t, audio: A, kicks: S.kicks, palette: PAL, VIEW });
       }
+      // V9 HANDS (mask-hands.js; S.hfx not given = nothing changes): his hands and the visual between them, in front of the face, in the same HDR scene
+      if (S.hfx && S.hfx.render) { S.hfx.render({ G, gl, vp, hx, hy, sc, time: t }); gl.disable(gl.BLEND); gl.depthMask(true); }
       gl.bindVertexArray(null);
       const post = v2 ? { bloom: v2.bloom, exposure: 1.0, cool: BGI === 2 ? 1 : 0 } : look === 'chrome' ? { bloom: 0.38, exposure: 1.0 } : look === 'particles' ? { bloom: 0.40, exposure: 1.0 } : look === 'obsidian' ? { bloom: 0.42, exposure: 1.0 } : { bloom: 0.1, exposure: 1.0 };
+      if (V9 && V9.post) Object.assign(post, V9.post);
       G.endScene({ ...post, time: S.still ? 0.37 : t, vignette: 0.55, grain: 1.5 / 255 });
     }
     return { draw, VIEW, VISUALIZERS: VIZ_NAMES.slice(), BACKGROUNDS: BG_NAMES.slice() };

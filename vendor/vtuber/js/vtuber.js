@@ -68,6 +68,10 @@
   const MASK = {
     label: 'the Mask', tile: 'Mask',
     bg: { black: 'Black', summer: 'Summer', ice: 'Ice', forge: 'Forge', nebula: 'Nebula', studio: 'Studio', street: 'Street' },
+    // V9: the styles on top of the Mask (the first is the Mask as it always was)
+    hype: { nebula: 'Aura to Nebula', classic: 'Classic', aura: 'Aura', orbit: 'Orbits', smoke: 'Smoke', material: 'Molten', stage: 'Stage' },
+    hypeSwatch: { nebula: 'radial-gradient(circle at 50% 45%, #ffd27a 0%, #ff6a1a 24%, #8a1208 56%, #120806 100%)', classic: 'linear-gradient(135deg, #3a0f17, #120d0b)' },
+    style: { classic: 'Classic', core: 'Reactiv Core' }, cableStyle: { quantum: 'Quantum Flow' }, cableSwatch: { quantum: 'radial-gradient(circle at 50% 42%, #f3e6ff 0%, #8a3dff 20%, #2a0d55 46%, #c98a1c 78%, #0a0610 100%)' }, styleSwatch: { classic: 'linear-gradient(135deg, #3a0f17, #120d0b)', core: 'radial-gradient(circle at 50% 45%, #fff3d0 0%, #ffb23a 22%, #c8560a 52%, #1a0c05 100%)' },
     // the small picture on each background's button (Ice is the one place a cold colour is allowed: his own exception)
     bgSwatch: {
       black: '#000', summer: 'linear-gradient(180deg, #5a1a0c, #d9641c 70%, #f2b23a)', ice: 'linear-gradient(180deg, #0b1a22, #6fb6c9 75%, #e8f6fa)',
@@ -135,10 +139,14 @@
   // mask: the Mask is the chosen character (character keeps the hero picked last); maskBg / maskSounds: its background and gift sounds
   // V7: place = where each of the three sits and how big (each keeps its own); maskColour '' = Auto, else '#rrggbb';
   // maskColourMusic = the music still moves a picked colour; shuffle / shuffleAmount = shuffle to the beat
-  const settings = { character: 'ryo', bg: 'preset:courtyard', mirror: false, handsLine: false, sens: 6, gate: 0.06, zoom: 1, offsetY: 0, deviceId: '', mask: false, maskBg: 'black', maskSounds: true, maskViz: '', eyes: true,
+  const settings = { character: 'ryo', bg: 'preset:courtyard', mirror: false, handsLine: false, sens: 6, gate: 0.06, zoom: 1, offsetY: 0, deviceId: '', mask: false, maskBg: 'black', maskSounds: true, maskViz: '', maskStyle: 'classic', maskCam: false, hypeStyle: 'nebula', eyes: true,
     place: { ryo: { zoom: 1, x: 0, y: 0 }, melanie: { zoom: 1, x: 0, y: 0 }, mask: { zoom: 1, x: 0, y: 0 } }, maskColour: '', maskColourMusic: true, shuffle: false, shuffleAmount: 'normal', wheelOpen: false,
     // V8: the puppet show's switches (kept between starts), its keys, and which vote the Vote button starts
-    v8: { ...L.V8_DEFAULTS }, v8Keys: { ...L.V8_KEYS }, v8Vote: 'random' };
+    v8: { ...L.V8_DEFAULTS }, v8Keys: { ...L.V8_KEYS }, v8Vote: 'random',
+    // COUNTDOWN MUSIC: his song under the countdown, OFF by default for every host (it is his own song, not theirs to play on their LIVE; he turns it on once and the card saves it), and its volume (the song is -14.4 LUFS: 0.6 sits under a voice)
+    cdMusic: false, cdVol: 0.6,
+    // V9: the show sign and the live overlay (js/v9-sign-card.js; both off until he switches them on)
+    sign: {}, overlay: {} };
   // the kill switches of this round, as on the avatar page: ?place=0 ?colour=0 ?shuffle=0 (the control is not shown and nothing of it is sent)
   // V8: ?v8=0 = no puppet show at all (the card is not shown, nothing of it is sent: the avatar page then draws the V7 Mask, untouched)
   const QS = new URLSearchParams(location.search), KILL = { place: QS.get('place') === '0', colour: QS.get('colour') === '0', shuffle: QS.get('shuffle') === '0', v8: QS.get('v8') === '0' || !window.VTShow };
@@ -146,6 +154,8 @@
     const saved = JSON.parse(localStorage.getItem(STORE) || 'null');
     if (saved && typeof saved === 'object') {
       for (const k of Object.keys(settings)) if (typeof saved[k] === typeof settings[k]) settings[k] = saved[k];
+      // V9 (ruling R31): the live overlay's first build saved it as "hype": taken over once (it is saved as "overlay" from then on)
+      if (saved.hype && typeof saved.hype === 'object' && typeof saved.hype.url === 'string' && !(saved.overlay && typeof saved.overlay === 'object')) settings.overlay = saved.hype;
       // settings saved before V7 had one Size / Height for both heroes: both start from it
       if (!saved.place || typeof saved.place !== 'object') settings.place = { ryo: { zoom: settings.zoom, x: 0, y: settings.offsetY }, melanie: { zoom: settings.zoom, x: 0, y: settings.offsetY }, mask: { zoom: 1, x: 0, y: 0 } };
     }
@@ -158,11 +168,19 @@
   settings.handsLine = settings.handsLine === true;
   if (!L.MASK_BACKGROUNDS.includes(settings.maskBg)) settings.maskBg = 'black';
   if (!L.MASK_VISUALIZERS.includes(settings.maskViz)) settings.maskViz = '';
+  if (!L.maskStylesOffered().includes(settings.maskStyle)) settings.maskStyle = 'classic';      // (V9 INTEGRATION: a style this build hides reads as classic)
+  settings.maskCam = settings.maskCam === true && L.v9Shows('smartcam');      // V9 SMART CAMERA: off unless he switched it on
+  if (!L.HYPE_STYLES.includes(settings.hypeStyle)) settings.hypeStyle = 'nebula';
+  settings.camMode = settings.camMode === true; settings.camAlign = L.cleanCamAlign(settings.camAlign);      // V9 camera mode: whatever was saved, made valid
+  settings.cdVol = Number.isFinite(settings.cdVol) ? Math.min(1, Math.max(0, settings.cdVol)) : 0.6;      // COUNTDOWN MUSIC
   settings.v8 = L.cleanV8(settings.v8); settings.v8Keys = L.cleanKeys(settings.v8Keys);      // V8: whatever was saved, made valid
   if (typeof settings.v8Vote !== 'string' || settings.v8Vote.length > 12) settings.v8Vote = 'random';
+  // V9 SHOW SIGN + LIVE OVERLAY: the two cards live in js/v9-sign-card.js (not loaded = none of it: nothing is sent, nothing is shown)
+  const EXT = window.VTSignCard || null;
+  if (EXT) EXT.init(settings); else { settings.sign = {}; settings.overlay = {}; }
   const save = () => { try { localStorage.setItem(STORE, JSON.stringify(settings)); } catch (e) { /* not saved */ } };
 
-  const live = { on: false, mode: 'face', pick: 0 }; // mode: the Mask as his face, or as a visualizer (not kept between starts); pick: see avatarMessage
+  const live = { on: false, mode: 'face', pick: 0, signShow: true, overlayShow: true }; // mode: the Mask as his face, or as a visualizer (not kept between starts); pick: see avatarMessage
   /** which of the three is picked ('ryo' | 'melanie' | 'mask') and where it sits */
   const who = () => (settings.mask ? 'mask' : settings.character);
   const placeNow = () => (KILL.place ? L.PLACE_HOME : settings.place[who()]);
@@ -194,7 +212,8 @@
   const announce = () => send({ t: 'panel', id: panel.id, since: panel.since });
   const avatarMessage = () => {
     const pl = placeNow();
-    const m = { t: 'avatar', on: live.on, character: settings.character, bg: settings.bg, face: 'auto', faceHoldMs: 0, mirror: settings.mirror, zoom: pl.zoom, offsetY: pl.y };
+    const hf = !settings.mask && L.validFace(settings.character, live.face);      // V9 DECK: a hero face he picked on the deck (none = 'auto', as before)
+    const m = { t: 'avatar', on: live.on, character: settings.character, bg: settings.bg, face: hf || 'auto', faceHoldMs: (hf && live.faceHoldMs) || 0, mirror: settings.mirror, zoom: pl.zoom, offsetY: pl.y };
     if (pl.x) m.offsetX = pl.x;                           // V7: left-right (a message without it = the middle, as before)
     if (shuffleOn()) { m.shuffle = settings.shuffleAmount; if (live.pick) m.pick = live.pick; }   // pick: he chose a look himself while shuffle runs: shown at once
     if (atCard()) m.pv = true;                            // the small picture: only while he is at the card (fix round S2), never all show
@@ -203,8 +222,13 @@
     if (settings.mask) {                                  // the Mask instead of a hero: its mode, background, gift sounds, and the stamps of its two files
       const sm = st.srv && st.srv.mask;
       Object.assign(m, { mask: true, maskMode: live.mode, maskBg: settings.maskBg, maskSounds: settings.maskSounds, maskViz: settings.maskViz, maskGifts: sm ? sm.gifts : 0, maskRest: sm ? sm.rest : 0 });
+      if (settings.maskStyle !== 'classic') m.maskStyle = settings.maskStyle;      // V9: a style on top of the Mask (no field = the classic Mask)
+      if (settings.maskCam) m.maskCam = 'smart';         // V9 SMART CAMERA: the camera that cuts with the music (no field = the Mask's own camera)
+      if (settings.hypeStyle !== 'nebula') m.hypeStyle = settings.hypeStyle;       // V9 HYPE: the ranks' look (no field = Aura to Nebula)
+      if (settings.camMode) { m.camMode = true; if (L.camAlignSet(settings.camAlign)) m.camAlign = L.cleanCamAlign(settings.camAlign); if (live.camShow) m.camShow = live.camShow; }      // V9 CAMERA MODE (no field = the Mask as before)
       if (settings.maskColour && !KILL.colour) { m.maskColour = settings.maskColour; if (!settings.maskColourMusic) m.maskColourMusic = false; }
       if (!KILL.v8) m.v8 = { ...settings.v8 };            // V8: the puppet show's switches (no field = the avatar page draws the V7 Mask)
+      if (EXT) EXT.fields(m, settings, live);             // V9: the show sign and the live overlay (no field = neither is on)
     }
     return m;
   };
@@ -244,6 +268,7 @@
       if (m.t === 'avatar-ack') {
         // with the Mask chosen only an answer about the Mask counts (and the other way round)
         if (settings.mask ? !!(m.mask && m.mask.drawn) : !m.mask) st.ackAt = performance.now();   // the Mask: only once it is really on screen
+        if (Number.isFinite(m.fps)) st.ackFps = m.fps;      // V9 DECK: the avatar page's frames a second (the deck's status bar)
         if (m.mask && typeof m.mask === 'object') { st.maskAck = m.mask; st.maskAckAt = performance.now(); }
         else { st.heroAck = m; st.heroAckAt = performance.now(); }
         // V7: the small picture of what OBS shows (a tiny JPEG made by the avatar page on this PC)
@@ -263,11 +288,13 @@
           if (!KILL.place) settings.place[who()] = L.cleanPlace({ zoom: a.zoom, x: a.offsetX || 0, y: a.offsetY }, settings.mask ? 'mask' : 'hero');   // (?place=0 never saves "home" over his place)
           settings.shuffle = !!a.shuffle; if (a.shuffle) settings.shuffleAmount = a.shuffle;
           if (a.mask && a.v8) settings.v8 = L.cleanV8(a.v8);
-          if (a.mask) { settings.maskBg = a.maskBg; settings.maskSounds = a.maskSounds; settings.maskViz = a.maskViz; live.mode = a.maskMode; settings.maskColour = a.maskColour || ''; settings.maskColourMusic = a.maskColourMusic !== false; }
+          if (a.mask && EXT) EXT.adopt(a, live);            // V9: a sign he had hidden stays hidden
+          if (a.mask) { settings.maskBg = a.maskBg; settings.maskSounds = a.maskSounds; settings.maskViz = a.maskViz; settings.maskStyle = a.maskStyle || 'classic'; settings.maskCam = a.maskCam === 'smart'; settings.camMode = a.camMode === true; if (a.camAlign) settings.camAlign = L.cleanCamAlign(a.camAlign); settings.hypeStyle = a.hypeStyle || 'nebula'; live.mode = a.maskMode; settings.maskColour = a.maskColour || ''; settings.maskColourMusic = a.maskColourMusic !== false; }
           save();
         }
         render();
       } else if (m.t === 'hands-line' && !panel.active) { settings.handsLine = m.on === true; save(); render(); }
+      else if (EXT) EXT.message(m);                         // V9: LIVE Link's keys for the show sign and the live overlay
     };
     socket.onclose = () => { st.relay = false; socket = null; if (!retry) retry = setTimeout(connect, 1000); };
     socket.onerror = () => { try { socket && socket.close(); } catch (e) { /* closing */ } };
@@ -285,6 +312,67 @@
   const picked = () => { if (shuffleOn()) { live.pick++; st.pickAt = performance.now(); } };
   function setMode(mode) { if (!settings.mask) return; claim(); live.mode = mode === 'visualizer' ? 'visualizer' : 'face'; picked(); sendAvatar(); render(); }
   function setMaskBg(bg) { if (!L.MASK_BACKGROUNDS.includes(bg)) return; claim(); settings.maskBg = bg; picked(); save(); sendAvatar(); render(); }
+  /** V9: the Mask's style (Classic, Reactiv Core ...). The avatar page transforms into it; it is his own pick and shuffle never changes it. */
+  function setMaskStyle(s) { if (!L.maskStylesOffered().includes(s)) return; claim(); settings.maskStyle = s; save(); sendAvatar(); render(); }
+  let stylesShown = false;
+  function renderMaskStyles() {
+    const box = $('maskStyles'); if (!box) return;
+    if (!stylesShown) {
+      stylesShown = true;
+      for (const s of L.maskStylesOffered()) {
+        const b = document.createElement('button');
+        b.className = 'opt'; b.dataset.style = s; b.textContent = MASK.style[s] || MASK.cableStyle[s] || s; b.style.background = MASK.styleSwatch[s] || MASK.cableSwatch[s] || '#120d0b';
+        b.addEventListener('click', () => { setMaskStyle(s); b.blur(); });
+        box.appendChild(b);
+      }
+    }
+    // V9 INTEGRATION: one style (classic alone) = nothing to pick: the row and its heading are not shown
+    const none = box.children.length < 2; box.style.display = none ? 'none' : ''; if (box.previousElementSibling) box.previousElementSibling.style.display = none ? 'none' : '';
+    for (const b of box.children) b.classList.toggle('sel', b.dataset.style === settings.maskStyle);
+  }
+  /** V9 HYPE: the look of the hype-bar ranks (Aura to Nebula is the show's own; Classic = the old ladder). His own pick; shuffle never changes it. */
+  function setHypeStyle(s) { if (!L.HYPE_STYLES.includes(s)) return; claim(); settings.hypeStyle = s; hypeSentAt = performance.now(); save(); sendAvatar(); render(); }
+  let hypeShown = false, hypeSentAt = performance.now();      // (hypeSentAt: an answer of the avatar page from before the pick could reach it is not believed)
+  function renderHypeStyles() {
+    const box = $('hypeStyles'); if (!box) return;
+    if (!hypeShown) {
+      hypeShown = true;
+      for (const s of L.HYPE_STYLES) {
+        const b = document.createElement('button');
+        b.className = 'opt'; b.dataset.style = s; b.textContent = MASK.hype[s] || s; b.style.background = MASK.hypeSwatch[s] || '#120d0b';
+        b.addEventListener('click', () => { setHypeStyle(s); b.blur(); });
+        box.appendChild(b);
+      }
+    }
+    for (const b of box.children) b.classList.toggle('sel', b.dataset.style === settings.hypeStyle);
+    // what the avatar page says is REALLY drawing: a look that could not start there (its graphics card would not take it) is said, not hidden
+    const k = st.maskAck, real = live.on && settings.mask && k ? L.hypeMismatch({ picked: settings.hypeStyle, ackHype: k.hype, ackAt: st.maskAckAt, sentAt: hypeSentAt, now: performance.now() }) : '', note = $('hypeNote');
+    const off = !!real;
+    for (const b of box.children) b.classList.toggle('now', off && b.dataset.style === real);
+    if (note) { note.hidden = !off; if (off) note.textContent = MASK.hype[settings.hypeStyle] + ' could not start on this PC. The Mask is drawing ' + MASK.hype[real] + '.'; }
+  }
+  // ------------------------------------------------------------------ V9 CAMERA MODE (V9-PHASE2-SHOW.md item 1)
+  // One switch: the Mask's face and background fade away, his real camera shows, and gifts / taps / chat / missiles land on
+  // his real face. Align = a thin outline on his tracked face for 8 s (on stream, so he can compare it with his camera);
+  // the move / size / flip buttons shift where the effects sit and show the outline again. All of it is remembered.
+  function setCamMode(on) { claim(); settings.camMode = !!on; save(); sendAvatar(); render(); }
+  function camAlignDo(what) {
+    const a = L.cleanCamAlign(settings.camAlign), step = 0.005;
+    if (what === 'left') a.dx -= step; else if (what === 'right') a.dx += step; else if (what === 'up') a.dy -= step; else if (what === 'down') a.dy += step;
+    else if (what === 'smaller') a.zoom /= 1.02; else if (what === 'bigger') a.zoom *= 1.02; else if (what === 'flip') a.flip = !a.flip;
+    else if (what === 'namesUp') a.names -= 0.03; else if (what === 'namesDown') a.names += 0.03;
+    else if (what === 'reset') Object.assign(a, L.CAM_ALIGN_HOME);
+    claim(); settings.camAlign = L.cleanCamAlign(a); live.camShow = (live.camShow || 0) + 1; save(); sendAvatar(); render();
+  }
+  function renderCam() {
+    const sw = $('camMode'); if (!sw) return;
+    sw.classList.toggle('sel', !!settings.camMode); $('camAlign').hidden = !settings.camMode;
+    const fl = document.querySelector('#camAlignRow [data-cam="flip"]'); if (fl) fl.classList.toggle('sel', !!(settings.camAlign && settings.camAlign.flip));
+  }
+  if ($('camMode')) {
+    $('camMode').addEventListener('click', () => { setCamMode(!settings.camMode); $('camMode').blur(); });
+    for (const b of document.querySelectorAll('#camAlignRow [data-cam]')) b.addEventListener('click', () => { camAlignDo(b.dataset.cam); b.blur(); });
+  }
   function setMaskViz(v) { if (!L.MASK_VISUALIZERS.includes(v)) return; claim(); settings.maskViz = v; picked(); save(); sendAvatar(); render(); }
   // ------------------------------------------------------------------ V7: where it sits, the Mask's colour, shuffle to the beat
   let placeSendAt = 0, placeTimer = null;
@@ -845,12 +933,18 @@
     $('maskMain').hidden = !settings.mask; $('maskMore').hidden = !settings.mask; $('heroMore').hidden = settings.mask;
     const now = shown(), viz = now.mode === 'visualizer';
     renderPlace(); renderColour(); renderShuffle(now); renderV8();
+    if (EXT) EXT.render();                                // V9: the show sign and live overlay cards
     $('mode').classList.toggle('viz', viz);
     $('modeText').textContent = viz ? MODE.toFace : MODE.toViz; $('modeHint').textContent = viz ? MODE.toFaceHint : MODE.toVizHint;
     const snd = st.srv && st.srv.mask ? st.srv.mask.sound : null;
     $('sound').textContent = !settings.mask || !snd ? '' : snd.src === 'pc' ? SOUND.pc : snd.src === 'obs' ? SOUND.obs : snd.pc === 'starting' ? SOUND.starting : st.micOn ? SOUND.voice : SOUND.voiceNoMic;
     renderMaskBgs();
     $('giftSounds').classList.toggle('sel', settings.maskSounds);
+    renderMaskStyles(); renderHypeStyles();
+    $('smartCam').classList.toggle('sel', settings.maskCam);      // V9 SMART CAMERA
+    $('smartCam').hidden = $('smartCamHint').hidden = !L.v9Shows('smartcam');
+    { const k = smartCamKeyTaken(); $('smartCamKey').textContent = k ? 'Key: none while the puppet show uses K (' + smartCamKeyName(k) + '): use the switch.' : 'Key: K.'; }
+    renderCam();
     renderViz();
     for (const b of $('tries').children) b.hidden = !settings.mask && !!MASK_ONLY_TRY[b.dataset.kind];
     $('tryHint').textContent = st.tryNote || MASK.tryIdle; $('giftsNote').textContent = st.giftsNote;
@@ -1032,6 +1126,57 @@
   const v8 = { held: {}, keyWait: '', note: '', noteAt: -1e9, barsAt: -1e9 };
   const v8Ack = () => { const k = st.maskAck && st.maskAck.v8; return k && performance.now() - st.maskAckAt < 3500 ? k : null; };
   const v8Cmd = (o) => { claim(); send({ t: 'v8-cmd', ...o }); };
+  // ------------------------------------------------------------------ V9 SHOW OPENING (V9-SHOW-OPEN.md)
+  // Two buttons. The avatar page does the work (js/v9-show-page.js) and reports back in its answers (`show`).
+  const showAck = () => { const k = st.maskAck && st.maskAck.show; return k && performance.now() - st.maskAckAt < 3500 ? k : null; };
+  const showCmd = (o) => { if (!L.v9Shows('countdown')) return; claim(); send({ t: 'show-cmd', ...o }); };
+  function wireShow() {
+    const start = $('showStart'), fireB = $('showFire'); if (!start || !fireB) return;
+    start.addEventListener('click', () => { const k = showAck(); if (k && k.state === 'card') showCmd({ do: 'stop' }); else showCmd({ do: 'countdown', minutes: Math.min(60, Math.max(1, Number($('showMin').value) || 10)), music: musicNow() }); start.blur(); });
+    fireB.addEventListener('click', () => { showCmd({ do: 'transform' }); fireB.blur(); });
+    // COUNTDOWN MUSIC: on / off and the volume are saved and go to the Mask at once (mid-run too); the fade is 3 s
+    const mus = $('showMusic'), vol = $('showVol'), fadeB = $('showMusicFade');
+    if (mus && vol && fadeB) {
+      let volAt = 0;
+      mus.addEventListener('click', () => { settings.cdMusic = !settings.cdMusic; save(); showCmd({ do: 'music', ...musicNow() }); renderShow(); mus.blur(); });
+      vol.addEventListener('input', () => { settings.cdVol = Math.min(1, Math.max(0, Number(vol.value) || 0)); save(); renderShow(); const now = performance.now(); if (now - volAt > 120) { volAt = now; showCmd({ do: 'music', ...musicNow() }); } });
+      vol.addEventListener('change', () => { showCmd({ do: 'music', ...musicNow() }); vol.blur(); });
+      fadeB.addEventListener('click', () => { showCmd({ do: 'musicFade' }); fadeB.blur(); });
+    }
+    setInterval(renderShow, 500);
+  }
+  const musicNow = () => ({ on: settings.cdMusic === true, vol: Math.round(settings.cdVol * 100) / 100 });      // COUNTDOWN MUSIC
+  function renderShow() {
+    const card = $('showCard'); if (!card) return;
+    card.hidden = !settings.mask || !L.v9Shows('countdown'); if (card.hidden) return;
+    // V9 INTEGRATION: the show opening needs the Mask's own picture; Camera mode draws none (the avatar page ignores a show command then)
+    if (settings.camMode) { $('showStart').disabled = $('showFire').disabled = true; $('showHint').textContent = 'Camera mode is on. The countdown and the transform need the Mask: switch Camera mode off first.'; $('showFireHint').textContent = ''; return; }
+    $('showStart').disabled = false;
+    const k = showAck(), up = !!(k && k.state === 'card');
+    renderMusic(k);
+    $('showStart').textContent = up ? 'Stop the countdown' : 'Start countdown';
+    $('showFire').disabled = !live.on || (up && k.left > 0);
+    $('showFire').textContent = k && k.queued ? 'QUEUED (press again to cancel)' : k && k.running ? 'TRANSFORMING... (press to go straight back)' : k && k.state === 'real' ? 'TRANSFORM INTO THE MASK' : 'BACK TO MY REAL FACE';
+    if (up) $('showHint').textContent = Math.floor(k.left / 60) + ':' + String(k.left % 60).padStart(2, '0') + ' left. Ignition ' + Math.round(k.meter * 100) + ' % (' + k.taps + ' taps, ' + k.gifts + ' gifts). The time does not change.';
+    else $('showHint').textContent = 'Minutes until you start. The card covers your camera, then burns away to your real face at zero. Taps and gifts charge the meter; they never change the time.';
+    $('showFireHint').textContent = !live.on ? 'Turn the Mask ON first.' : k && k.queued ? 'Your press is kept: it fires the moment this transform has landed.' : up ? 'The button wakes up when the countdown hits zero.' : k && k.state === 'real' ? 'Your real face burns into the Mask' + (k.beat ? ', on the next beat.' : '.') : 'The Mask burns away to your real face. Press again to come back.';
+  }
+  /** COUNTDOWN MUSIC: the switch, the volume, the fade button, and one plain sentence on what the music is doing */
+  function renderMusic(k) {
+    const mus = $('showMusic'), vol = $('showVol'), fadeB = $('showMusicFade'), hint = $('showMusicHint'); if (!mus || !vol || !fadeB || !hint) return;
+    const m = k && k.music ? k.music : null, playing = !!(m && m.on && (m.state === 'playing' || m.state === 'fading'));
+    mus.classList.toggle('sel', settings.cdMusic);
+    if (document.activeElement !== vol) vol.value = settings.cdVol;
+    $('showVolVal').textContent = Math.round(settings.cdVol * 100) + '%';
+    fadeB.disabled = !playing || m.state === 'fading';
+    hint.textContent = !settings.cdMusic ? 'Music off: the countdown runs silent, as before.'
+      : m && m.state === 'missing' ? 'The countdown song could not be loaded, so the countdown runs silent.'
+      : m && m.state === 'loading' ? 'Loading the countdown song...'
+      : m && m.state === 'fading' ? 'Fading the music out...'
+      : playing ? 'Your countdown song is playing. Its drop hits at zero, when the Mask wakes. Fade it out whenever you like.'
+      : 'Your countdown song plays under the countdown. Its drop hits exactly at zero, when the Mask wakes.';
+  }
+  wireShow();
   const v8Say = (text) => { v8.note = text; v8.noteAt = performance.now(); renderV8(); };
   function v8Set(patch) { claim(); settings.v8 = L.cleanV8({ ...settings.v8, ...patch }); save(); sendAvatar(); render(); }
   /** press / let go of a move (a button or a key). Goo and Fire head keep going while held. */
@@ -1090,6 +1235,7 @@
     $('v8Chat').addEventListener('click', () => { v8Set({ chat: !settings.v8.chat }); $('v8Chat').blur(); });
     $('v8Hands').addEventListener('click', () => { v8Set({ hands: !settings.v8.hands }); $('v8Hands').blur(); });
     $('v8Swap').addEventListener('click', () => { v8Set({ swap: !settings.v8.swap }); $('v8Swap').blur(); });
+    $('v8Orbit').addEventListener('click', () => { v8Set({ orbit: !settings.v8.orbit }); $('v8Orbit').blur(); });
     $('v8Fight').addEventListener('click', () => { v8Fight(); $('v8Fight').blur(); });
     $('v8Eat').addEventListener('click', () => { v8Eat(); $('v8Eat').blur(); });
     $('v8Vote').addEventListener('click', () => { v8Vote(); $('v8Vote').blur(); });
@@ -1158,7 +1304,7 @@
     $('v8Vote').textContent = voting ? V8T.voteStop + ' (' + k.vote.left + ' s)' : V8T.voteStart + (vk ? '  [' + vk + ']' : '');
     $('v8Vote').disabled = !live.on || fighting; $('v8Own').hidden = settings.v8Vote !== 'own';
     $('v8VoteHint').textContent = voting ? '"' + k.vote.question + '"  ' + k.vote.total + (k.vote.total === 1 ? ' vote' : ' votes') + (k.vote.lead ? ', in front: ' + k.vote.lead : '') : k && k.vote && k.vote.lead ? 'Chat voted: ' + k.vote.lead + '.' : V8T.vote;
-    $('v8Rand').classList.toggle('sel', c.rand); $('v8Chat').classList.toggle('sel', c.chat); $('v8Hands').classList.toggle('sel', c.hands); $('v8Swap').classList.toggle('sel', c.swap); $('v8Swap').hidden = $('v8SwapHint').hidden = !c.hands;
+    $('v8Rand').classList.toggle('sel', c.rand); $('v8Chat').classList.toggle('sel', c.chat); $('v8Hands').classList.toggle('sel', c.hands); $('v8Swap').classList.toggle('sel', c.swap); $('v8Orbit').classList.toggle('sel', c.orbit); $('v8Swap').hidden = $('v8SwapHint').hidden = !c.hands;
     $('v8HandsHint').textContent = c.hands && k && !k.handsSeen && !(k.puppets && (k.puppets.angel || k.puppets.devil)) ? V8T.handsNone : V8T.hands;
     for (const b of $('v8Bars').children) b.classList.toggle('sel', Math.abs(L.V8_BARS[b.dataset.bars] - c.bars) < 0.005);
     if (document.activeElement !== $('v8BarsY')) $('v8BarsY').value = String(c.bars);
@@ -1171,6 +1317,8 @@
   // ------------------------------------------------------------------ wiring
   build();
   buildV8();
+  // V9 SHOW SIGN + LIVE OVERLAY: the cards get this page's settings, its send and its news (S and H never while a puppet-show key is being changed; a puppet-show key on S or H wins)
+  if (EXT) EXT.mount({ settings, live, st, save, sendAvatar, claim, keyBusy: () => !!v8.keyWait, puppetKey: (code) => (!KILL.v8 && settings.v8 && settings.v8.on ? L.keyAction(settings.v8Keys, code) : '') });
   window.addEventListener('pointerdown', claim, true);
   window.addEventListener('keydown', claim, true);
   $('power').addEventListener('click', () => { setOn(!live.on); $('power').blur(); });
@@ -1182,6 +1330,19 @@
   $('giftReset').addEventListener('click', () => { st.giftsDirty = false; saveGifts(true); $('giftReset').blur(); });
   frame.addEventListener('load', hookTracker);
   $('eyes').addEventListener('click', () => { claim(); settings.eyes = !settings.eyes; save(); sendAvatar(); render(); $('eyes').blur(); });
+  // V9 SMART CAMERA: the switch, and K while this window is in front (never while he types, nor while a puppet-show key is
+  // being changed; a puppet-show key set to K wins while the show is on: smartCamKeyTaken, and the hint says so)
+  /** the puppet-show action that has K right now ('' = K is the camera's), and its name on the card */
+  function smartCamKeyTaken() { return !KILL.v8 && settings.v8 && settings.v8.on ? L.keyAction(settings.v8Keys, 'KeyK') : ''; }
+  function smartCamKeyName(a) { return a === 'fight' ? 'Boss fight' : a === 'vote' ? 'Start a vote' : (window.VTShow && window.VTShow.MOVE_LABEL && window.VTShow.MOVE_LABEL[a]) || a; }
+  const setSmartCam = (v) => { if (!L.v9Shows('smartcam')) return; claim(); settings.maskCam = !!v; save(); sendAvatar(); render(); };
+  $('smartCam').addEventListener('click', () => { setSmartCam(!settings.maskCam); $('smartCam').blur(); });
+  window.addEventListener('keydown', (e) => {
+    if (e.code !== 'KeyK' || e.ctrlKey || e.altKey || e.metaKey || e.repeat || !settings.mask || v8.keyWait) return;
+    const tag = e.target && e.target.tagName; if (tag === 'SELECT' || tag === 'TEXTAREA' || (tag === 'INPUT' && e.target.type !== 'range')) return;
+    if (smartCamKeyTaken()) return;
+    e.preventDefault(); setSmartCam(!settings.maskCam);
+  });
   $('mirror').addEventListener('click', () => { claim(); settings.mirror = !settings.mirror; save(); sendAvatar(); render(); $('mirror').blur(); });
   $('hands').addEventListener('click', () => { claim(); settings.handsLine = !settings.handsLine; save(); sendHands(); render(); $('hands').blur(); });
   $('zoom').addEventListener('input', (e) => { drag.touchedAt = performance.now(); setPlace({ zoom: Number(e.target.value) }); });
@@ -1244,5 +1405,7 @@
   requestAnimationFrame(drawStage);
   setInterval(() => { if (shuffleOn() && live.on) render(); }, 1000);   // while shuffle runs the buttons follow what shows
   loadGifts();
-  window.__vt = { v8, v8Down, v8Up, v8Fight, v8Vote, v8Set, v8Ack, settings, live, st, panel, SAY, NOTE, FACE, REMOVE, SOUND, MODE, MASK, setMode, setMaskBg, setMaskViz, setGiftSounds, tryEffect, saveGifts, giftRows, onMaskRest, setOn, setCharacter, setBg, readFace, setPlace, resetPlace, setMaskColour, setColourMusic, setShuffle, shown, placeNow, who, atCard, touchCard, KILL, PLACE, COLOUR, SHUFFLE, sentence: () => sentence()[1], cls: () => sentence()[0], notes, tracker: tstate };
+  window.__vt = { v8, v8Down, v8Up, v8Fight, v8Vote, v8Set, v8Ack, settings, live, st, panel, SAY, NOTE, FACE, REMOVE, SOUND, MODE, MASK, setMode, setMaskBg, setMaskViz, setGiftSounds, tryEffect, saveGifts, giftRows, onMaskRest, setOn, setCharacter, setBg, readFace, setPlace, resetPlace, setMaskColour, setColourMusic, setShuffle, shown, placeNow, who, atCard, touchCard, KILL, PLACE, COLOUR, SHUFFLE, sentence: () => sentence()[1], cls: () => sentence()[0], notes, tracker: tstate,
+    // V9 CONTROL DECK (js/v9-deck.js): the window's own functions, so the deck sends exactly what this window sends
+    v8Eat, v8Cmd, showAck, showCmd, setMaskStyle, setHypeStyle, setCamMode, camAlignDo, setSmartCam, smartCamKeyTaken, claim, sendAvatar, save, render, renderV8, startMic, stopMic };
 })();

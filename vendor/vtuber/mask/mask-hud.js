@@ -256,6 +256,8 @@ if (B.prompt && !E) { const p = 0.84 + 0.16 * Math.sin(t * 2 * Math.PI * 0.8), n
         text('SCORE', SAFE.cx, 244, { size: 30, align: 'center', track: 10, a, stroke: 5, col: 'rgba(255,240,225,0.85)' });
         x.save(); x.translate(SAFE.cx * k, 356 * k); x.scale(punch, punch); x.translate(-SAFE.cx * k, -356 * k); text(String(shownN), SAFE.cx, 378, { size: 150, align: 'center', a, stroke: 12, col, glow }); x.restore();
       }
+      // V9 HYPE: a gifter's name, for a moment, under their picture in the orbit
+      for (const g of V.gifters || []) { if (!(g.a > 0.02) || !g.front) continue; mark(); text('@' + g.name.replace(/^@/, ''), mx(g.x) / k, (g.y + g.r * 1.25) / k + 30, { size: g.tier >= 2 ? 30 : 26, align: 'center', a: g.a, stroke: 6, col: g.tier >= 2 ? '#ffd27a' : '#ffffff', fit: 300 }); }
       // the rank banner (only when the rank changes) and the "+1 MYTHIC" pop
       if (V.hype && !V.boss && !V.vote && !V.score && !V.verdict) {
         const h = V.hype;

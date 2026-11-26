@@ -46,6 +46,11 @@
   const look = { mode: 'face', bg: 'black', viz: 'orb', colour: 'auto' };
   const SH = { sh: null, amount: '', pick: 0, changes: 0, last: null };
   const active = () => !!(S.a && S.a.on && S.a.mask);
+  const BURN = !!(L && L.v9Shows && L.v9Shows('bgburn'));   // V9 INTEGRATION: a change of background burns in behind a scan line while js/logic.js V9_SHOW names 'bgburn'
+  const SP = window.VTShowPage || null;                    // V9 show opening (js/v9-show-page.js; not loaded or ?showopen=0 = none of it)
+  // COUNTDOWN MUSIC (js/v9-countdown-music.js): while his countdown song plays, the Mask hears it from this page (WebAudio), not the loopback
+  if (SP && SP.onMusic) SP.onMusic((f) => onAudio({ s: 'pc', own: true, f: [f.bass, f.mid, f.high, f.beat, f.kick, f.hit, f.level, f.bright] }));
+  const SG = { status: () => (window.VTSignLayer && window.VTSignLayer.status ? window.VTSignLayer.status() : null) };      // V9 show sign + live overlay (js/v9-sign-layer.js, loaded after this file)
 
   // ---------------------------------------------------------------- V8: the puppet show (V8-PHASE2.md section A)
   // The show's brain (js/v8-show.js) runs HERE, next to the Mask: this page gets the tracker's raw face, the mic level,
@@ -133,6 +138,46 @@
   const MOVES8 = ['goo', 'fire', 'melt', 'crack', 'eat'];
   function ack() { const a = S.a; if (!a || !a.mask || Boot.MANUAL) return; Boot.send({ t: 'avatar-ack', ready: true, on: a.on, character: a.character, mask: window.VTMaskPage.status(), fps: S.fps, w: canvas.width, h: canvas.height, at: Date.now() }); }
 
+  // ---------------------------------------------------------------- V9 CAMERA MODE (mask/mask-cam.js, V9-PHASE2-SHOW.md item 1)
+  // `camMode` in the avatar message (V9 INTEGRATION: it was `maskCam: true`; `maskCam` is the smart camera's field): his real camera is the picture. The Mask's canvas fades out (this page is see-through
+  // under it, so his camera shows), and only the effects are drawn, on a see-through canvas of their own that is NEVER
+  // mirrored (it must sit on the camera picture viewers see). Nothing here runs until the message asks for it.
+  // While it is on, the puppet show (V8) rests: events go straight to the effects (its fights on his face come later).
+  const camEl = document.getElementById('maskcam');
+  const CAM = { c: null, on: false, op: '', show: 0, ak: '' };
+  function camApply(a, m) {
+    const want = a.camMode === true;
+    if (!CAM.c) {
+      if (!want || !camEl || typeof m.camera !== 'function') return;
+      const c = m.camera(); if (!c) return;
+      camEl.width = canvas.width; camEl.height = canvas.height;
+      if (!c.layer(camEl)) return;
+      CAM.c = c; CAM.on = false; CAM.ak = ''; CAM.show = a.camShow || 0;
+    }
+    const c = CAM.c, ak = JSON.stringify(a.camAlign || null);
+    if (CAM.ak !== ak) { CAM.ak = ak; c.align(a.camAlign || null); }
+    // (camera mode already on when the page comes up: the Mask is never shown first, so there is nothing to fade from)
+    // (V9 INTEGRATION, the pair v9-cam x v9-sign, review I2: camera mode switching holds what the Mask's 2D layer shows right now (a vote, the fight, an eat), so the sign does not stay aside for it; off counts them all again)
+    if (want !== CAM.on) { CAM.on = want; c.set(want, m.clock() - (want && !S.drawnOnce ? 5 : 0)); if (want && SP && SP.musicStop) SP.musicStop(); if (window.VTSignLayer && window.VTSignLayer.clearTriggers) window.VTSignLayer.clearTriggers(want); }      // (V9 INTEGRATION, the pair v9-cam x countdown music: camera mode on mid-countdown, the Mask and its card fade, so its song fades too, 0.5 s, as when the Mask is switched off)
+    const sh = a.camShow || 0;
+    if (sh !== CAM.show) { CAM.show = sh; if (want) c.showAlign(m.clock(), 8); }      // the Align button: a thin outline on his tracked face for 8 s
+  }
+  /** after each drawn frame: the Mask's own canvas (and the show's 2D layer) fade with the change, the effects canvas shows */
+  function camFade(m) {
+    if (!CAM.c) return;
+    const k = CAM.c.k(m.clock()), op = k <= 0 ? '' : String(Math.round((1 - k) * 1000) / 1000);
+    if (op !== CAM.op) { CAM.op = op; canvas.style.opacity = op; if (hudEl) hudEl.style.opacity = op; }
+    const vis = active() && S.drawnOnce ? 'block' : 'none';
+    if (camEl.style.display !== vis) camEl.style.display = vis;
+  }
+  /** camera mode: the viewer names are shown one at a time in one lane just under his chin (mask-cam.js callout), never stacked at the top where his show banner is */
+  function camNames(c) {
+    if (!namesEl) return;
+    names(c ? [{ text: c.text, kind: c.kind, age: 1 }] : null);
+    if (c) { CAM.lane = true; namesEl.style.top = (c.fy * 100).toFixed(2) + '%'; namesEl.style.transform = 'translateX(' + ((c.fx - 0.5) * 100).toFixed(2) + '%)'; namesEl.firstChild.style.opacity = String(c.a); }
+  }
+  function camDrop() { CAM.c = null; CAM.on = false; CAM.op = ''; if (camEl) camEl.style.display = 'none'; if (hudEl) hudEl.style.opacity = ''; }
+
   function size() {
     const dpr = window.devicePixelRatio || 1;
     let w = Math.max(2, Math.round(window.innerWidth * dpr)), h = Math.max(2, Math.round(window.innerHeight * dpr));
@@ -154,6 +199,7 @@
       const sz = size();
       V8.on = wantV8(a);
       S.mask = window.VTMaskLive.create(canvas, { neutral: S.neutral, bsNames: W.BS_NAMES, width: sz.width, height: sz.height, giftMap: S.rows || undefined, giftSounds: a.maskSounds !== false, background: a.maskBg || 'black', eyeLock: a.eyes !== false, v8: V8.on });
+      if (window.VTMaskCables) window.VTMaskCables.attach(S.mask);      // V9 cables: the show's hype rank (mask.setHype, mask.hypePlus) reaches the cable looks
       S.applied = { mode: 'face', bg: a.maskBg || 'black', sounds: a.maskSounds !== false, viz: '', eyes: a.eyes !== false };
       // V8: the show's brain and the 2D layer over the Mask (bars, pictures, the vote: everything that is read)
       V8.show = null; V8.hud = null; V8.status = null; V8.key = '';
@@ -178,7 +224,7 @@
     if (S.error) apply(); else S.fails = 0;
   }
   function drop() {
-    const m = S.mask; S.mask = null;
+    const m = S.mask; S.mask = null; camDrop();
     V8.show = null; V8.hud = null; V8.status = null; V8.over = null; if (hudEl) hudEl.style.display = 'none';
     if (m) { try { m.destroy(); } catch (e) { /* gone */ } }
     // a canvas that had a graphics context cannot get a new one: a fresh canvas takes its place
@@ -204,16 +250,21 @@
     canvas.style.display = active() && S.mask && S.drawnOnce ? 'block' : 'none';
     canvas.style.transform = a && a.mirror ? 'scaleX(-1)' : '';
     if (namesEl) namesEl.style.display = active() ? 'block' : 'none';
+    if (camEl && !active()) camEl.style.display = 'none';      // V9 camera mode: its canvas goes with the Mask
     // V8: the 2D layer shows with the Mask and is NEVER flipped (its words must read right; Mirror flips the Mask only)
     if (hudEl) hudEl.style.display = active() && S.mask && S.drawnOnce && V8.on ? 'block' : 'none';
-    if (!a || !a.mask) { if (!S.unchosenAt) S.unchosenAt = performance.now(); return; }
+    // (COUNTDOWN MUSIC: the Mask turned OFF mid-countdown, its song fades out too, 0.5 s, as when switched away; only on
+    // that edge of the avatar message, never on a rebuild: drop() / make() leave S.a as it is)
+    const act = active(); if (S.wasActive && !act && SP && SP.musicStop) SP.musicStop(); S.wasActive = act;
+    // (COUNTDOWN MUSIC: switched away from the Mask, its countdown song fades out with it, 0.5 s)
+    if (!a || !a.mask) { if (!S.unchosenAt) { S.unchosenAt = performance.now(); if (SP && SP.musicStop) SP.musicStop(); } return; }
     S.unchosenAt = 0;
     if (!m) { make(); return; }
     // the puppet show was switched in or out as a whole (?v8=0, or a window that knows nothing of it): the Mask is made again
     if (wantV8(a) !== V8.on && !S.making) { drop(); make(); return; }
     const ap = S.applied;
     if (V8.show) {
-      const v = a.v8 || {}, vk = [v.on, v.chat, v.hands, v.rand, v.bars, v.swap, !!a.mirror].join('|');
+      const v = a.v8 || {}, vk = [v.on, v.chat, v.hands, v.rand, v.bars, v.swap, v.orbit, !!a.mirror].join('|');
       if (ap.v8 !== vk) { ap.v8 = vk; V8.show.settings(v); try { m.setBars(v.bars || 0); m.setMirror(!!a.mirror); } catch (e) { /* an older mask */ } }
     }
     // V7: he picked something himself while shuffle runs (`pick` went up), or shuffle was switched on / off: everything
@@ -225,7 +276,7 @@
       ap.mode = ap.bg = ap.viz = ap.colour = undefined;
     }
     if (ap.mode !== a.maskMode) { ap.mode = a.maskMode; m.setMode(a.maskMode); look.mode = a.maskMode; }
-    if (ap.bg !== a.maskBg) { ap.bg = a.maskBg; m.setBackground(a.maskBg); look.bg = a.maskBg; }
+    if (ap.bg !== a.maskBg) { const first = ap.bg === undefined, to = a.maskBg; ap.bg = to; if (SP && BURN && !first && S.drawnOnce) SP.swap(() => m.setBackground(to)); else m.setBackground(to); look.bg = to; }      // (V9 show opening: a change of background burns in behind a scan line, never a cut)
     // V7: where the face sits and how big (the canvas is flipped as a whole when Mirror is on, so left-right is flipped back)
     // V8: a vote's winner may change his size ("shrink him to an inch", "make him HUGE") or his colour for a while (V8.over)
     const ov = V8.over, oz = ov && ov.zoom ? ov.zoom : 0;
@@ -240,6 +291,21 @@
     if (ap.colour !== ck && typeof m.setColour === 'function') { ap.colour = ck; m.setColour(col || null, a.maskColourMusic !== false); look.colour = 'auto'; }
     if (ap.eyes !== (a.eyes !== false) && typeof m.setEyeLock === 'function') { ap.eyes = a.eyes !== false; m.setEyeLock(ap.eyes); }      // eyes on camera (round 5)
     if (ap.sounds !== a.maskSounds) { ap.sounds = a.maskSounds; m.setGiftSounds(a.maskSounds); }
+    // V9: a style on top of the Mask (no field = classic). Only asked of a mask that has styles; the mask transforms, never cuts.
+    // V9 HYPE: the look of the hype-bar ranks (no field = Aura to Nebula, the show's own; 'classic' = the old ladder)
+    const hys = a.hypeStyle || 'nebula';
+    if (ap.hype !== hys && typeof m.setHypeStyle === 'function') { ap.hype = hys; try { m.setHypeStyle(hys); } catch (e) { /* a mask without the hype looks */ } }      // (what really draws is told back: status().hype)
+    const stl = a.maskStyle || 'classic';
+    if ((ap.style || 'classic') !== stl && typeof m.setStyle === 'function') { ap.style = stl; try { m.setStyle(stl); } catch (e) { /* a style this mask does not have */ }
+      // V9 cables: a cable look brings the stream between his hands (the hands layer's effect; it floats at the chest when no hand is up)
+      const cab = window.VTMaskCables && window.VTMaskCables.LOOKS[stl] ? window.VTMaskCables.LOOKS[stl] : null;
+      if (typeof m.handsFx === 'function' && (cab || S.cableLook)) { try { m.handsFx(!!cab, cab ? { effect: cab.effect } : undefined); } catch (e) { /* no hands layer on this page */ } }
+      S.cableLook = !!cab;
+    }
+    // V9 SMART CAMERA: the virtual camera that cuts with the music (no field = off = the Mask's own camera, untouched)
+    const camOn = a.maskCam === 'smart';
+    if (!!ap.cam !== camOn && typeof m.smartCam === 'function') { ap.cam = camOn; try { S.cam = m.smartCam(camOn); } catch (e) { S.cam = null; /* a mask without the camera */ } }
+    camApply(a, m);                                        // V9 CAMERA MODE (no `camMode` field ever = nothing of it is made)
     // the Visualizer's style (a newer hook of mask/*, used when it is there). The mask alone is shown: no head round it (his pick).
     if (a.maskViz && ap.viz !== a.maskViz && typeof m.setVisualizer === 'function') { ap.viz = a.maskViz; try { m.setVisualizer(a.maskViz); look.viz = a.maskViz; } catch (e) { /* a name this mask does not have */ } }
     if (a.maskGifts && a.maskGifts !== S.giftsRev) {
@@ -259,7 +325,10 @@
     S.frames++;
     if (!S.mask || !S.a || !S.a.mask) return;
     let ok = false;
-    try { ok = S.mask.frame(f.lm, f.bs, f.mat, { width: f.w || 1, height: f.h || 1 }, f.at); } catch (e) { ok = false; }
+    const held = !!(SP && SP.holdsFace && SP.holdsFace());  // countdown 2.0: while the Mask sleeps it wears the sleeping face (js/v9-show-page.js)
+    if (!held) { try { ok = S.mask.frame(f.lm, f.bs, f.mat, { width: f.w || 1, height: f.h || 1 }, f.at); } catch (e) { ok = false; } }
+    if (SP) SP.face(f.lm, f.w, f.h, f.bs, f.mat);           // V9 show opening: where his real face is (only kept while it is needed)
+    if (CAM.on && CAM.c && f.lm) { try { CAM.c.face(f.lm, f.w || 1, f.h || 1); } catch (e) { /* the outline only */ } }      // V9 camera mode: the raw points, for the Align outline
     if (ok) { S.faces++; S.faceN++; S.newFaceAt = f.at; if (S.log && S.log.faces.length < 20000) S.log.faces.push([f.at, epoch(), f.lm[3], f.lm[4]]); }
     // V8: his REAL face is the boss's controller (mouth wide = eat, a head turn = dodge, a pucker = the shield ...)
     if (V8.show) { try { V8.nose = f.lm ? [f.lm[3], f.lm[4]] : null; V8.show.face(f.lm ? { bs: f.bs, mat: f.mat, lm: f.lm } : null, S.mask.clock()); } catch (e) { /* the next frame */ } }
@@ -280,6 +349,7 @@
   }
   function onAudio(m) {
     const now = performance.now();
+    if (!m.own && SP && SP.musicOwns && SP.musicOwns()) return;      // COUNTDOWN MUSIC: the song is heard from this page meanwhile
     S.src = m.s === 'pc' || m.s === 'obs' ? m.s : 'voice'; S.srcAt = now;
     if (!Array.isArray(m.f) || m.f.length < 8 || !S.mask || !active()) return;
     // V8: the Mask's own ear for "is a song playing?" (only used while LIVE Link says nothing): the PC's sound level,
@@ -287,6 +357,7 @@
     if (V8.show && !ownSound(now)) V8.show.ear(Number(m.f[6]) || 0, S.src, S.mask.clock());
     const f = guard(fromList(m.f), now);
     shuffleStep(f, now);
+    if (SP) SP.audio(f, S.mask.clock());                   // V9 show opening: the beat its zero and its impact land on
     if (S.src === 'pc') { try { S.mask.audio(f); } catch (e) { /* the next one */ } }
     else { S.target = f; if (f.kick) S.kick = Math.max(S.kick, f.kick); }       // a level 20 times a second: eased in draw()
   }
@@ -308,7 +379,7 @@
     if (!acts) return;
     for (const x of acts) {
       try {
-        if (x.set === 'mode') m.setMode(x.value); else if (x.set === 'bg') m.setBackground(x.value); else if (x.set === 'viz') m.setVisualizer(x.value);
+        if (x.set === 'mode') m.setMode(x.value); else if (x.set === 'bg') { const to = x.value; if (SP && BURN && S.drawnOnce) SP.swap(() => m.setBackground(to)); else m.setBackground(to); } else if (x.set === 'viz') m.setVisualizer(x.value);
         else if (x.set === 'colour') m.setColour(x.value === 'auto' ? null : x.value, true);
         look[x.set] = x.value;
       } catch (e) { /* a look this mask does not have */ }
@@ -336,16 +407,23 @@
       // V8: the show takes it first (a tap = a missile in a fight, a comment = a vote or a chat word, a gift = a weapon
       // or a move); `v4` says whether the Mask's older gift effect plays as well (not in a fight)
       let v4 = true;
-      if (V8.show) { try { v4 = V8.show.event(m.e, S.mask.clock()).v4 !== false; } catch (e) { v4 = true; } }
+      if (SP) SP.event(m.e);                               // V9 show opening: taps and gifts charge the countdown card's meter
+      if (V8.show && !CAM.on) { try { v4 = V8.show.event(m.e, S.mask.clock()).v4 !== false; } catch (e) { v4 = true; } }
       if (v4) { try { S.mask.fire(m.e); } catch (e) { /* an event the mask does not know */ } }
     }
     // V8: a button / key on the VTuber window, or one of LIVE Link's global keys. (Release A: EAT IT comes this way too and
     // works with the Puppet show switched off: the show's brain is there whenever the Mask is, and takes 'eat' first.)
-    else if (m.t === 'v8-cmd') { if (V8.show && S.mask && active()) { try { V8.show.cmd(m, S.mask.clock()); } catch (e) { /* one press lost */ } } }
+    else if (m.t === 'v8-cmd') { if (V8.show && S.mask && active() && !CAM.on) { try { V8.show.cmd(m, S.mask.clock()); } catch (e) { /* one press lost */ } } }
     // V8: LIVE Link's show state (song on air, its cover, the hype rank, his score). Older than 15 s = not believed.
-    else if (m.t === 'v8-show') { if (m.s && typeof m.s === 'object' && typeof m.rx === 'number' && Date.now() - m.rx < 15000) { V8.lastShow = { s: m.s, rx: m.rx }; if (V8.show && S.mask) V8.show.setShow(m.s, S.mask.clock()); } }
+    else if (m.t === 'v8-show') { if (m.s && typeof m.s === 'object' && typeof m.rx === 'number' && Date.now() - m.rx < 15000) { V8.lastShow = { s: m.s, rx: m.rx }; if (SP) SP.show(m.s); if (V8.show && S.mask) V8.show.setShow(m.s, S.mask.clock()); } }
+    // V9 SHOW OPENING (js/v9-show-page.js): the countdown card, the transform between his real face and the Mask
+    else if (m.t === 'show-cmd') { if (SP && S.mask && active() && L.v9Shows('countdown') && !CAM.on) {      // (V9 INTEGRATION: not in camera mode: the card and the transform need the Mask's own picture, which camera mode does not draw)
+      try { SP.cmd(m, S.mask, canvas, { neutral: S.neutral, bsNames: W.BS_NAMES }); } catch (e) { /* one press lost */ } } }
     // V8: the hand model's raw result, for the angel / devil puppets (the tracker sends it only while the switch is on)
-    else if (m.t === 'v8-hands') { if (V8.show && S.mask && active() && Array.isArray(m.hands)) { try { V8.show.hands(m.hands.slice(0, 2), { aspect: m.w && m.h ? m.w / m.h : 0.5625, face: V8.nose }, S.mask.clock()); } catch (e) { /* the next one */ } } }
+    else if (m.t === 'v8-hands') { if (S.cableLook && S.mask && active() && Array.isArray(m.hands) && typeof S.mask.handsInput === 'function') { try { S.mask.handsInput(m.hands.slice(0, 2), { aspect: m.w && m.h ? m.w / m.h : 0.5625 }); } catch (e) { /* the next one */ } }      // V9 cables: his hands drive the stream
+      if (V8.show && S.mask && active() && Array.isArray(m.hands)) { try { V8.show.hands(m.hands.slice(0, 2), { aspect: m.w && m.h ? m.w / m.h : 0.5625, face: V8.nose }, S.mask.clock()); } catch (e) { /* the next one */ } } }
+    // COUNTDOWN MUSIC: the Mask is OFF (V9 INTEGRATION: or in camera mode, which drops the other show commands): Stop, "Fade music out" and the music switch still reach its song (and never start it)
+    if (m.t === 'show-cmd' && SP && (!(S.mask && active()) || CAM.on) && (m.do === 'stop' || m.do === 'music' || m.do === 'musicFade')) { try { if (S.mask) SP.cmd(m, S.mask, canvas, { neutral: S.neutral, bsNames: W.BS_NAMES, maskOff: true }); else if (SP.musicStop && !(m.do === 'music' && m.on === true)) SP.musicStop(); } catch (e) { /* one press lost */ } }
   };
 
   // ---------------------------------------------------------------- drawing
@@ -362,6 +440,16 @@
       el.style.opacity = String(Math.max(0, Math.min(1, age / 0.2, (2.5 - age) / 0.35)));
     }
   }
+  // V9 SMART CAMERA: the camera stands straight on while a countdown runs: the show opening's countdown card, its transform,
+  // the Mask asleep before it wakes (js/v9-show-page.js, when the page has it). Looked at ten times a second.
+  const CD = { at: -1e9, on: false, cam: null };
+  function camCountdown(now) {
+    if (now - CD.at < 100 && CD.cam === S.cam) return;
+    CD.at = now;
+    let on = false;
+    try { const P = window.VTShowPage, st = P && typeof P.status === 'function' ? P.status() : null; on = !!(st && (st.state === 'card' || st.running || (st.c2 && st.c2.hold))); } catch (e) { on = false; }
+    if (on !== CD.on || CD.cam !== S.cam) { CD.on = on; CD.cam = S.cam; try { S.cam.aside('countdown', on); } catch (e) { /* an older camera */ } }
+  }
   function draw() {
     const now = performance.now(), m = S.mask;
     if (!m) return;
@@ -371,9 +459,12 @@
       try { m.audio({ ...c, kick: S.kick, hit: 0 }); } catch (e) { /* the next one */ }
       S.kick = 0;
     }
-    v8Step(now);                                           // V8: the show steps and feeds the Mask before it draws
+    if (!CAM.on) v8Step(now);                                           // V8: the show steps and feeds the Mask before it draws
+    if (S.applied.cam && S.cam && S.cam.on) camCountdown(now);      // V9 SMART CAMERA: straight on while a countdown runs
     let drew = false;
+    if (SP && SP.beforeDraw) { try { SP.beforeDraw(m); } catch (e) { /* his own face then */ } }      // countdown 2.0: the sleeping face goes in (nothing unless it sleeps)
     try { drew = m.draw() !== false; } catch (e) { S.error = String(e && e.message ? e.message : e).slice(0, 160); }
+    if (drew && SP) { try { SP.afterDraw(m, canvas, { mirror: !!(S.a && S.a.mirror) }); } catch (e) { /* the Mask goes on without the show layer */ } }      // V9 show opening (does nothing until a show-cmd came)
     if (drew) {
       S.draws++; S.fpsN++;
       if (!S.drawnOnce) { S.drawnOnce = true; S.firstDrawAt = performance.now(); canvas.style.display = active() ? 'block' : 'none'; if (hudEl) hudEl.style.display = active() && V8.on ? 'block' : 'none'; }
@@ -383,7 +474,8 @@
       if (S.a && S.a.pv && S.drawnOnce && active()) { const d = Stage.picture(V8.hud && hudEl ? [{ canvas, mirror: !!S.a.mirror }, { canvas: hudEl, mirror: false }] : [{ canvas, mirror: !!S.a.mirror }], now); if (d) Boot.send({ t: 'avatar-ack', ready: true, on: S.a.on, character: S.a.character, mask: window.VTMaskPage.status(), fps: S.fps, w: canvas.width, h: canvas.height, at: Date.now(), pv: d }); }
       if (S.newFaceAt) { const d = epoch() - S.newFaceAt; S.lat.push(d); if (S.lat.length > 600) S.lat.splice(0, 300); if (S.log && S.log.draws.length < 20000) S.log.draws.push([S.newFaceAt, epoch()]); S.newFaceAt = 0; }
     }
-    try { names(m.names()); } catch (e) { names(null); }
+    camFade(m);                                            // V9 camera mode: the Mask's canvas fades out / in with the change
+    try { if (CAM.on && CAM.c) camNames(CAM.c.callout(m.names(), m.clock())); else { if (CAM.lane) { CAM.lane = false; namesEl.style.top = ''; namesEl.style.transform = ''; } names(m.names()); } } catch (e) { names(null); }      // (V9 camera mode: one name at a time, under his chin)
     if (now - S.fpsAt >= 1000) { const s = (now - S.fpsAt) / 1000; S.fps = Math.round(S.fpsN / s); S.faceHz = Math.round(S.faceN / s); S.fpsN = 0; S.faceN = 0; S.fpsAt = now; }
   }
   function loop() {
@@ -431,15 +523,21 @@
         w: canvas.width, h: canvas.height, lagMs: q(S.lat, 0.5), events: S.events,
         viz: vizNames(), bgs: bgNames(),
         // V7: what shows right now (shuffle may have changed it), and the shuffle's own state
+        hype: S.mask && typeof S.mask.hypeStyle === 'function' ? S.mask.hypeStyle() : 'classic',      // V9 HYPE: the look that is really drawing (classic when the asked one could not start)
         vizNow: st ? st.visualizer : '', colour: st ? st.colour || '' : '', place: st && st.place ? [st.place.zoom, st.place.x, st.place.y] : null,
+        ...(SP ? { show: SP.status() } : null),
+        ...(SG && SG.status && SG.status() ? { sign: SG.status() } : null),      // V9 show sign + live overlay: what the layer is doing (not there while both are off)
         ...(SH.sh ? { shuffle: SH.amount, look: { ...look }, changes: SH.changes, bpm: SH.sh.beat && SH.sh.beat.locked ? Math.round(SH.sh.beat.bpm) : 0 } : null),
         // V8: what the puppet show is doing (cooldowns, the fight, the vote, why a button is grey), for the VTuber window
+        ...(CAM.c ? { cam: { on: CAM.on, ...(st && st.camera ? { k: Math.round(st.camera.k * 100) / 100, ms: Math.round(st.camera.ms * 100) / 100, align: st.camera.align } : null) } } : null),      // V9 camera mode
         ...(V8.show && V8.status ? { v8: { ...V8.status, counts: undefined, ms: Math.round(((V8.costMs || 0) + (V8.hudMs || 0)) * 100) / 100, pics: [V8.picsOk || 0, V8.picsBad || 0] } } : null),
       };
     },
     fps: () => S.fps,
+    /** V9 show sign: what the 2D layer is about to draw (the vote, the fight, the eat, the rank banner), so the sign can step aside; null without the puppet show's stage */
+    hud: () => { try { return S.mask && V8.on ? S.mask.hud() : null; } catch (e) { return null; } },
     /** for the proof tools only */
-    debug: { S, q, SH, look, V8, startLog() { S.log = { faces: [], draws: [], shuffles: [] }; }, takeLog() { const l = S.log; S.log = null; return l; }, get mask() { return S.mask; }, get canvas() { return canvas; } },
+    debug: { S, q, SH, look, V8, CAM, startLog() { S.log = { faces: [], draws: [], shuffles: [] }; }, takeLog() { const l = S.log; S.log = null; return l; }, get mask() { return S.mask; }, get canvas() { return canvas; } },
   };
   // the Mask answers the app by itself once a second (it does not wait for the heroes' big 3D files)
   setInterval(() => {

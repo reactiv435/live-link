@@ -45,6 +45,7 @@
     homeP: 0.5, octaves: 0.9,                 // which of P, 2P, P/2 is "the beat": the one nearest 120 a minute
     window: 14, tau: 7,                        // kicks of the last 14 s count, the newest most
     every: 0.5,                                // the beat is measured again twice a second
+    spread: 0,                                 // >1: that measuring cut into this many parts, one a push (a caller on its render thread); 0 = all at once
     minKicks: 6, lockScore: 0.42,
     silence: 0.06, silentAfter: 2.0,           // a level under this for 2 s = no music
     dropAway: 2.0, dropBeats: 5, dropKick: 0.6, dropConfirm: 0.35, // the bass away for this long, then a strong kick = the drop
@@ -61,18 +62,19 @@
     const RELS = [0.5, 2 / 3, 0.75, 1, 4 / 3, 1.5, 2];
     let acc = [0, 0, 0, 0, 0, 0], accN = 0, F = [], hist = new Float64Array(32), nov = [], want = -1, wantN = 0, lineConf = 0;
 
-    function reset() { kicks = []; locked = false; n = 0; origin = 0; anchor = 'guess'; conf = 0; cand = 0; candN = 0; bassAway = 0; heardFor = 0; maybe = null; flip = 0; rel = [0, 0, 0, 0, 0, 0, 0]; relN = 0; F = []; hist = new Float64Array(32); nov = []; acc = [0, 0, 0, 0, 0, 0]; accN = 0; want = -1; wantN = 0; lineConf = 0; }
+    let scan = null;                                       // (options.spread: the measuring in parts)
+    function reset() { scan = null; kicks = []; locked = false; n = 0; origin = 0; anchor = 'guess'; conf = 0; cand = 0; candN = 0; bassAway = 0; heardFor = 0; maybe = null; flip = 0; rel = [0, 0, 0, 0, 0, 0, 0]; relN = 0; F = []; hist = new Float64Array(32); nov = []; acc = [0, 0, 0, 0, 0, 0]; accN = 0; want = -1; wantN = 0; lineConf = 0; }
 
     /** how well a beat of length p fits the kicks, and where it falls: [score 0..1, a beat time] */
-    function fit(p, t) {
+    function fit(p, t, ks) {
       let re = 0, im = 0, sw = 0;
-      for (const k of kicks) { const w = k.w * Math.exp(-(t - k.t) / o.tau), a = 2 * Math.PI * k.t / p; re += w * Math.cos(a); im += w * Math.sin(a); sw += w; }
+      for (const k of ks || kicks) { const w = k.w * Math.exp(-(t - k.t) / o.tau), a = 2 * Math.PI * k.t / p; re += w * Math.cos(a); im += w * Math.sin(a); sw += w; }
       if (sw <= 0) return [0, 0];
       return [Math.hypot(re, im) / sw, Math.atan2(im, re) / (2 * Math.PI) * p];
     }
     /** how good a beat of length p is: it fits the kicks, it still fits when halved (off-beat kicks fall on its half; the
      *  length of a dotted pattern does not), and it is not far from 120 a minute */
-    const score = (p, t) => (0.5 * fit(p, t)[0] + 0.5 * fit(p / 2, t)[0]) * Math.exp(-0.5 * Math.pow(Math.log2(p / o.homeP) / o.octaves, 2));
+    const score = (p, t, ks) => (0.5 * fit(p, t, ks)[0] + 0.5 * fit(p / 2, t, ks)[0]) * Math.exp(-0.5 * Math.pow(Math.log2(p / o.homeP) / o.octaves, 2));
     function estimate(t) {
       if (kicks.length < o.minKicks) return null;
       let best = 0, bp = 0;
@@ -86,6 +88,28 @@
       let fb = 0, fp = bp;
       for (let p = bp - o.stepP; p <= bp + o.stepP + 1e-9; p += o.stepP / 8) { const s = fit(p, t)[0]; if (s > fb) { fb = s; fp = p; } }
       return { p: fp, score: best, r: fb, at: fit(fp, t)[1] };
+    }
+    /** the same measuring cut into o.spread parts, one a push: begun every o.every s on the kicks as they were then (and the
+     *  beat then in use), its answer on the push the last part is done (null on the others) */
+    function measure(t) {
+      if (!scan) {
+        if (t - estAt < o.every) return null;
+        estAt = t;
+        if (kicks.length < o.minKicks) return null;
+        scan = { t, ks: kicks.slice(), p: o.minP, best: 0, bp: 0, lock: locked, P, per: Math.ceil(((o.maxP - o.minP) / o.stepP + 1) / o.spread) };
+      }
+      const q = scan;
+      for (let i = 0; i < q.per && q.p <= o.maxP + 1e-9; i++, q.p += o.stepP) {
+        const near = q.lock && Math.abs(Math.log2(q.p / q.P)) < 0.06 ? 1.25 : 1;
+        const s = score(q.p, q.t, q.ks) * near;
+        if (s > q.best) { q.best = s; q.bp = q.p; }
+      }
+      if (q.p <= o.maxP + 1e-9) return null;
+      scan = null;
+      if (!q.bp) return null;
+      let fb = 0, fp = q.bp;
+      for (let p = q.bp - o.stepP; p <= q.bp + o.stepP + 1e-9; p += o.stepP / 8) { const s = fit(p, q.t, q.ks)[0]; if (s > fb) { fb = s; fp = p; } }
+      return { p: fp, score: q.best, r: fb, at: fit(fp, q.t, q.ks)[1] };
     }
     /** the beat number (as counted) nearest to a time */
     const beatAt = (time) => n + Math.round((time - beatT) / P);
@@ -128,10 +152,9 @@
       if (bass > 0.55 && bassAway > 0) { awayLen = bassAway; awayEnd = t; }
       bassAway = bass < 0.42 ? bassAway + dt : bass > 0.55 ? 0 : bassAway;
 
-      // ---- the beat: measured again twice a second
-      if (t - estAt >= o.every) {
-        estAt = t;
-        const e = estimate(t);
+      // ---- the beat: measured again twice a second (options.spread: in parts, over that many pushes)
+      if (o.spread > 1 || t - estAt >= o.every) {
+        const e = o.spread > 1 ? measure(t) : (estAt = t, estimate(t));
         if (e) {
           if (!locked) {
             if (e.score >= o.lockScore && cand && Math.abs(e.p / cand - 1) < 0.04) candN++; else candN = e.score >= o.lockScore ? 1 : 0;

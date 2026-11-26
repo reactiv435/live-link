@@ -1,0 +1,11 @@
+{
+ "blender": "5.1.1",
+ "size": 1024,
+ "sculpt_gain": 1.8,
+ "code": 1.5,
+ "height_cm": [
+  -0.724,
+  0.643
+ ],
+ "is": "rgb = 0.5 + 0.5 * code * (the normal of the sculpt - the normal of the smooth face), canonical axes (x right, y up, z to the viewer), canonical UV, row 0 = v 0"
+}

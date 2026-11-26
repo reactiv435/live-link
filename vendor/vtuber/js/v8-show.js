@@ -135,7 +135,7 @@
     const puppets = E.VTHandPuppets ? E.VTHandPuppets.create({ sourceMirrored: false }) : null;
     const ear = createEar();
     const S = {
-      cfg: { on: true, chat: true, hands: false, rand: false, swap: false },
+      cfg: { on: true, chat: true, hands: false, rand: false, swap: false, orbit: true },
       show: null, showAt: -1e9, songId: null, scoreKey: '', hypeRank: -1, mythic: 0, songOn: false, songSrc: 'none',
       a: null, fired: { shock: false, scream: false }, mic: null, micAt: -1e9, faceAt: -1e9,
       handsIn: null, handsAt: -1e9, handsStepAt: -1e9, p: null, aspect: 0.5625, nose: null,
@@ -351,6 +351,9 @@
       if (ev.type === 'gift') {
         if (boss && boss.phase === 'fight') { boss.gift({ viewer: who, coins: ev.coins || 1, count: ev.count || 1, gift: ev.gift || '' }, t); return { v4: false }; }
         if (inFight) return { v4: false };
+        // V9 HYPE: the gifter's picture joins the orbit round the Mask (on unless settings({ orbit: false }): the "Gifters orbit" switch; the picture is the one the
+        // page already loads and keeps for the fight's missiles, the placeholder when there is none)
+        if (S.cfg.orbit && mask.gifter && !isCrowd(ev)) mask.gifter(who, (ev.coins || 1) * (ev.count || 1));
         if (S.cfg.chat && !busyFight() && t - S.lastGiftAt >= LIMITS.gift) {
           const g = giftMove((ev.coins || 1), S.giftFlip); S.giftFlip = !S.giftFlip; S.lastGiftAt = t;
           S.queue.push({ at: t + g.delay, move: g.move, flare: !!g.flare, gift: true });
@@ -476,7 +479,7 @@
       return { state, reason, busy: !!e, eaten: !!(air && S.eaten.has(idOf(air))) };
     }
     return {
-      settings(c) { if (!c || typeof c !== 'object') return; for (const k of ['on', 'chat', 'hands', 'rand', 'swap']) if (typeof c[k] === 'boolean') S.cfg[k] = c[k]; if (puppets && puppets.setSourceMirrored) puppets.setSourceMirrored(S.cfg.swap);      // (swap: the angel showed on his left hand)
+      settings(c) { if (!c || typeof c !== 'object') return; for (const k of ['on', 'chat', 'hands', 'rand', 'swap', 'orbit']) if (typeof c[k] === 'boolean') S.cfg[k] = c[k]; if (puppets && puppets.setSourceMirrored) puppets.setSourceMirrored(S.cfg.swap);      // (swap: the angel showed on his left hand)
         if (!S.cfg.on) { for (const m of MOVES) releaseMove(m, S.t); S.queue = []; } },
       cmd, setShow, ear: (v, s, t) => ear.push(clamp(Number(v) || 0, 0, 1), s, t), event, face, mic, hands, step, status,
       takeActs() { const a = S.acts; S.acts = []; return a; },

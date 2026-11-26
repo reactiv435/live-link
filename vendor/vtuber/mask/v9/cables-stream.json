@@ -1,0 +1,33 @@
+{
+ "river": {
+  "file": "cables-stream-river.webp",
+  "frames": 48,
+  "cols": 6,
+  "rows": 8,
+  "w": 640,
+  "h": 240,
+  "ortho": 3.6,
+  "loop": true
+ },
+ "sphere": {
+  "file": "cables-stream-sphere.webp",
+  "frames": 48,
+  "cols": 8,
+  "rows": 6,
+  "w": 320,
+  "h": 320,
+  "ortho": 1.6,
+  "loop": true
+ },
+ "burst": {
+  "file": "cables-stream-burst.webp",
+  "frames": 32,
+  "cols": 8,
+  "rows": 4,
+  "w": 320,
+  "h": 320,
+  "ortho": 2.4,
+  "loop": false
+ },
+ "channels": "r = the first colour, g = the second, b = white-hot; sRGB-coded light, black = nothing"
+}

@@ -51,6 +51,43 @@
   // every name the Mask's Visualizer style may have (the same list as mask/mask-fx.js VISUALIZERS; a test keeps them
   // equal). A name that is not in it is never kept and never sent on, exactly as with the backgrounds.
   const MASK_VISUALIZERS = ['orb', 'tunnel', 'yinyang', 'ridges', 'blackhole', 'helix'];
+  // V9: the Mask's STYLES (mask/mask-v9.js STYLES; a test keeps them equal). 'classic' = the Mask as it always was and is
+  // never sent: a message without `maskStyle` reads exactly as before V9.
+  const MASK_STYLES = ['classic', 'core'];
+  // V9 cables: the cable looks (js/v9/mask-cables.js adds them to the Mask's own list). The picker and the message take both lists.
+  const MASK_CABLE_STYLES = ['quantum'];
+  const MASK_STYLES_ALL = MASK_STYLES.concat(MASK_CABLE_STYLES);
+  // V9 INTEGRATION (review/V9-INT-NOTES.md): what of V9 THIS BUILD shows. The one place. The owner's call (Nov 26):
+  // everything built goes live on Saturday, so every name is in the list. Taking a name out hides that piece: it is
+  // not offered in the VTuber window, not sent to the avatar page, and a saved setting for it reads as off.
+  //   'countdown' the Show opening card (Countdown 2.0 and the transform that follows its zero)
+  //   'smartcam'  the Smart camera switch and its K key (off until he switches it on)
+  //   'styles'    the Mask style picker (Reactiv Core, Quantum Flow with the stream between his hands)
+  //   'bgburn'    a change of background burns in behind a scan line (never a cut)
+  //   'nebula'    the Aura to Nebula hype bar          'galaxy'  Galaxy Hands
+  const V9_SHOW = ['countdown', 'nebula', 'smartcam', 'galaxy', 'styles', 'bgburn'];
+  const v9Shows = (k) => V9_SHOW.includes(k);
+  /** the Mask styles he can pick in this build (classic alone = no picker) */
+  const maskStylesOffered = () => (v9Shows('styles') ? MASK_STYLES_ALL : ['classic']);
+  // V9 HYPE: the look of the hype-bar ranks (mask/mask-hype.js STYLES; a test keeps them equal). The first one, 'nebula'
+  // (Aura to Nebula), is the show's own and is never sent: a message without `hypeStyle` = nebula. 'classic' = the V8 ladder.
+  const HYPE_STYLES = ['nebula', 'classic', 'aura', 'orbit', 'smoke', 'material', 'stage'];
+  /** the look the avatar page is REALLY drawing when it is not the one he picked ('' = nothing to say). The page's answer
+   *  lags a click by up to about a second, so only an answer that arrived well AFTER the pick was sent counts (HYPE_ACK_LAG),
+   *  and only a fresh one. times in ms on one clock: sentAt = the pick was sent, ackAt = the answer arrived. */
+  const HYPE_ACK_LAG = 1500;
+  function hypeMismatch({ picked, ackHype, ackAt, sentAt, now }) {
+    if (typeof ackHype !== 'string' || !HYPE_STYLES.includes(ackHype) || ackHype === picked) return '';
+    if (!(now - ackAt < 3500) || !(ackAt - sentAt >= HYPE_ACK_LAG)) return '';
+    return ackHype;
+  }
+  // V9 CAMERA MODE: how the tracked picture sits in the avatar page: flipped, nudged (parts of the page), sized. Home = { false, 0, 0, 1 }.
+  const CAM_ALIGN_HOME = { flip: false, dx: 0, dy: 0, zoom: 1, names: 0 };      // names: the lane of the viewer names, up (-) / down (+) from under his chin
+  function cleanCamAlign(a) {
+    const o = a && typeof a === 'object' && !Array.isArray(a) ? a : {}, n = (v, d, lo, hi) => (Number.isFinite(Number(v)) ? Math.round(Math.min(hi, Math.max(lo, Number(v))) * 1000) / 1000 : d);
+    return { flip: o.flip === true, dx: n(o.dx, 0, -0.5, 0.5), dy: n(o.dy, 0, -0.5, 0.5), zoom: n(o.zoom, 1, 0.5, 2), names: n(o.names, 0, -0.8, 0.8) };
+  }
+  const camAlignSet = (a) => { const c = cleanCamAlign(a); return c.flip || c.dx !== 0 || c.dy !== 0 || c.zoom !== 1 || c.names !== 0; };
   // ---- V7: where the character sits in the picture, the Mask's own colour, shuffle to the beat
   // PLACE: Size (zoom) and where the middle of the face is against its usual place, in parts of the picture
   // (x: + = to the right, y: + = up). The limits keep the face at least half inside the picture: never lost.
@@ -302,24 +339,44 @@
         maskBg: MASK_BACKGROUNDS.includes(m.maskBg) ? m.maskBg : 'black', maskSounds: m.maskSounds !== false,
         maskGifts: num(m.maskGifts, 0, 0, 1e15), maskRest: num(m.maskRest, 0, 0, 1e15),
         maskViz: MASK_VISUALIZERS.includes(m.maskViz) ? m.maskViz : '',   // the Visualizer's style ('' = the mask's own first one)
+        ...(m.maskStyle !== 'classic' && maskStylesOffered().includes(m.maskStyle) ? { maskStyle: m.maskStyle } : null),   // V9: a style on top of the Mask (not there = classic)
+        ...(m.maskCam === 'smart' && v9Shows('smartcam') ? { maskCam: 'smart' } : null),   // V9 SMART CAMERA: the virtual camera that cuts with the music (not there = the Mask's own camera)
+        ...(m.hypeStyle !== 'nebula' && HYPE_STYLES.includes(m.hypeStyle) ? { hypeStyle: m.hypeStyle } : null),   // V9 HYPE: the ranks' look (not there = Aura to Nebula)
+        // V9 CAMERA MODE: his real camera is the picture, the Mask draws only the effects (not there = the Mask as before);
+        // camAlign = how the tracked picture sits in the page (only when he moved it), camShow = a count: a change shows the Align outline
+        ...(m.camMode === true ? { camMode: true, ...(camAlignSet(m.camAlign) ? { camAlign: cleanCamAlign(m.camAlign) } : null), ...(num(m.camShow, 0, 0, 1e9) ? { camShow: num(m.camShow, 0, 0, 1e9) } : null) } : null),
         // V7: a colour he picked ('#rrggbb'; not there = Auto), and whether the music still moves it (not there = yes)
         ...(cleanHex(m.maskColour) ? { maskColour: cleanHex(m.maskColour), ...(m.maskColourMusic === false ? { maskColourMusic: false } : null) } : null),
         // V8: the puppet show's switches (only there when the page sends them: a message without `v8` reads exactly as before)
         ...(m.v8 && typeof m.v8 === 'object' && !Array.isArray(m.v8) ? { v8: cleanV8(m.v8) } : null),
+        // V9 SHOW SIGN + LIVE OVERLAY (js/v9-sign.js): only there while the feature is on and has something to show (a
+        // message without them reads exactly as before; a page that does not load js/v9-sign.js never sees them)
+        ...signFields(m),
       } : null),
     };
+  }
+
+  /** V9: the show sign and the live overlay, cleaned by js/v9-sign.js when that file is there (else nothing) */
+  function signFields(m) {
+    if (!m.sign && !m.overlay) return null;
+    let VS = null;
+    try { VS = typeof module === 'object' && module && module.exports && typeof require === 'function' ? require('./v9-sign.js') : (typeof self !== 'undefined' ? self.VTSign : null); } catch (e) { VS = null; }
+    if (!VS) return null;
+    const sign = m.sign ? VS.cleanSign(m.sign) : null, overlay = m.overlay ? VS.cleanOverlay(m.overlay) : null;
+    return { ...(sign ? { sign } : null), ...(overlay ? { overlay } : null) };
   }
 
   // ------------------------------------------------------------------ V8: the puppet show's switches and keys
   // on = the whole puppet show; chat = chat words and gifts set off moves; hands = the angel / devil hand puppets;
   // rand = a random vote every few minutes; bars = where the BOSS + CHAT bars sit, 0 (top) .. 1 (bottom) of the part of
   // the picture TikTok leaves free.
-  const V8_DEFAULTS = Object.freeze({ on: true, chat: true, hands: false, rand: false, bars: 0, swap: false });      // swap: "Swap hands" (the angel showed on his left hand)
+  // orbit = a gifter's picture joins the orbit round the Mask (V9 HYPE; on unless switched off).
+  const V8_DEFAULTS = Object.freeze({ on: true, chat: true, hands: false, rand: false, bars: 0, swap: false, orbit: true });      // swap: "Swap hands" (the angel showed on his left hand)
   const V8_BARS = Object.freeze({ top: 0, middle: 0.5, bottom: 1 });
   function cleanV8(v) {
     const q = v && typeof v === 'object' ? v : {};
     const b = (x, d) => (typeof x === 'boolean' ? x : d);
-    return { on: b(q.on, true), chat: b(q.chat, true), hands: b(q.hands, false), rand: b(q.rand, false), bars: typeof q.bars === 'number' && Number.isFinite(q.bars) ? Math.round(clamp(q.bars, 0, 1) * 100) / 100 : 0, swap: b(q.swap, false) };
+    return { on: b(q.on, true), chat: b(q.chat, true), hands: b(q.hands, false), rand: b(q.rand, false), bars: typeof q.bars === 'number' && Number.isFinite(q.bars) ? Math.round(clamp(q.bars, 0, 1) * 100) / 100 : 0, swap: b(q.swap, false), orbit: b(q.orbit, true) };
   }
   /**
    * RELEASE A, the line under EAT IT in the VTuber window: what the Mask will do with the song and why, in one line.
@@ -404,7 +461,7 @@
   }
 
   return {
-    clamp, seededRandom, CHARACTERS, FACE_KEYS, BACKGROUNDS, MASK_BACKGROUNDS, MASK_VISUALIZERS, PLACE, PLACE_HOME, placeUp, cleanPlace, cleanHex, MASK_SWATCHES, SHUFFLE_LEVELS, hsvToHex, hexToHsv, HANDS_HINT, handsRarelySeen, isCharacter, validFace, moodFace,
+    clamp, seededRandom, CHARACTERS, FACE_KEYS, BACKGROUNDS, MASK_BACKGROUNDS, MASK_VISUALIZERS, MASK_STYLES, MASK_CABLE_STYLES, MASK_STYLES_ALL, CAM_ALIGN_HOME, cleanCamAlign, camAlignSet, HYPE_STYLES, HYPE_ACK_LAG, hypeMismatch, V9_SHOW, v9Shows, maskStylesOffered, PLACE, PLACE_HOME, placeUp, cleanPlace, cleanHex, MASK_SWATCHES, SHUFFLE_LEVELS, hsvToHex, hexToHsv, HANDS_HINT, handsRarelySeen, isCharacter, validFace, moodFace,
     MOUTH_DEFAULTS, MouthGate, BLINK, BlinkClock, TRACKED_BLINK, TrackedBlink, HEAD_LIMIT, headTarget, Damped, pickFace, readAvatarMessage,
     lumaOf, pictureLook, PictureWatch,
     V8_DEFAULTS, V8_BARS, cleanV8, eatLine, V8_ACTIONS, V8_KEYS, keyAllowed, keyLabel, cleanKeys, setKey, keyAction,

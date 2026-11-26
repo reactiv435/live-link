@@ -127,9 +127,10 @@
     };
   }
   const PUPPET_MOVES = ['goo', 'fire', 'melt', 'crack', 'eat'];
-  /** C4, a key pressed in LIVE Link: { type: 'control', action: 'puppet' | 'fight' | 'vote' | 'eat', name } or null ('eat' = EAT IT: the Mask eats the song's cover now) */
+  /** C4, a key pressed in LIVE Link: { type: 'control', action: 'puppet' | 'fight' | 'vote' | 'eat' | 'sign' | 'overlay', name } or null ('eat' = EAT IT: the Mask eats the song's cover now;
+   *  V9: 'sign' = show / hide the show sign, 'overlay' = show / hide the live overlay: both go to the VTuber window, which owns the two switches) */
   function cleanControl(e) {
-    if (!e || typeof e !== 'object' || Array.isArray(e) || e.v !== 2 || e.type !== 'control' || !['puppet', 'fight', 'vote', 'eat'].includes(e.action)) return null;
+    if (!e || typeof e !== 'object' || Array.isArray(e) || e.v !== 2 || e.type !== 'control' || !['puppet', 'fight', 'vote', 'eat', 'sign', 'overlay'].includes(e.action)) return null;
     if (e.action === 'puppet' && !PUPPET_MOVES.includes(e.name)) return null;
     return { type: 'control', action: e.action, name: e.action === 'puppet' ? e.name : '' };
   }

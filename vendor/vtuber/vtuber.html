@@ -121,6 +121,34 @@
   .keyrow button { min-height: 36px; padding: 4px 8px; font-size: 13px; }
   .keyrow button.wait { border-color: var(--crimson2); color: #fff; }
   @media (max-width: 480px) { .moves { grid-template-columns: repeat(3, minmax(0, 1fr)); } .voterow { grid-template-columns: minmax(0, 1fr); } }
+  /* V9 show sign + live overlay: two cards, the same glass as EAT IT for the SHOW / HIDE buttons */
+  .glassbtn { position: relative; width: 100%; margin-top: 12px; padding: 14px 12px 11px; border-radius: 14px; border: 1px solid #ff6a80aa; color: #fff; overflow: hidden; font-family: "Chakra Petch", Bahnschrift, "Segoe UI", sans-serif; font-size: 22px; font-weight: 700; letter-spacing: .16em; background: linear-gradient(180deg, #ff3b5766 0%, #e01f3d40 46%, #7c102266 100%); box-shadow: inset 0 1px 0 #ffffff59, inset 0 -10px 22px #2a060c99, 0 0 20px #e01f3d55; -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); text-shadow: 0 1px 0 #5a0a16; }
+  .glassbtn::before { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 46%; background: linear-gradient(180deg, #ffffff2e, #ffffff00); pointer-events: none; }
+  .glassbtn small { display: block; margin-top: 5px; font: 600 12px/1.3 Consolas, "Segoe UI", monospace; letter-spacing: .04em; color: #ffd9de; text-shadow: none; }
+  .glassbtn:hover:not(:disabled) { box-shadow: inset 0 1px 0 #ffffff80, inset 0 -10px 22px #2a060c80, 0 0 28px #ff3b5788; }
+  .glassbtn:active:not(:disabled) { transform: translateY(1px); }
+  .glassbtn:disabled { border-color: var(--line2); background: #120d0b; color: #8f8880; box-shadow: none; text-shadow: none; cursor: default; }
+  .glassbtn:disabled small { color: var(--dim); }
+  .stateline { display: flex; gap: 8px; align-items: baseline; margin: 8px 2px 2px; font-size: 13.5px; line-height: 1.35; color: var(--text); }
+  .stateline i { flex: none; width: 9px; height: 9px; border-radius: 50%; background: var(--dim); transform: translateY(-1px); }
+  .stateline[data-state="ready"] i { background: #ffd27a; box-shadow: 0 0 8px #ffb224; }
+  .stateline[data-state="busy"] i { background: var(--crimson2); box-shadow: 0 0 8px #ff3b57; }
+  .stateline[data-state="bad"] i { background: var(--warn); } .stateline[data-state="bad"] { color: var(--warn); }
+  .stateline[data-state="wait"] { color: var(--dim); }
+  .signtile { display: grid; grid-template-columns: minmax(0, 1fr) 84px; gap: 8px; margin-top: 8px; }
+  .signtile button { min-height: 40px; padding: 6px 10px; font-size: 14px; text-align: left; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .signtile .del { text-align: center; color: var(--dim); font-size: 13px; }
+  .signtile.sel button:first-child { border-color: var(--crimson2); background: linear-gradient(180deg, #3a0f17, #1d0a0d); color: #fff; font-weight: 700; }
+  #signKeyBox { margin-top: 10px; border-radius: 10px; border: 1px solid var(--line2); overflow: hidden; background-color: #1a120f; background-image: linear-gradient(45deg, #2a1d18 25%, transparent 25%, transparent 75%, #2a1d18 75%), linear-gradient(45deg, #2a1d18 25%, transparent 25%, transparent 75%, #2a1d18 75%); background-size: 20px 20px; background-position: 0 0, 10px 10px; display: flex; justify-content: center; }
+  #signKey { display: block; max-width: 100%; height: auto; max-height: 260px; }
+  .ovstage { width: 162px; height: 288px; border-radius: 10px; background: #000; border: 1px solid var(--line2); display: block; touch-action: none; cursor: grab; }
+  .ovstage.drag { cursor: grabbing; border-color: var(--crimson2); }
+  .keyrow2 { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 10px; align-items: center; margin-top: 8px; }
+  .keyrow2 input[type=color] { width: 64px; height: 40px; padding: 2px; border-radius: 8px; border: 1px solid var(--line2); background: #120d0b; cursor: pointer; }
+  #overlayUrl { width: 100%; font: inherit; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--line2); background: #120d0b; color: var(--text); min-width: 0; }
+  .urlrow { display: grid; grid-template-columns: minmax(0, 1fr) 96px; gap: 8px; margin-top: 10px; }
+  .ovnote { font-size: 14px; color: var(--chrome); margin: 8px 0 0; min-height: 20px; }
+  @media (max-width: 480px) { .ovstage { width: 118px; height: 210px; } }
   .mic { height: 12px; border-radius: 6px; background: #0e0a08; border: 1px solid var(--line2); overflow: hidden; margin-top: 8px; }
   .mic i { display: block; height: 100%; width: 0%; background: linear-gradient(90deg, #8f8880, #d9d2cb 60%, #ff3b57); }
   .miclabel { font-size: 12px; color: var(--dim); margin-top: 4px; }
@@ -137,6 +165,8 @@
   .opt.sel { box-shadow: 0 0 0 2px var(--crimson2); }
   /* the Mask's pickers: an even grid (7 backgrounds = 4 + 3, 6 styles = 3 + 3), every button the same size */
   #maskBgs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  #maskStyles, #hypeStyles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  #hypeStyles .opt.now { outline: 2px dashed #e8e4e0; outline-offset: -3px; }
   #maskVizs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .cam { flex: 1 1 45%; display: flex; flex-direction: column; gap: 6px; align-items: center; }
   .cam img { width: 100%; max-width: 220px; aspect-ratio: 16 / 9; object-fit: contain; background: #000; border-radius: 6px; }
@@ -147,12 +177,17 @@
   .switch i { width: 52px; height: 28px; border-radius: 16px; background: #2a211c; border: 1px solid var(--line2); position: relative; flex: none; }
   .switch i::after { content: ""; position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%; background: #8f8880; transition: left .12s; }
   .switch.sel i { background: #6e0d1d; border-color: var(--crimson2); } .switch.sel i::after { left: 27px; background: #fff; }
+  #camAlignRow .opt { flex: 1 1 18%; min-height: 44px; text-shadow: none; }
   .hint { font-size: 13px; color: var(--dim); margin: 6px 0 0; }
   #remove { margin-top: 18px; width: 100%; }
   /* the tracker works inside this page, unseen */
   #trk { position: fixed; left: 0; top: 0; width: 1100px; height: 900px; border: 0; opacity: 0; pointer-events: none; z-index: -1; }
   [hidden] { display: none !important; }
 </style>
+<!-- V9 CONTROL DECK (js/v9-deck.js): the one-screen deck over this same page. It shows unless he picked "Classic controls"
+     (kept in this browser) or the address says ?deck=0; if the deck cannot start, today's layout shows, as always. -->
+<link rel="stylesheet" href="js/v9-deck.css">
+<script>(function(){var h=document.documentElement,v="";try{v=(JSON.parse(localStorage.getItem("vt-deck")||"{}")||{}).view;}catch(e){}if(v!=="classic"&&!/[?&]deck=0(?:&|$)/.test(location.search))h.classList.add("dk-on");document.addEventListener("DOMContentLoaded",function(){if(!window.VTDeck)h.classList.remove("dk-on");});})();</script>
 </head>
 <body>
 <main>
@@ -167,6 +202,18 @@
   <div id="maskMain" hidden>
     <button id="mode"><span id="modeText">VISUALIZER</span><small id="modeHint"></small></button>
     <div id="sound"></div>
+    <!-- V9 CAMERA MODE: his real camera stays the picture; gifts, taps, chat and missiles land on his real face -->
+    <div id="camBox">
+      <button class="plain switch" id="camMode"><span>Camera mode (your real face, effects only)</span><i></i></button>
+      <div id="camAlign" hidden>
+        <p class="hint">Effects aim at your real face. Press Align: a thin outline shows on stream for 8 seconds. If it sits on your face, you are done. If not, move it.</p>
+        <div class="row" id="camAlignRow">
+          <button class="opt" data-cam="show">Align</button><button class="opt" data-cam="left">Left</button><button class="opt" data-cam="right">Right</button><button class="opt" data-cam="up">Up</button><button class="opt" data-cam="down">Down</button>
+          <button class="opt" data-cam="smaller">Smaller</button><button class="opt" data-cam="bigger">Bigger</button><button class="opt" data-cam="flip">Flip</button><button class="opt" data-cam="reset">Reset</button>
+          <button class="opt" data-cam="namesUp">Names higher</button><button class="opt" data-cam="namesDown">Names lower</button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- V7: move and size (all three). The picture is what OBS shows; he drags the character in it. -->
@@ -204,6 +251,83 @@
     </div>
   </div>
 
+  <!-- V9: the show opening (only while the Mask is picked): the countdown card and the transform. js/vtuber.js, "V9 SHOW OPENING". -->
+  <div class="card" id="showCard" hidden>
+    <h2>Show opening</h2>
+    <div class="voterow"><input id="showMin" type="number" min="1" max="60" step="1" value="10" aria-label="Countdown, minutes"><button class="plain" id="showStart">Start countdown</button></div>
+    <p class="hint" id="showHint">Minutes until you start. The card covers your camera, then burns away to your real face at zero. Taps and gifts charge the meter; they never change the time.</p>
+    <!-- countdown music (js/vtuber.js, "COUNTDOWN MUSIC"): his song under the countdown, its drop exactly on the zero -->
+    <button class="plain switch" id="showMusic"><span>Countdown music</span><i></i></button>
+    <div class="field">Music volume <span id="showVolVal"></span></div><input type="range" id="showVol" min="0" max="1" step="0.01" aria-label="Countdown music volume">
+    <button class="plain" id="showMusicFade" style="margin-top:10px">Fade music out</button>
+    <p class="hint" id="showMusicHint">Music off: the countdown runs silent, as before.</p>
+    <button id="showFire">TRANSFORM</button>
+    <p class="hint" id="showFireHint">Your real face burns into the Mask, on the next beat. Press again to come back.</p>
+  </div>
+
+  <!-- V9: the show sign (only while the Mask is picked): his own looping video or picture, green keyed out. js/v9-sign-card.js -->
+  <div class="card" id="signCard" hidden>
+    <h2>Show sign</h2>
+    <button class="plain switch" id="signOn" style="margin-top:0"><span>Show sign</span><i></i></button>
+    <p class="hint" id="signHint"></p>
+    <button class="glassbtn" id="signShow"><span id="signShowText">HIDE SIGN</span><small id="signShowKey"></small></button>
+    <p class="stateline" id="signLine" data-state="wait"><i></i><span id="signLineText"></span></p>
+    <div class="field">Your signs <span id="signCount" style="letter-spacing:0;text-transform:none"></span></div>
+    <div id="signTiles"></div>
+    <button class="plain" id="signUpload" style="margin-top:10px;width:100%">Upload a sign ...</button>
+    <input type="file" id="signFile" accept=".mp4,.webm,.png,.gif,.jpg,.jpeg,video/mp4,video/webm,image/png,image/gif,image/jpeg" hidden>
+    <p class="hint">A video (mp4, webm) or a picture (png, gif, jpg) on a pure green background, up to 60 MB. It is kept on this PC only and loops without sound.</p>
+    <p class="ovnote" id="signNote"></p>
+    <div id="signLook" hidden>
+      <div class="field">Preview: is the green gone?</div>
+      <div id="signKeyBox"><canvas id="signKey" width="480" height="136" aria-label="Your sign with the green taken out"></canvas></div>
+      <p class="hint" id="signPvNote"></p>
+      <div class="keyrow2"><input type="color" id="signKeyCol" value="#00ff00" aria-label="Key colour"><button class="plain" id="signKeyGreen">Key colour: back to pure green</button></div>
+      <div class="field">Key strength <span id="signStrengthVal"></span></div><input type="range" id="signStrength" min="0.05" max="0.9" step="0.01" aria-label="Key strength">
+      <p class="hint">Green still showing: turn it up. Parts of your sign missing: turn it down.</p>
+      <div class="field">Edge softness <span id="signSoftVal"></span></div><input type="range" id="signSoft" min="0.005" max="0.5" step="0.005" aria-label="Edge softness">
+      <div class="field">Green spill <span id="signSpillVal"></span></div><input type="range" id="signSpill" min="0" max="1" step="0.01" aria-label="Green spill">
+      <p class="hint">Takes the green tint off the edges of your sign.</p>
+      <div class="field">Where it sits</div>
+      <div class="place">
+        <div><canvas class="ovstage" id="signStage" width="324" height="576" aria-label="The picture. Drag your sign to move it."></canvas></div>
+        <div>
+          <p class="hint" style="margin-top:0">Drag the sign in the picture, or use the sliders. The dashed line is the part TikTok leaves free; the sign always stays inside it.</p>
+          <div class="field">Size <span id="signSizeVal"></span></div><input type="range" id="signSize" min="0.2" max="1" step="0.01" aria-label="Sign size">
+          <div class="field">Left - right <span id="signXVal"></span></div><input type="range" id="signX" min="-1" max="1" step="0.02" aria-label="Sign left - right">
+          <div class="field">Top - bottom <span id="signYVal"></span></div><input type="range" id="signY" min="0" max="1" step="0.01" aria-label="Sign top - bottom">
+        </div>
+      </div>
+      <button class="plain switch" id="signTrim"><span>Trim the empty green round the sign</span><i></i></button>
+      <p class="hint" id="signTrimHint"></p>
+      <button class="plain" id="signReset" style="margin-top:12px;width:100%">Reset: top centre, pure green, standard sliders</button>
+    </div>
+  </div>
+
+  <!-- V9: the live overlay (only while the Mask is picked): his overlay page in a frame. js/v9-sign-card.js -->
+  <div class="card" id="overlayCard" hidden>
+    <h2>Live overlay (URL)</h2>
+    <button class="plain switch" id="overlayOn" style="margin-top:0"><span>Live overlay</span><i></i></button>
+    <p class="hint" id="overlayHint"></p>
+    <div class="urlrow"><input id="overlayUrl" type="url" inputmode="url" spellcheck="false" autocomplete="off" maxlength="600" placeholder="https://reactivvibeai.com/live/now" aria-label="The address of your live overlay page"><button class="plain" id="overlayUse">Use</button></div>
+    <p class="ovnote" id="overlayNote"></p>
+    <button class="glassbtn" id="overlayShow"><span id="overlayShowText">HIDE LIVE OVERLAY</span><small id="overlayShowKey"></small></button>
+    <p class="stateline" id="overlayLine" data-state="wait"><i></i><span id="overlayLineText"></span></p>
+    <div class="field">Where it sits</div>
+    <div class="place">
+      <div><canvas class="ovstage" id="overlayStage" width="324" height="576" aria-label="The picture. Drag the live overlay to move it."></canvas></div>
+      <div>
+        <p class="hint" id="overlayPlaceHint" style="margin-top:0"></p>
+        <div class="field">Left - right <span id="overlayXVal"></span></div><input type="range" id="overlayX" min="-1" max="1" step="0.02" aria-label="Live overlay left - right">
+        <div class="field">Top - bottom <span id="overlayYVal"></span></div><input type="range" id="overlayY" min="0" max="1" step="0.01" aria-label="Live overlay top - bottom">
+        <div class="field">Width <span id="overlayWVal"></span></div><input type="range" id="overlayW" min="0.3" max="1" step="0.01" aria-label="Live overlay width">
+        <div class="field">Height <span id="overlayHVal"></span></div><input type="range" id="overlayH" min="80" max="1236" step="4" aria-label="Live overlay height">
+        <div class="field">Page size <span id="overlayZoomVal"></span></div><input type="range" id="overlayZoom" min="0.25" max="1.5" step="0.01" aria-label="How big the page is drawn">
+      </div>
+    </div>
+    <button class="plain" id="overlayReset" style="margin-top:12px;width:100%">Reset: back to the standard place</button>
+  </div>
+
   <!-- V8: the puppet show (only while the Mask is picked). One plain sentence under every control. -->
   <div class="card" id="v8Card" hidden>
     <h2>Puppet show</h2>
@@ -234,6 +358,8 @@
       <p class="hint" id="v8HandsHint">Hold a hand up by your face: right hand = angel, left = devil.</p>
       <button class="plain switch" id="v8Swap"><span>Swap hands</span><i></i></button>
       <p class="hint" id="v8SwapHint">If the angel shows on your left hand, turn this on.</p>
+      <button class="plain switch" id="v8Orbit"><span>Gifters orbit</span><i></i></button>
+      <p class="hint">A viewer who sends a gift circles the Mask with their picture for a while. A bigger gift stays longer.</p>
       <div class="field">Where the fight's bars sit</div>
       <div class="amt" id="v8Bars"></div>
       <input type="range" id="v8BarsY" min="0" max="1" step="0.01" aria-label="The bars: up - down">
@@ -272,6 +398,11 @@
     <div class="field">Background</div><div class="row" id="bgs"></div>
     </div>
     <div id="maskMore" hidden>
+    <div class="field">Mask style</div><div class="row" id="maskStyles"></div>
+    <button class="plain switch" id="smartCam"><span>Smart camera (cuts with the music)</span><i></i></button>
+    <p class="hint" id="smartCamHint">Off: straight on, as always. On: straight on in the verses, a cut to the side, above or below on drops and section changes. <span id="smartCamKey">Key: K.</span></p>
+    <div class="field">Hype look (the ranks of the hype bar)</div><div class="row" id="hypeStyles"></div>
+    <p class="hint" id="hypeNote" hidden></p>
     <div class="field">Mask background</div><div class="row" id="maskBgs"></div>
     <div id="vizBox" hidden><div class="field">Visualizer style</div><div class="row" id="maskVizs"></div></div>
     </div>
@@ -305,6 +436,13 @@
 <script src="mask/mask-core.js"></script>
 <!-- V8: the puppet show's own lists (the moves, the votes): pure logic, the show itself runs on the avatar page -->
 <script src="js/v8-show.js"></script>
+<!-- V9 show sign + live overlay: the rules, the key (for the preview), the two cards -->
+<script src="js/v9-sign.js"></script>
+<script src="js/v9-sign-layer.js"></script>
+<script src="js/v9-sign-card.js"></script>
 <script src="js/vtuber.js"></script>
+<!-- V9 CONTROL DECK: the deck drives the controls above (the same messages, settings and keys); "Classic controls" shows them as they are -->
+<script src="js/v9-deck-logic.js"></script>
+<script src="js/v9-deck.js"></script>
 </body>
 </html>

@@ -4,6 +4,7 @@
 //   http://127.0.0.1:8791/tracking/tracker.html, .../tracking/hands.html   the tracker page and the hand-line source
 //   ws://127.0.0.1:8791/ws               every JSON message is passed on to every OTHER connected page
 //   http://127.0.0.1:8791/api/calibration   the tracker's saved face calibration (GET / PUT / DELETE; one small file on this PC)
+//   http://127.0.0.1:8791/api/signs         V9: the host's own show signs (list / upload / delete / play; files on this PC only)
 'use strict';
 const http = require('http');
 const fs = require('fs');
@@ -20,11 +21,12 @@ const TYPES = {
   '.mp4': 'video/mp4', '.ico': 'image/x-icon', '.md': 'text/plain; charset=utf-8', '.txt': 'text/plain; charset=utf-8',
   '.task': 'application/octet-stream', '.tflite': 'application/octet-stream', '.bin': 'application/octet-stream',
   '.data': 'application/octet-stream', '.woff2': 'font/woff2',
+  '.mp3': 'audio/mpeg',                                   // the countdown music (assets/music/)
 };
 const NO_CACHE = { 'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0', Pragma: 'no-cache', Expires: '0' };
 // never served: the server itself, git data, dependencies, scratch, and the folders that hold the owner's test footage
 // and the review media (review/, tracking/review/, tracking/testdata/)
-const HIDDEN = /^(?:\.git|node_modules|tmp|tools|review|tracking[\\/](?:review|testdata|tools))(?:[\\/]|$)|^(?:server\.js|start-vtuber\.bat|\.gitignore|gifts-owner\.json|vtuber-obs\.json|tracking[\\/](?:calib-saved|mask-rest)\.json)$/i;
+const HIDDEN = /^(?:\.git|node_modules|tmp|tools|review|signs-owner|tracking[\\/](?:review|testdata|tools))(?:[\\/]|$)|^(?:server\.js|start-vtuber\.bat|\.gitignore|gifts-owner\.json|vtuber-obs\.json|tracking[\\/](?:calib-saved|mask-rest)\.json)$/i;
 
 // ---------------------------------------------------------------- the tracker's saved calibration
 // "Capture neutral face" and what the tracker learns about the owner's face are kept in ONE file on this PC, so the
@@ -84,6 +86,136 @@ function calibrationApi(req, res, file) {
       });
     });
   } else { req.resume(); res.writeHead(405, NO_CACHE); res.end(); }
+}
+
+// ---------------------------------------------------------------- V9: the host's own show signs (/api/signs)
+// A looping video or picture each host uploads in the VTuber window; the avatar page plays it with its green keyed out.
+// The files stay on this PC, in ONE folder (inside LIVE Link: its data folder; never the app's own files), and are never
+// sent anywhere.
+//   GET    /api/signs            -> { signs: [{ name, size, video, at }], keep: 6, max: bytes, can: true | false }
+//   PUT    /api/signs/<name>     -> the file's bytes in the body. Kept under a SAFE name made from <name> (js/v9-sign.js
+//                                   safeSignName: letters, digits, dashes + a known ending; never a path), only when its
+//                                   first bytes are what the ending says, at most 60 MB, at most 6 kept. -> { name, size }
+//   DELETE /api/signs/<name>     -> the file is removed from the disk
+//   GET    /api/signs/<name>     -> the file (byte ranges answered: a video loops and seeks)
+// Only this server's own pages may ask (the same rule as the calibration), and a write must carry the page's own header.
+const SIGN = require('./js/v9-sign.js');
+/** Where the signs are kept. VTUBER_SIGN_DIR names the folder ("none" = nowhere). Without it: `signs-owner` next to this
+ *  file when the server runs on the show's own port, and NOWHERE on any other port (a test never writes his folder). */
+function signDirFor(port) {
+  const env = process.env.VTUBER_SIGN_DIR;
+  if (env) return env.toLowerCase() === 'none' ? null : path.resolve(ROOT, env);
+  return port === 8791 ? path.join(ROOT, 'signs-owner') : null;
+}
+function listSigns(dir) {
+  let names = [];
+  try { names = fs.readdirSync(dir); } catch { return []; }
+  const out = [];
+  for (const n of names) {
+    let st = null;
+    try { st = fs.statSync(path.join(dir, n)); } catch { continue; }
+    if (!st.isFile()) continue;
+    if (SIGN.isSignName(n)) out.push({ name: n, size: st.size, video: SIGN.signIsVideo(n), at: Math.round(st.mtimeMs) });
+    else if (/^\.up-[a-f0-9]{12}\.tmp$/.test(n) && Date.now() - st.mtimeMs > 3600000) { try { fs.unlinkSync(path.join(dir, n)); } catch { /* still open */ } }   // an upload that died an hour ago
+  }
+  return out.sort((a, b) => a.at - b.at || (a.name < b.name ? -1 : 1));
+}
+function signsApi(req, res, dir) {
+  const send = (code, obj, extra) => {
+    const body = JSON.stringify(obj);
+    res.writeHead(code, { ...NO_CACHE, ...extra, 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': Buffer.byteLength(body), 'X-Content-Type-Options': 'nosniff' });
+    res.end(req.method === 'HEAD' ? undefined : body);
+  };
+  const site = req.headers['sec-fetch-site'];
+  if (!originAllowed(req.headers.origin) || (site && site !== 'same-origin' && site !== 'none')) { req.resume(); send(403, { error: 'forbidden' }); return; }
+  const rest = (req.url || '').split('?')[0].split('#')[0].slice('/api/signs'.length);
+  if (rest === '' || rest === '/') {
+    req.resume();
+    if (req.method !== 'GET' && req.method !== 'HEAD') { send(405, { error: 'method' }); return; }
+    send(200, { signs: dir ? listSigns(dir) : [], keep: SIGN.SIGN_KEEP, max: SIGN.SIGN_MAX_BYTES, can: !!dir });
+    return;
+  }
+  let raw = '';
+  try { raw = decodeURIComponent(rest.slice(1)); } catch { raw = ''; }
+  const write = req.method === 'PUT' || req.method === 'DELETE';
+  if (write && req.headers['x-vtuber-sign'] !== '1') { req.resume(); send(403, { error: 'forbidden' }); return; }
+  if (!dir) { req.resume(); send(write ? 503 : 404, { error: 'no folder for signs here' }); return; }
+  if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'DELETE') {
+    req.resume();
+    // (only a name exactly as this server made it: no slash, no "..", no other ending ever reaches the disk)
+    if (!SIGN.isSignName(raw)) { send(404, { error: 'not found' }); return; }
+    const file = path.join(dir, raw);
+    if (req.method === 'DELETE') { fs.unlink(file, (err) => { const bad = err && err.code !== 'ENOENT'; send(bad ? 500 : 200, bad ? { error: 'could not delete' } : { ok: true, signs: listSigns(dir) }); }); return; }
+    fs.stat(file, (err, st) => {
+      if (err || !st.isFile()) { send(404, { error: 'not found' }); return; }
+      const head = { 'Cache-Control': 'private, no-cache', 'Content-Type': SIGN.SIGN_TYPES[raw.split('.').pop()], 'Accept-Ranges': 'bytes', 'X-Content-Type-Options': 'nosniff', 'Cross-Origin-Resource-Policy': 'same-origin', 'Last-Modified': st.mtime.toUTCString() };
+      let a = 0, b = st.size - 1, code = 200;
+      const m = /^bytes=(\d*)-(\d*)$/.exec(String(req.headers.range || '').trim());
+      if (m && (m[1] || m[2]) && st.size > 0) {
+        if (m[1]) { a = Number(m[1]); if (m[2]) b = Math.min(b, Number(m[2])); } else a = Math.max(0, st.size - Number(m[2]));
+        if (!(a <= b) || a >= st.size) { res.writeHead(416, { ...head, 'Content-Range': 'bytes */' + st.size, 'Content-Length': 0 }); res.end(); return; }
+        code = 206; head['Content-Range'] = 'bytes ' + a + '-' + b + '/' + st.size;
+      }
+      res.writeHead(code, { ...head, 'Content-Length': st.size ? b - a + 1 : 0 });
+      if (req.method === 'HEAD' || !st.size) { res.end(); return; }
+      fs.createReadStream(file, { start: a, end: b }).on('error', () => res.destroy()).pipe(res);
+    });
+    return;
+  }
+  if (req.method !== 'PUT') { req.resume(); send(405, { error: 'method' }); return; }
+  // ---- an upload
+  const refuse = (code, error) => { req.resume(); send(code, { error }, { Connection: 'close' }); };
+  const want = SIGN.safeSignName(raw), kind = SIGN.signKind(want);
+  if (!want) { refuse(415, 'type'); return; }                                     // not mp4 / webm / png / gif / jpg by its name
+  if (Number(req.headers['content-length']) > SIGN.SIGN_MAX_BYTES) { refuse(413, 'big'); return; }
+  try { fs.mkdirSync(dir, { recursive: true }); } catch { refuse(500, 'could not save'); return; }
+  const have = listSigns(dir);
+  if (have.length >= SIGN.SIGN_KEEP) { refuse(409, 'full'); return; }
+  // a name already there is never overwritten: "sign.mp4" a second time is kept as "sign-2.mp4"
+  let name = want;
+  for (let i = 2; have.some((s) => s.name === name) && i < 99; i++) { const dot = want.lastIndexOf('.'); name = want.slice(0, dot).slice(0, 37) + '-' + i + want.slice(dot); }
+  if (!SIGN.isSignName(name) || have.some((s) => s.name === name)) { refuse(409, 'full'); return; }
+  const tmp = path.join(dir, '.up-' + require('crypto').randomBytes(6).toString('hex') + '.tmp');
+  const out = fs.createWriteStream(tmp);
+  let size = 0, done = false, head = Buffer.alloc(0), sniffed = false;
+  // the half-written file is removed only once its handle is closed (on Windows a file still open is "deleted" but stays
+  // listed until then), and only then is the answer sent
+  const closed = (fn) => { if (out.closed) fn(); else out.once('close', fn); };
+  const fail = (code, error) => {
+    if (done) return; done = true;
+    req.unpipe(out); closed(() => fs.unlink(tmp, () => refuse(code, error))); out.destroy();
+  };
+  req.on('data', (d) => {
+    if (done) return;
+    size += d.length;
+    if (size > SIGN.SIGN_MAX_BYTES) { fail(413, 'big'); return; }
+    if (!sniffed) {
+      head = head.length ? Buffer.concat([head, d]) : d;
+      if (head.length >= 12) { sniffed = true; if (SIGN.sniffSign(head) !== kind) { fail(415, 'type'); return; } head = null; }
+    }
+  });
+  req.on('error', () => fail(400, 'broken'));
+  req.on('aborted', () => fail(400, 'broken'));
+  out.on('error', () => fail(500, 'could not save'));
+  req.pipe(out);
+  out.on('finish', () => {
+    if (done) return;
+    if (!sniffed) { fail(415, 'type'); return; }                                  // under 12 bytes: not a picture, not a video
+    done = true;
+    // the picture size it says it has (the headers only; no picture is decoded here): over 4096 px on a side, or not
+    // readable at all, and it is not kept (a tiny file that claims a huge picture would choke the OBS page)
+    closed(() => fs.readFile(tmp, (er, buf) => {
+      const px = er ? null : SIGN.pixelsOf(buf, kind);
+      if (!px || px.w > SIGN.SIGN_MAX_PX || px.h > SIGN.SIGN_MAX_PX) { req.resume(); fs.unlink(tmp, () => send(px ? 422 : 415, px ? { error: 'pixels', w: px.w, h: px.h, max: SIGN.SIGN_MAX_PX } : { error: 'unread' }, { Connection: 'close' })); return; }
+      keep(px);
+    }));
+  });
+  const keep = (px) => {
+    fs.rename(tmp, path.join(dir, name), (err) => {
+      if (err) { fs.unlink(tmp, () => {}); send(500, { error: 'could not save' }); return; }
+      send(200, { name, size, w: px.w, h: px.h, signs: listSigns(dir) });
+    });
+  };
 }
 
 // ---------------------------------------------------------------- V8: viewers' pictures and the song's cover (/api/pic?u=)
@@ -180,11 +312,16 @@ function resolveFile(urlPath) {
   return file;
 }
 
-function handle(req, res, calibFile, api, headers, onMissing, pic) {
+// V9 (the live overlay's frame): a page of this server inside a frame is only ever inside another page of this server
+// (vtuber.html frames tracking/tracker.html). A web page that sends its frame here (a redirect, or the frame moving
+// itself to http://127.0.0.1:<port>/...) is refused by the browser; avatar.html's own CSP (frame-src https:) refuses it too.
+const FRAME_ANCESTORS = "frame-ancestors 'self'";
+function handle(req, res, calibFile, api, headers, onMissing, pic, signDir) {
   if (!hostAllowed(req.headers.host)) { res.writeHead(403, NO_CACHE); res.end('Forbidden'); return; }
   if (api && api(req, res)) return;                    // the one-click app's own requests (one-click.js)
   if (pic && (req.url || '').split('?')[0] === '/api/pic') { pic.handle(req, res); return; }   // V8: a viewer's picture / a cover
   if ((req.url || '').split('?')[0] === '/api/calibration') { calibrationApi(req, res, calibFile || null); return; }
+  { const p = (req.url || '').split('?')[0]; if (p === '/api/signs' || p.startsWith('/api/signs/')) { signsApi(req, res, signDir || null); return; } }   // V9: the host's own show signs
   if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405, NO_CACHE); res.end(); return; }
   const file = resolveFile(req.url || '/');
   if (!file) { res.writeHead(404, NO_CACHE); res.end('Not found'); return; }
@@ -192,7 +329,8 @@ function handle(req, res, calibFile, api, headers, onMissing, pic) {
     if (err || !st.isFile()) { if (onMissing) { try { onMissing((req.url || '').split('?')[0].slice(0, 200)); } catch { /* the hook's problem */ } } res.writeHead(404, NO_CACHE); res.end('Not found'); return; }
     const type = TYPES[path.extname(file).toLowerCase()] || 'application/octet-stream';
     const extra = headers ? headers(req) || {} : {};
-    res.writeHead(200, { ...NO_CACHE, ...extra, 'Content-Type': type, 'Content-Length': st.size, 'X-Content-Type-Options': 'nosniff' });
+    const own = /^text\/html/.test(type) ? { 'Content-Security-Policy': FRAME_ANCESTORS } : null;      // V9: no other site may frame these pages
+    res.writeHead(200, { ...NO_CACHE, ...extra, ...own, 'Content-Type': type, 'Content-Length': st.size, 'X-Content-Type-Options': 'nosniff' });
     if (req.method === 'HEAD') { res.end(); return; }
     fs.createReadStream(file).on('error', () => res.destroy()).pipe(res);
   });
@@ -217,7 +355,8 @@ function originAllowed(origin) {
 function start(port = PORT, opts = {}) {
   const calibFile = opts.calibFile !== undefined ? opts.calibFile : calibFileFor(port);
   const pic = createPicProxy({ fetch: opts.picFetch, hosts: opts.picHosts });
-  const server = http.createServer((req, res) => handle(req, res, calibFile, opts.api, opts.headers, opts.onMissing, pic));
+  const signDir = opts.signDir !== undefined ? opts.signDir : signDirFor(port);      // V9: where the host's own show signs are kept (null = nowhere)
+  const server = http.createServer((req, res) => handle(req, res, calibFile, opts.api, opts.headers, opts.onMissing, pic, signDir));
   const wss = new WebSocketServer({ noServer: true, maxPayload: 256 * 1024 });
   // The newest settings messages are replayed to a page that joins later (an OBS source that reloads mid-show).
   const sticky = new Map();
@@ -295,4 +434,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { start, resolveFile, originAllowed, hostAllowed, calibFileFor, createPicProxy, sniffPicture, PIC };
+module.exports = { start, resolveFile, originAllowed, hostAllowed, calibFileFor, createPicProxy, sniffPicture, PIC, signDirFor, listSigns };

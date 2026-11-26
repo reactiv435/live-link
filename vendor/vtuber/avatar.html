@@ -2,6 +2,8 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<!-- V9: a frame on this page (the live overlay) may only show https pages: never one of this PC's own http pages -->
+<meta http-equiv="Content-Security-Policy" content="frame-src https:">
 <title>Avatar (OBS Browser Source)</title>
 <link rel="icon" href="data:,">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -22,6 +24,8 @@
   /* the Mask (the third choice): its own opaque black canvas above the 3D one; viewer names above that, never mirrored */
   #maskc { position: fixed; inset: 0; width: 100%; height: 100%; display: none; background: #000; z-index: 2; }
   /* V8: the puppet show's 2D layer (bars, pictures, the vote): above the Mask, NEVER mirrored (its words must read right) */
+  /* V9 CAMERA MODE: only the effects, on a see-through canvas over everything; his camera shows through this page */
+  #maskcam { position: fixed; inset: 0; width: 100%; height: 100%; display: none; z-index: 4; pointer-events: none; }
   #maskhud { position: fixed; inset: 0; width: 100%; height: 100%; display: none; z-index: 3; pointer-events: none; }
   #maskNames { position: fixed; left: 0; right: 0; top: 7%; display: none; z-index: 3; text-align: center; pointer-events: none; font: 700 4.2vh/1.25 "Segoe UI", system-ui, sans-serif; letter-spacing: .02em; color: #fff6f0; }
   #maskNames div { margin: 0 6% .6vh; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; text-shadow: 0 0 1.2vh #e01f3d, 0 0 .4vh #000, 0 .2vh .5vh #000; opacity: 0; }
@@ -34,6 +38,8 @@
 <canvas id="stage"></canvas>
 <canvas id="maskc"></canvas>
 <canvas id="maskhud"></canvas>
+<!-- V9 CAMERA MODE: the effects on his real face (mask/mask-cam.js); see-through, never mirrored -->
+<canvas id="maskcam"></canvas>
 <div id="maskNames"></div>
 <!-- first: connect and cover the camera for the last known state, before the big 3D files load -->
 <script src="js/logic.js"></script>
@@ -51,6 +57,7 @@
 <script src="mask/mask-fx.js"></script>
 <script src="mask/mask-sfx.js"></script>
 <!-- V8: the puppet show: the stage (drawn into the Mask), the 2D layer, the four engines, the show's brain -->
+<script src="mask/mask-hype.js"></script>
 <script src="mask/mask-v8.js"></script>
 <script src="mask/mask-hud.js"></script>
 <script src="js/v8/face-triggers.js"></script>
@@ -58,8 +65,35 @@
 <script src="js/v8/votes.js"></script>
 <script src="js/v8/hand-puppets.js"></script>
 <script src="js/v8-show.js"></script>
+<!-- V9: the styles on top of the Mask (nothing of them runs until one is picked) -->
+<script src="mask/face-canonical.js"></script>
+<script src="mask/mask-v9.js"></script>
+<!-- V9 cables: the cable looks (Quantum Flow) and the stream between his hands; nothing of them runs until the look is picked -->
+<script src="js/v9/cable-rig.js"></script>
+<script src="js/v9/mask-cables.js"></script>
+<script src="js/v9/cable-wake.js"></script>
+<script src="js/v9/hand-gestures.js"></script>
+<script src="js/v9/mask-hands.js"></script>
+<script src="js/v9/hand-skin.js"></script><script src="js/v9/stream-sprite.js"></script><script src="js/v9/quantum-stream.js"></script>
+<script src="js/v9/fx-quantum-stream.js"></script>
+<script src="js/v9/smart-camera.js"></script>
+<!-- V9 CAMERA MODE (nothing of it runs until it is switched on) -->
+<script src="mask/mask-cam.js"></script>
 <script src="mask/mask-live.js"></script>
+<script src="js/v9-show-copy.js"></script>
+<script src="js/v9-show-engine.js"></script>
+<script src="js/v9-show-gl.js"></script>
+<script src="js/v9-show-card.js"></script>
+<script src="js/v9-countdown.js"></script>
+<script src="js/v9-countdown-card.js"></script>
+<!-- countdown music: his song under the countdown, its drop on the zero (nothing of it runs until a countdown asks for it); the Mask hears it through mask/audio-features.js -->
+<script src="mask/audio-features.js"></script>
+<script src="js/v9-countdown-music.js"></script>
+<script src="js/v9-show-page.js"></script>
 <script src="js/mask-page.js"></script>
+<!-- V9 show sign + live overlay: nothing of them exists on the page until the VTuber window switches one on -->
+<script src="js/v9-sign.js"></script>
+<script src="js/v9-sign-layer.js"></script>
 <script src="vendor/babylon.js"></script>
 <script src="vendor/babylon.glTF2FileLoader.min.js"></script>
 <script src="js/face.js"></script>
