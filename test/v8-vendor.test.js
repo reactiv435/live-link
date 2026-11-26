@@ -141,3 +141,26 @@ test('2.3.0 the vendored VTuber speaks v2: wire 2, the keys follow the Mask and 
   sync();
   assert.equal(kb.held.size, 0, 'VTuber closed: no key is held');
 });
+
+// =====================================================================================================================
+// RELEASE GATE (V9). DO NOT SKIP, .todo OR DELETE THIS TEST. It is red on purpose until vendor/vtuber is re-synced
+// (scripts/sync-vtuber.js) to a VTuber commit that accepts EVERY key LIVE Link sends. With the pinned 7416148 the
+// VTuber's cleanControl drops 'sign', 'overlay' and 'tap' (galaxy): the card would tell him to press keys that do
+// nothing. Re-vendor at a commit that accepts all three TOGETHER (the vtuber-v9-sign branch alone does not accept 'tap').
+// No build is released while this test fails.
+// =====================================================================================================================
+test('RELEASE GATE (V9, never skip): the vendored VTuber accepts every key LIVE Link sends, including sign, overlay and tap (galaxy)', () => {
+  const { ACTIONS } = require('../src/core/puppet-keys');
+  const { buildControl } = require('../src/core/vtuber-link');
+  const wire = require(path.join(VT, 'js', 'mask-wire.js'));
+  const pin = JSON.parse(fs.readFileSync(path.join(VT, 'VTUBER_PIN.json'), 'utf8')).commit;
+  // the three V9 keys are among the ones checked (a later edit cannot quietly drop them from ACTIONS)
+  const sent = ACTIONS.map((a) => [a.action, a.name]);
+  for (const k of [['sign', ''], ['overlay', ''], ['tap', 'galaxy']]) assert.ok(sent.some((s) => s[0] === k[0] && s[1] === k[1]), `LIVE Link sends ${k}`);
+  const dropped = [];
+  for (const a of ACTIONS) {
+    const got = wire.cleanControl(buildControl(a.action, a.name, 1));
+    if (!got || got.type !== 'control' || got.action !== a.action || got.name !== a.name) dropped.push(`${a.id} (${a.action}${a.name ? ' ' + a.name : ''})`);
+  }
+  assert.deepEqual(dropped, [], `RELEASE GATE: the vendored VTuber (${pin}) drops these keys: ${dropped.join(', ')}. Re-vendor the VTuber before any release.`);
+});
