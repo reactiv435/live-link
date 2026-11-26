@@ -1107,16 +1107,18 @@
       captureNow: async () => ({ ok: true }),
       // V8 stills: ?demo=puppet (keys working during a LIVE), puppet-idle (no LIVE), puppet-taken (one key taken), puppet-off
       ...(String(pick).startsWith('puppet') ? (() => {
-        const labels = { goo: 'Goo', fire: 'Fire head', melt: 'Melt', crack: 'Crack open', eat: 'Eat a comment', fight: 'Boss fight', vote: 'Vote', 'eat-now': 'Eat it (the song)', galaxy: 'Galaxy' };
+        const labels = { goo: 'Goo', fire: 'Fire head', melt: 'Melt', crack: 'Crack open', eat: 'Eat a comment', fight: 'Boss fight', vote: 'Vote', 'eat-now': 'Eat it (the song)', galaxy: 'Galaxy', sign: 'Show sign: show / hide', overlay: 'Live overlay: show / hide' };
+        const usual = [...['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'].map((d) => 'Ctrl+Alt+' + d), 'off'];   // core/puppet-keys.js DEFAULT_KEYS
         const choices = ['off', ...['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'].map((d) => 'Ctrl+Alt+' + d), ...Array.from({ length: 12 }, (_, i) => 'F' + (13 + i))];
-        const p = { enabled: pick !== 'puppet-off', active: pick === 'puppet' || pick === 'puppet-taken', choices,
+        const on = pick === 'puppet' || pick === 'puppet-taken';
+        const p = { enabled: pick !== 'puppet-off', active: on, choices,
           galaxy: 'Galaxy: press Ctrl+Alt+9 to call the galaxy up. Press it again to send it away.',
-          rows: Object.keys(labels).map((id, i) => ({ id, label: labels[id], key: 'Ctrl+Alt+' + (i + 1), state: pick === 'puppet-taken' && id === 'melt' ? 'taken' : pick === 'puppet' || pick === 'puppet-taken' ? 'held' : 'idle' })) };
+          rows: Object.keys(labels).map((id, i) => ({ id, label: labels[id], key: usual[i], state: usual[i] === 'off' ? 'off' : pick === 'puppet-taken' && id === 'melt' ? 'taken' : on ? 'held' : 'idle' })) };
         const card = () => ({ show: true, tone: 'on', title: 'VTuber', text: 'VTuber is ON: your viewers see the Mask instead of your camera. Press OFF in the VTuber window, or close it, to show your camera again.', button: 'Show VTuber', open: true, puppet: p });
         return {
           getVtuber: async () => card(), onVtuber: () => () => {}, openVtuber: async () => card(), closeVtuber: async () => card(),
           setPuppetKey: async (id, key) => { const other = p.rows.find((r) => r.id !== id && r.key === key && key !== 'off'); if (other) return { ok: false, why: 'taken', by: other.label, puppet: p }; p.rows.find((r) => r.id === id).key = key; return { ok: true, puppet: p }; },
-          setPuppetPreset: async (w) => { p.rows.forEach((r, i) => { r.key = w === 'streamdeck' ? 'F' + (13 + i) : 'Ctrl+Alt+' + (i + 1); }); return { ok: true, puppet: p }; },
+          setPuppetPreset: async (w) => { p.rows.forEach((r, i) => { r.key = w === 'streamdeck' ? 'F' + (13 + i) : usual[i]; }); return { ok: true, puppet: p }; },
           setPuppetKeysOn: async (on) => { p.enabled = !!on; return { ok: true, puppet: p }; },
         };
       })() : {}),

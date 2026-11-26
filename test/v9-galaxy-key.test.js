@@ -34,7 +34,7 @@ test('galaxy: the control message is exactly { v: 2, type: "control", action: "t
 test('galaxy: a ninth row "Galaxy" on Ctrl+Alt+9, the next key in the row (Stream Deck: F21); it clashes with no other LIVE Link key and moves none of the eight', () => {
   const row = ACTIONS.find((a) => a.id === 'galaxy');
   assert.deepEqual([row.action, row.name, row.label, row.always], ['tap', 'galaxy', 'Galaxy', true]);
-  assert.equal(ACTIONS.length, 9);
+  assert.equal(ACTIONS.length, 11, '(V9: + the sign and the live overlay after it, test/v9-sign-keys.test.js)');
   assert.equal(ACTIONS[8].id, 'galaxy', 'after the eight: no saved key changes its row');
   assert.equal(DEFAULT_KEYS.galaxy, 'Ctrl+Alt+9');
   assert.equal(KEY_CHOICES['Ctrl+Alt+9'], GALAXY);
@@ -43,15 +43,15 @@ test('galaxy: a ninth row "Galaxy" on Ctrl+Alt+9, the next key in the row (Strea
   assert.equal(Object.keys(KEY_CHOICES).length, 1 + 10 + 12, 'the list of keys he can pick from did not change');
   assert.equal(STREAM_DECK_KEYS.galaxy, 'F21');
   assert.deepEqual(Object.values(DEFAULT_KEYS).slice(0, 8), ['Ctrl+Alt+1', 'Ctrl+Alt+2', 'Ctrl+Alt+3', 'Ctrl+Alt+4', 'Ctrl+Alt+5', 'Ctrl+Alt+6', 'Ctrl+Alt+7', 'Ctrl+Alt+8']);
-  assert.equal(new Set(Object.values(DEFAULT_KEYS).map((k) => KEY_CHOICES[k])).size, 9, 'nine different keys');
-  assert.equal(new Set(Object.values(STREAM_DECK_KEYS)).size, 9);
+  assert.equal(new Set(Object.values(DEFAULT_KEYS).filter((k) => k !== 'off').map((k) => KEY_CHOICES[k])).size, 10, 'ten different keys (V9: + the sign\'s Ctrl+Alt+0; the live overlay has none)');
+  assert.equal(new Set(Object.values(STREAM_DECK_KEYS)).size, 11);
   // not the "Clip that" key (main.js MOMENT_KEYS)
   const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main.js'), 'utf8');
   const moment = /const MOMENT_KEYS = \{([^}]*)\}/.exec(main)[1];
   assert.ok(!moment.includes(`'${GALAXY}'`));
   // keys saved by 2.3.1 (eight of them): the galaxy gets Ctrl+Alt+9 and the eight stay where he put them
   const saved = { goo: 'F13', fire: 'Ctrl+Alt+2', melt: 'off', crack: 'Ctrl+Alt+4', eat: 'Ctrl+Alt+5', fight: 'Ctrl+Alt+6', vote: 'Ctrl+Alt+7', 'eat-now': 'Ctrl+Alt+0' };
-  assert.deepEqual(cleanKeys(saved), { ...saved, galaxy: 'Ctrl+Alt+9' });
+  assert.deepEqual(cleanKeys(saved), { ...saved, galaxy: 'Ctrl+Alt+9', sign: 'off', overlay: 'off' }, '(V9: his EAT IT keeps Ctrl+Alt+0, so the sign starts with no key)');
   // he had already given Ctrl+Alt+9 to another action: that one keeps it, the galaxy starts with no key (as EAT IT did in 2.3.1)
   assert.deepEqual([cleanKeys({ vote: 'Ctrl+Alt+9' }).vote, cleanKeys({ vote: 'Ctrl+Alt+9' }).galaxy], ['Ctrl+Alt+9', 'off']);
   assert.deepEqual(setKey(DEFAULT_KEYS, 'galaxy', 'Ctrl+Alt+8'), { ok: false, why: 'taken', by: 'Eat it (the song)' });
@@ -101,11 +101,11 @@ test('galaxy: the key sends the control message, and ONLY in the show-plausible 
   assert.ok(got.length >= 5 && got.length <= 7, `${got.length}`);
   t += 1000;
 
-  // the Puppet show switch off: the galaxy key stays (as EAT IT does), the seven puppet keys go back
+  // the Puppet show switch off: the galaxy key stays (as EAT IT does, and V9's sign key), the seven puppet keys go back
   world.vt = { character: 'mask', puppet: false }; sync();
-  assert.deepEqual([...kb.held.keys()].sort(), ['Control+Alt+8', GALAXY].sort());
+  assert.deepEqual([...kb.held.keys()].sort(), ['Control+Alt+0', 'Control+Alt+8', GALAXY].sort());
   world.vt = { character: 'mask', puppet: true }; sync();
-  assert.equal(kb.held.size, 9);
+  assert.equal(kb.held.size, 10, '(the live overlay has no key by default)');
 
   // the window closes (30 minutes after the last song, no LIVE): given back; the stale fn sends nothing
   const stale = kb.held.get(GALAXY);
@@ -136,7 +136,7 @@ test('galaxy: the key sends the control message, and ONLY in the show-plausible 
   const kb2 = keyboard({ taken: [GALAXY] }), logs = [];
   const pk2 = new PuppetKeys({ register: kb2.register, unregister: kb2.unregister, send: () => true, log: (l, m) => logs.push(`${l} ${m}`) });
   pk2.setWanted(true); pk2.setEatWanted(true);
-  assert.deepEqual(pk2.getState().rows.filter((r) => r.state !== 'held').map((r) => [r.id, r.state]), [['galaxy', 'taken']]);
+  assert.deepEqual(pk2.getState().rows.filter((r) => r.state !== 'held').map((r) => [r.id, r.state]), [['galaxy', 'taken'], ['overlay', 'off']]);
   assert.deepEqual(logs, ['warn puppet key Ctrl+Alt+9 (Galaxy) is taken by another program']);
   pk2.release();
 });
@@ -159,6 +159,6 @@ test('galaxy: the VTuber card has a line that names the key, in plain words; it 
   const ui = fs.readFileSync(path.join(__dirname, '..', 'src', 'ui', 'ui.js'), 'utf8');
   assert.match(html, /<p class="vtkeys-galaxy[^"]*" id="vtkeys-galaxy"/);
   assert.match(ui, /\$\('vtkeys-galaxy'\)\.textContent = p\.galaxy \|\| ''/);
-  assert.match(html, /Usual keys: Ctrl\+Alt\+1 to 9</);
-  assert.match(html, /Stream Deck keys: F13 to F21</);
+  assert.match(html, /Usual keys: Ctrl\+Alt\+1 to 9 and 0</);
+  assert.match(html, /Stream Deck keys: F13 to F23</);
 });

@@ -940,7 +940,7 @@ test('fix round L-6: "a show is plausible" = a song on air, or up to 30 minutes 
   assert.equal(eatWanted({ canControl: true, enabled: true, inApp: false, vt: null, show: false }), false, 'the desktop-shortcut VTuber too');
   const held = new Map();
   const pk = new PuppetKeys({ register: (acc, fn) => { held.set(acc, fn); return true; }, unregister: (acc) => { held.delete(acc); }, send: () => true });
-  for (const [show, n] of [[false, 0], [true, 9], [false, 0]]) { pk.setWanted(puppetWanted({ ...k, show })); pk.setEatWanted(eatWanted({ ...k, show })); assert.equal(held.size, n, `show ${show}`); }
+  for (const [show, n] of [[false, 0], [true, 10], [false, 0]]) { pk.setWanted(puppetWanted({ ...k, show })); pk.setEatWanted(eatWanted({ ...k, show })); assert.equal(held.size, n, `show ${show}`); }
   // the card says it in one plain line
   const ui = require('fs').readFileSync(require('path').join(__dirname, '..', 'src', 'ui', 'ui.js'), 'utf8');
   assert.ok(ui.includes('They work during your show: VTuber open with the Mask, and a song on air (or up to 30 minutes after one) or your TikTok LIVE connected.'));

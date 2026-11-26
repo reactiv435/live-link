@@ -45,6 +45,9 @@
 //  * C4 gains the action 'eat' ("EAT IT": eat the song on air now). A 2.3.0 VTuber drops a control it does not know.
 // V9 (the galaxy): C4 gains the action 'tap' with the name 'galaxy' (one press calls the galaxy up, the next sends it
 //    away; the VTuber keeps count). A VTuber that does not know it drops it, as above.
+// V9 (the show sign, the live overlay): C4 gains the actions 'sign' and 'overlay' (no name): one press hides the show
+//    sign / the live overlay in the VTuber window, the next brings it back (the VTuber repo's review/V9-SIGN-NOTES.md;
+//    its mask-wire.js cleanControl takes both). A VTuber that does not know them drops them, as above.
 const http = require('http');
 const { clip } = require('./tiktok-link');
 const { cleanPictureUrl, cleanUid, cleanHandle, TIKTOK_PICTURE_HOSTS } = require('./pictures');
@@ -67,7 +70,7 @@ const CROWD_AFTER_MS = 3000;            // v2 taps: a viewer's taps that waited 
 const TAPPERS_MAX = 300;                // v2 taps: viewers with waiting taps kept at once (the rest are summed)
 const SIDE_PER_S = 6;                   // show + control messages a second (their own cap, never the viewers' events')
 const PUPPET_MOVES = ['goo', 'fire', 'melt', 'crack', 'eat'];
-const CONTROL_ACTIONS = ['puppet', 'fight', 'vote', 'eat', 'tap'];
+const CONTROL_ACTIONS = ['puppet', 'fight', 'vote', 'eat', 'tap', 'sign', 'overlay'];   // (V9: + sign, overlay)
 const TAPS = ['galaxy'];   // V9: 'tap' = a thing one key switches on and off (the VTuber keeps count): the galaxy
 
 // One event in the contract's shape, every field clipped; null when there is nothing to send.
@@ -97,7 +100,7 @@ function buildEvent(type, x = {}, at = Date.now(), v = 1) {
   return ev;
 }
 
-/** C4: { v: 2, type: 'control', action, name, at } or null. action = puppet | fight | vote | eat | tap; name = the move for 'puppet', the thing for 'tap' ('galaxy'), '' otherwise. */
+/** C4: { v: 2, type: 'control', action, name, at } or null. action = puppet | fight | vote | eat | tap | sign | overlay; name = the move for 'puppet', the thing for 'tap' ('galaxy'), '' otherwise. */
 function buildControl(action, name, at = Date.now()) {
   if (!CONTROL_ACTIONS.includes(action)) return null;
   if (action === 'puppet' && !PUPPET_MOVES.includes(name)) return null;
@@ -422,7 +425,7 @@ class VtuberLink {
   }
   /** C3: the show state as show-feed.js builds it ({ v: 2, type: 'show', ... }). */
   sendShow(msg) { return msg && msg.v === 2 && msg.type === 'show' ? this._side(msg, 'show') : false; }
-  /** C4: a key pressed in LIVE Link: action 'puppet' (name = goo | fire | melt | crack | eat), 'fight', 'vote' or 'eat' (EAT IT: the song). */
+  /** C4: a key pressed in LIVE Link: action 'puppet' (name = goo | fire | melt | crack | eat), 'fight', 'vote', 'eat' (EAT IT: the song), 'tap' (name = galaxy), 'sign' or 'overlay' (V9). */
   sendControl(action, name) { return this._side(buildControl(action, name, this.now()), 'control'); }
   /** can a `show` / `control` message reach a VTuber right now? (the global keys are held only then; 2.3.1: TikTok or not) */
   get canControl() { const inApp = !this.stopped ? this._inApp() : null; return !this.stopped && (!!inApp || this.ok) && this._v(inApp) >= 2; }

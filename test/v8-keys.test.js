@@ -30,15 +30,16 @@ function keys(opts = {}) {
 test('the keys: eight actions on Ctrl+Alt+1 ... 8 (2.3.1: EAT IT on Ctrl+Alt+8), F13 ... F20 for a Stream Deck; none is a key LIVE Link or a common program already uses', () => {
   assert.deepEqual(ACTIONS.map((a) => [a.id, a.action, a.name, a.label]), [
     ['goo', 'puppet', 'goo', 'Goo'], ['fire', 'puppet', 'fire', 'Fire head'], ['melt', 'puppet', 'melt', 'Melt'], ['crack', 'puppet', 'crack', 'Crack open'], ['eat', 'puppet', 'eat', 'Eat a comment'],
-    ['fight', 'fight', '', 'Boss fight'], ['vote', 'vote', '', 'Vote'], ['eat-now', 'eat', '', 'Eat it (the song)'], ['galaxy', 'tap', 'galaxy', 'Galaxy']]);   // (V9: the galaxy, test/v9-galaxy-key.test.js)
-  assert.deepEqual(DEFAULT_KEYS, { goo: 'Ctrl+Alt+1', fire: 'Ctrl+Alt+2', melt: 'Ctrl+Alt+3', crack: 'Ctrl+Alt+4', eat: 'Ctrl+Alt+5', fight: 'Ctrl+Alt+6', vote: 'Ctrl+Alt+7', 'eat-now': 'Ctrl+Alt+8', galaxy: 'Ctrl+Alt+9' });
-  assert.deepEqual(Object.values(STREAM_DECK_KEYS), ['F13', 'F14', 'F15', 'F16', 'F17', 'F18', 'F19', 'F20', 'F21']);
+    ['fight', 'fight', '', 'Boss fight'], ['vote', 'vote', '', 'Vote'], ['eat-now', 'eat', '', 'Eat it (the song)'], ['galaxy', 'tap', 'galaxy', 'Galaxy'],   // (V9: the galaxy, test/v9-galaxy-key.test.js)
+    ['sign', 'sign', '', 'Show sign: show / hide'], ['overlay', 'overlay', '', 'Live overlay: show / hide']]);   // (V9: the sign and the live overlay, test/v9-sign-keys.test.js)
+  assert.deepEqual(DEFAULT_KEYS, { goo: 'Ctrl+Alt+1', fire: 'Ctrl+Alt+2', melt: 'Ctrl+Alt+3', crack: 'Ctrl+Alt+4', eat: 'Ctrl+Alt+5', fight: 'Ctrl+Alt+6', vote: 'Ctrl+Alt+7', 'eat-now': 'Ctrl+Alt+8', galaxy: 'Ctrl+Alt+9', sign: 'Ctrl+Alt+0', overlay: 'off' });
+  assert.deepEqual(Object.values(STREAM_DECK_KEYS), ['F13', 'F14', 'F15', 'F16', 'F17', 'F18', 'F19', 'F20', 'F21', 'F22', 'F23']);
   // EAT IT is on Ctrl+Alt+8 by default, and its accelerator clashes with nothing: not Ctrl+Alt+1-7, not F8 / F9 / F10, not Ctrl+Shift+M
   assert.equal(KEY_CHOICES[DEFAULT_KEYS['eat-now']], 'Control+Alt+8');
-  assert.equal(new Set(Object.values(DEFAULT_KEYS).map((k) => KEY_CHOICES[k])).size, 9, 'nine different keys');
-  assert.equal(new Set(Object.values(STREAM_DECK_KEYS)).size, 9);
+  assert.equal(new Set(Object.values(DEFAULT_KEYS).filter((k) => k !== 'off').map((k) => KEY_CHOICES[k])).size, 10, 'ten different keys (the live overlay has none)');
+  assert.equal(new Set(Object.values(STREAM_DECK_KEYS)).size, 11);
   for (const other of ['F8', 'F9', 'F10', 'CommandOrControl+Shift+M', 'Control+Shift+M']) assert.notEqual(KEY_CHOICES[DEFAULT_KEYS['eat-now']], other);
-  assert.equal(ACTIONS.filter((a) => a.always).map((a) => a.id).join(), 'eat-now,galaxy', 'the two keys that do not follow the Puppet show switch');
+  assert.equal(ACTIONS.filter((a) => a.always).map((a) => a.id).join(), 'eat-now,galaxy,sign,overlay', 'the keys that do not follow the Puppet show switch');
   assert.equal(KEY_CHOICES['Ctrl+Alt+1'], 'Control+Alt+1');
   assert.equal(KEY_CHOICES.F13, 'F13');
   assert.equal(KEY_CHOICES.off, null);
@@ -57,10 +58,10 @@ test('held ONLY while a VTuber is listening during a LIVE and the switch is on; 
   const { kb, pk } = keys();
   assert.equal(kb.calls.length, 0, 'nothing is taken at start');
   assert.equal(pk.getState().active, false);
-  assert.ok(pk.getState().rows.every((r) => r.state === 'idle'));
+  assert.ok(pk.getState().rows.every((r) => r.state === (r.id === 'overlay' ? 'off' : 'idle')), '(V9: the live overlay has no key by default)');
   pk.setWanted(true);
   assert.deepEqual([...kb.held.keys()], ['Control+Alt+1', 'Control+Alt+2', 'Control+Alt+3', 'Control+Alt+4', 'Control+Alt+5', 'Control+Alt+6', 'Control+Alt+7']);
-  assert.ok(pk.getState().rows.every((r) => r.state === (r.id === 'eat-now' || r.id === 'galaxy' ? 'idle' : 'held')), 'the seven puppet keys (EAT IT and the galaxy have their own rule: setEatWanted)');
+  assert.ok(pk.getState().rows.every((r) => r.state === (r.id === 'overlay' ? 'off' : ['eat-now', 'galaxy', 'sign'].includes(r.id) ? 'idle' : 'held')), 'the seven puppet keys (EAT IT, the galaxy and the sign have their own rule: setEatWanted)');
   assert.equal(pk.getState().active, true);
   const n = kb.calls.length;
   pk.setWanted(true);
@@ -91,7 +92,7 @@ test('a press = one control message; a held key (the OS repeats it) sends at mos
   assert.deepEqual(sent.slice(n), [['puppet', 'fire'], ['fight', ''], ['vote', '']]);
   tick(1000);
   pk.setEatWanted(true);                                                           // (2.3.1: the eighth key)
-  for (const a of ACTIONS) { kb.press(KEY_CHOICES[DEFAULT_KEYS[a.id]]); assert.deepEqual(sent[sent.length - 1], [a.action, a.name]); }
+  for (const a of ACTIONS.filter((x) => DEFAULT_KEYS[x.id] !== 'off')) { kb.press(KEY_CHOICES[DEFAULT_KEYS[a.id]]); assert.deepEqual(sent[sent.length - 1], [a.action, a.name]); }   // (V9: the live overlay has no key)
   pk.setEatWanted(false);
   assert.equal(pk.press('nope'), false);
   // the fn of a key that was given back does nothing even if the system still calls it
@@ -106,7 +107,7 @@ test('a key another program holds is shown as "taken" on that row only; the rest
   const { kb, pk, logs } = keys({ taken: ['Control+Alt+3'] });
   pk.setWanted(true);
   const st = () => Object.fromEntries(pk.getState().rows.map((r) => [r.id, r.state]));
-  assert.deepEqual(st(), { goo: 'held', fire: 'held', melt: 'taken', crack: 'held', eat: 'held', fight: 'held', vote: 'held', 'eat-now': 'idle', galaxy: 'idle' });
+  assert.deepEqual(st(), { goo: 'held', fire: 'held', melt: 'taken', crack: 'held', eat: 'held', fight: 'held', vote: 'held', 'eat-now': 'idle', galaxy: 'idle', sign: 'idle', overlay: 'off' });
   assert.deepEqual(logs, ['warn puppet key Ctrl+Alt+3 (Melt) is taken by another program']);
   const r = setKey(pk.keys, 'melt', 'F15');
   assert.equal(r.ok, true);
@@ -118,7 +119,7 @@ test('a key another program holds is shown as "taken" on that row only; the rest
   const k2 = keyboard();
   const pk2 = new PuppetKeys({ register: () => { throw new Error('boom'); }, unregister: k2.unregister, send: () => true });
   assert.doesNotThrow(() => { pk2.setWanted(true); pk2.setEatWanted(true); });
-  assert.ok(pk2.getState().rows.every((x) => x.state === 'taken'));
+  assert.ok(pk2.getState().rows.every((x) => x.state === (x.id === 'overlay' ? 'off' : 'taken')));
 });
 
 test('changing keys: one key per action, a clash names the action that has it, "No key" any number of times; saved nonsense falls back to the usual keys', () => {
@@ -133,7 +134,7 @@ test('changing keys: one key per action, a clash names the action that has it, "
   assert.deepEqual([k.goo, k.fire, k.melt], ['off', 'off', 'Ctrl+Alt+3']);
   assert.equal(setKey(k, 'melt', 'Ctrl+Alt+1').ok, true, 'a freed key can be given to another action');
   assert.deepEqual(cleanKeys(null), { ...DEFAULT_KEYS });
-  assert.deepEqual(cleanKeys({ goo: 'F13', fire: 'F13', melt: 'Shift+Q', crack: 7, extra: 'F20' }), { goo: 'F13', fire: 'off', melt: 'Ctrl+Alt+3', crack: 'Ctrl+Alt+4', eat: 'Ctrl+Alt+5', fight: 'Ctrl+Alt+6', vote: 'Ctrl+Alt+7', 'eat-now': 'Ctrl+Alt+8', galaxy: 'Ctrl+Alt+9' });
+  assert.deepEqual(cleanKeys({ goo: 'F13', fire: 'F13', melt: 'Shift+Q', crack: 7, extra: 'F20' }), { goo: 'F13', fire: 'off', melt: 'Ctrl+Alt+3', crack: 'Ctrl+Alt+4', eat: 'Ctrl+Alt+5', fight: 'Ctrl+Alt+6', vote: 'Ctrl+Alt+7', 'eat-now': 'Ctrl+Alt+8', galaxy: 'Ctrl+Alt+9', sign: 'Ctrl+Alt+0', overlay: 'off' });
   // keys saved by 2.3.0 (seven of them): EAT IT gets Ctrl+Alt+8; if he had already given Ctrl+Alt+8 to another action, that one keeps it and EAT IT starts with no key
   assert.equal(cleanKeys({ goo: 'Ctrl+Alt+1', fire: 'Ctrl+Alt+2', melt: 'Ctrl+Alt+3', crack: 'Ctrl+Alt+4', eat: 'Ctrl+Alt+5', fight: 'Ctrl+Alt+6', vote: 'Ctrl+Alt+7' })['eat-now'], 'Ctrl+Alt+8');
   assert.deepEqual([cleanKeys({ vote: 'Ctrl+Alt+8' }).vote, cleanKeys({ vote: 'Ctrl+Alt+8' })['eat-now']], ['Ctrl+Alt+8', 'off']);
@@ -161,13 +162,13 @@ test('end to end: a key press reaches a v2 VTuber as { v: 2, type: "control" }; 
   sync();
   assert.equal(kb.held.size, 0, 'no VTuber: no key is held');
   running = true; sync();                                               // VTuber opened; TikTok was never connected
-  assert.equal(kb.held.size, 9, 'a v2 VTuber in the app: held, TikTok or not');
+  assert.equal(kb.held.size, 10, 'a v2 VTuber in the app: held, TikTok or not (V9: the live overlay has no key by default)');
   kb.press('Control+Alt+1'); kb.press('Control+Alt+6'); kb.press('Control+Alt+7'); kb.press('Control+Alt+8');
   assert.deepEqual(got.map((e) => [e.v, e.type, e.action, e.name]), [[2, 'control', 'puppet', 'goo'], [2, 'control', 'fight', ''], [2, 'control', 'vote', ''], [2, 'control', 'eat', '']]);
   assert.ok(got.every((e) => Number.isInteger(e.at) && Object.keys(e).length === 5));
   for (const status of ['live', 'reconnecting', 'offline']) {
     link.state = { status }; link.emit('state', link.state);
-    assert.equal(kb.held.size, 9, `TikTok ${status}: the keys stay`);
+    assert.equal(kb.held.size, 10, `TikTok ${status}: the keys stay`);
   }
   running = false; sync();
   assert.equal(kb.held.size, 0, 'VTuber closed: every key is back with the other programs');
@@ -190,12 +191,12 @@ test('2.3.1 EAT IT (Ctrl+Alt+8) does not follow the Puppet show switch: held wit
   assert.equal(eatWanted({ ...on, enabled: false, vt: { character: 'mask' } }), false, 'the site switched the card off');
   assert.equal(eatWanted({ canControl: true, enabled: true, inApp: false, vt: null }), true, 'over HTTP the character is not known');
   assert.equal(eatWanted(), false);
-  // the Puppet show switch off: only Ctrl+Alt+8 is held (and V9's galaxy key, which has the same rule), and it works
+  // the Puppet show switch off: only Ctrl+Alt+8 is held (and V9's galaxy and sign keys, which have the same rule), and it works
   const { kb, pk, sent, tick } = keys();
   pk.setWanted(false); pk.setEatWanted(true);
-  assert.deepEqual([...kb.held.keys()], ['Control+Alt+8', 'Control+Alt+9']);
+  assert.deepEqual([...kb.held.keys()], ['Control+Alt+8', 'Control+Alt+9', 'Control+Alt+0']);
   assert.equal(pk.getState().active, true);
-  assert.deepEqual(pk.getState().rows.map((r) => r.state), ['idle', 'idle', 'idle', 'idle', 'idle', 'idle', 'idle', 'held', 'held']);
+  assert.deepEqual(pk.getState().rows.map((r) => r.state), ['idle', 'idle', 'idle', 'idle', 'idle', 'idle', 'idle', 'held', 'held', 'held', 'off']);
   assert.equal(kb.press('Control+Alt+8'), true);
   assert.deepEqual(sent, [['eat', '']]);
   assert.equal(pk.press('goo'), false, 'a puppet move is not sent while its keys are not held');
@@ -203,15 +204,15 @@ test('2.3.1 EAT IT (Ctrl+Alt+8) does not follow the Puppet show switch: held wit
   assert.ok(sent.length >= 4 && sent.length <= 5, `at most 4 a second: ${sent.length}`);
   // the switch on: all eight; off again: back to the one; "Use these keys" off: none; quit: none
   pk.setWanted(true);
-  assert.equal(kb.held.size, 9);
+  assert.equal(kb.held.size, 10);
   pk.setWanted(false);
-  assert.deepEqual([...kb.held.keys()], ['Control+Alt+8', 'Control+Alt+9']);
+  assert.deepEqual([...kb.held.keys()], ['Control+Alt+8', 'Control+Alt+9', 'Control+Alt+0']);
   pk.setEnabled(false);
   assert.equal(kb.held.size, 0, 'the host\'s own "Use these keys" switch covers EAT IT too');
   assert.equal(pk.press('eat-now'), false);
   pk.setEnabled(true);
-  assert.deepEqual([...kb.held.keys()], ['Control+Alt+8', 'Control+Alt+9']);
-  pk.setKeys({ ...DEFAULT_KEYS, 'eat-now': 'off', galaxy: 'off' });
+  assert.deepEqual([...kb.held.keys()], ['Control+Alt+8', 'Control+Alt+9', 'Control+Alt+0']);
+  pk.setKeys({ ...DEFAULT_KEYS, 'eat-now': 'off', galaxy: 'off', sign: 'off' });
   assert.equal(kb.held.size, 0, '"No key" for EAT IT');
   pk.setKeys({ ...DEFAULT_KEYS });
   pk.release();

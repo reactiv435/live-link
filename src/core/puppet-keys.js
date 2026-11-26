@@ -13,11 +13,15 @@
 //    name 'galaxy'; the VTuber keeps count). It follows EAT IT's rule exactly (`always`): the Mask chosen and a show
 //    plausible, whatever the Puppet show switch says. (Not Ctrl+Alt+G: Google's Gemini app holds that key in every
 //    window on Windows, and Figma uses it.)
+//  * V9: "Show sign: show / hide" (Ctrl+Alt+0) and "Live overlay: show / hide" (no keyboard key until he gives it one)
+//    = the VTuber window's show sign and live overlay step aside / come back (control actions 'sign' and 'overlay'; the
+//    VTuber repo's review/V9-SIGN-NOTES.md "What LIVE Link must change"). Both follow EAT IT's rule (`always`). Their
+//    usual keys are set by hand (`key`): numbering them Ctrl+Alt+(i+1) would give "Ctrl+Alt+10" and "Ctrl+Alt+11".
 //  * A system-wide key has no "key up": one press = one `control` message. The VTuber plays the move at its standard
 //    length; a second press of Goo while it pours makes it pour longer. Holding a key down repeats it: at most 4 a
 //    second per key go out.
-//  * The usual keys are Ctrl+Alt+1 ... Ctrl+Alt+9: nothing in Windows, OBS, TikTok LIVE Studio or a browser uses them
-//    out of the box. F13-F24 are offered for a Stream Deck (no keyboard has them, so nothing else can clash). A key
+//  * The usual keys are Ctrl+Alt+1 ... Ctrl+Alt+9 and Ctrl+Alt+0: nothing in Windows, OBS, TikTok LIVE Studio or a
+//    browser uses them out of the box. F13-F24 are offered for a Stream Deck (no keyboard has them, so nothing else can clash). A key
 //    another program already holds is reported per key ("taken"), never silently dropped.
 // Electron-free: main.js passes `register(accelerator, fn) -> bool` and `unregister(accelerator)` (globalShortcut).
 
@@ -31,6 +35,8 @@ const ACTIONS = Object.freeze([
   { id: 'vote', action: 'vote', name: '', label: 'Vote' },
   { id: 'eat-now', action: 'eat', name: '', label: 'Eat it (the song)', always: true },
   { id: 'galaxy', action: 'tap', name: 'galaxy', label: 'Galaxy', always: true },
+  { id: 'sign', action: 'sign', name: '', label: 'Show sign: show / hide', always: true, key: 'Ctrl+Alt+0' },
+  { id: 'overlay', action: 'overlay', name: '', label: 'Live overlay: show / hide', always: true, key: 'off' },
 ]);
 
 // what the host sees -> Electron's accelerator
@@ -40,7 +46,8 @@ const KEY_CHOICES = (() => {
   for (let f = 13; f <= 24; f++) m[`F${f}`] = `F${f}`;
   return Object.freeze(m);
 })();
-const DEFAULT_KEYS = Object.freeze(Object.fromEntries(ACTIONS.map((a, i) => [a.id, `Ctrl+Alt+${i + 1}`])));
+// the usual key of each action: Ctrl+Alt+1 ... 9 in order, or the one set by hand (V9: the sign's 0, the overlay's none)
+const DEFAULT_KEYS = Object.freeze(Object.fromEntries(ACTIONS.map((a, i) => [a.id, a.key || `Ctrl+Alt+${i + 1}`])));
 const STREAM_DECK_KEYS = Object.freeze(Object.fromEntries(ACTIONS.map((a, i) => [a.id, `F${13 + i}`])));
 const REPEAT_MS = 250;
 const RETRY_TAKEN_MS = 30000;      // a key another program holds is tried again this often while it is still wanted
@@ -121,7 +128,7 @@ class PuppetKeys {
     this.keys = cleanKeys(opts.keys);
     this.enabled = opts.enabled !== false;
     this.wanted = false;            // a v2 VTuber is listening (the Mask, its Puppet show on): the puppet keys
-    this.eatOn = false;             // 2.3.1: a v2 VTuber is listening (the Mask): the "Eat it" key (V9: and the galaxy key)
+    this.eatOn = false;             // 2.3.1: a v2 VTuber is listening (the Mask): the "Eat it" key (V9: and the galaxy, sign and overlay keys)
     this.held = new Map();          // action id -> accelerator held right now
     this.taken = new Set();         // action ids whose key another program holds
     this.lastAt = new Map();        // action id -> when it last went out
@@ -135,7 +142,7 @@ class PuppetKeys {
 
   /** the listening VTuber changed: hold the puppet keys, or give them back */
   setWanted(on) { on = !!on; if (on === this.wanted) return false; this.wanted = on; this._sync(); return true; }
-  /** 2.3.1: the same for the "Eat it" key (it does not follow the Puppet show switch); V9: the galaxy key rides with it */
+  /** 2.3.1: the same for the "Eat it" key (it does not follow the Puppet show switch); V9: the galaxy, sign and overlay keys ride with it */
   setEatWanted(on) { on = !!on; if (on === this.eatOn) return false; this.eatOn = on; this._sync(); return true; }
   setEnabled(on) { on = !!on; if (on === this.enabled) return false; this.enabled = on; this._sync(); return true; }
   setKeys(keys) { this.keys = cleanKeys(keys); this._sync(); }
@@ -179,7 +186,7 @@ class PuppetKeys {
   /** a key was pressed (or the OS repeats a held one) */
   press(id) {
     const a = ACTIONS.find((x) => x.id === id);
-    if (!a || !this._on(a)) return false;
+    if (!a || !this._on(a) || !this.held.has(id)) return false;   // V9: only a key LIVE Link holds right now (an action with "No key", e.g. the overlay's default, sends nothing)
     this.stats.presses++;
     const now = this.mono(), last = this.lastAt.get(id);
     if (last !== undefined && now - last < REPEAT_MS) return false;
