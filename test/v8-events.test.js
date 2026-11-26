@@ -333,7 +333,7 @@ test('a v1 VTuber still gets its taps summed as in 2.2.0 (one event, the last ta
 
 test('C4 control: only the four actions (2.3.1: + eat, "EAT IT": the Mask eats the song now) and the five moves; its own cap of 6 a second that never eats the viewers\' events', () => {
   assert.deepEqual(PUPPET_MOVES, ['goo', 'fire', 'melt', 'crack', 'eat']);
-  assert.deepEqual(CONTROL_ACTIONS, ['puppet', 'fight', 'vote', 'eat']);
+  assert.deepEqual(CONTROL_ACTIONS, ['puppet', 'fight', 'vote', 'eat', 'tap']);   // (V9: + tap, the galaxy key: test/v9-galaxy-key.test.js)
   assert.deepEqual(buildControl('eat', undefined, 77), { v: 2, type: 'control', action: 'eat', name: '', at: 77 });
   assert.deepEqual(buildControl('eat', 'ignored', 77), { v: 2, type: 'control', action: 'eat', name: '', at: 77 }, 'eat (the song) has no name: not the puppet move "eat" (a comment)');
   // the VTuber in this install: 2.3.0's files drop a control they do not know (no error); a later one takes it

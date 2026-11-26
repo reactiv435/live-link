@@ -455,3 +455,22 @@ first message and the new `finish` shape. The reviewer's contract script with a 
   latest-mac.json, SHA256SUMS.txt (fetch from the public pre-release on release day and check against SHA256SUMS).
 - Release day (not done): upload exe + source zip + dmg + mac zip through Lovable-minted upload URLs, then latest.json
   and latest-mac.json LAST; verify eTags and live-link-config; owner's account first; never during a LIVE.
+
+## V9: the galaxy key (branch `galaxy-key`, from 756391d; not built, not released)
+
+- A ninth key, **Ctrl+Alt+9** ("Galaxy"; Stream Deck preset: F21). One press sends
+  `{ v: 2, type: 'control', action: 'tap', name: 'galaxy', at }`. The first press calls the galaxy up, the next sends
+  it away; the VTuber keeps count, LIVE Link only says "pressed".
+- Why not Ctrl+Alt+G (the first idea): Google's Gemini app for Windows takes Ctrl+Alt+G in every window, and Figma
+  uses it. Ctrl+Alt+9 was already in the list of keys, it is the next one in the row, and none of the eight moved.
+- It follows EAT IT's rule exactly (`always` in `core/puppet-keys.js`, so it rides `eatWanted`): held while a v2
+  VTuber is listening with the Mask chosen and a show is plausible (L-6), whatever the Puppet show switch says. The
+  card's "Use these keys" switch covers it. At most 4 a second, "taken" on its own row, tried again every 30 s.
+- Keys saved by 2.3.1 gain `galaxy: Ctrl+Alt+9` (or "No key" if he had already given Ctrl+Alt+9 to another action).
+- The card: a line under the buttons, "Galaxy: press Ctrl+Alt+9 to call the galaxy up. Press it again to send it
+  away." It follows the key he picked and is hidden when the galaxy has no key or the keys are switched off. The two
+  preset buttons now read "Usual keys: Ctrl+Alt+1 to 9" and "Stream Deck keys: F13 to F21".
+- `core/vtuber-link.js`: C4 gains the action `tap` (names: `galaxy` only).
+- The VTuber pinned in `vendor/vtuber` (7416148) does not know `tap`: its `cleanControl` drops it. The key does
+  nothing until the vendor is re-synced to a VTuber that listens for it.
+- Tests: `test/v9-galaxy-key.test.js` (4), and the counts in `v8-keys`, `v8-events`, `v8-show-feed`, `v8-vendor`.

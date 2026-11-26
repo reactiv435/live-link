@@ -43,6 +43,8 @@
 //    127.0.0.1 otherwise), so it gets `show` / `control` only then, exactly as in 2.3.0; when the LIVE drops it is
 //    told "nothing on air" as its last word. The VTuber in the app is told nothing at a drop: its show goes on.
 //  * C4 gains the action 'eat' ("EAT IT": eat the song on air now). A 2.3.0 VTuber drops a control it does not know.
+// V9 (the galaxy): C4 gains the action 'tap' with the name 'galaxy' (one press calls the galaxy up, the next sends it
+//    away; the VTuber keeps count). A VTuber that does not know it drops it, as above.
 const http = require('http');
 const { clip } = require('./tiktok-link');
 const { cleanPictureUrl, cleanUid, cleanHandle, TIKTOK_PICTURE_HOSTS } = require('./pictures');
@@ -65,7 +67,8 @@ const CROWD_AFTER_MS = 3000;            // v2 taps: a viewer's taps that waited 
 const TAPPERS_MAX = 300;                // v2 taps: viewers with waiting taps kept at once (the rest are summed)
 const SIDE_PER_S = 6;                   // show + control messages a second (their own cap, never the viewers' events')
 const PUPPET_MOVES = ['goo', 'fire', 'melt', 'crack', 'eat'];
-const CONTROL_ACTIONS = ['puppet', 'fight', 'vote', 'eat'];
+const CONTROL_ACTIONS = ['puppet', 'fight', 'vote', 'eat', 'tap'];
+const TAPS = ['galaxy'];   // V9: 'tap' = a thing one key switches on and off (the VTuber keeps count): the galaxy
 
 // One event in the contract's shape, every field clipped; null when there is nothing to send.
 // v = 2 adds who the viewer is (handle, uid, avatar), each checked again here; v = 1 is the 2.1.2 event, field for field.
@@ -94,12 +97,13 @@ function buildEvent(type, x = {}, at = Date.now(), v = 1) {
   return ev;
 }
 
-/** C4: { v: 2, type: 'control', action, name, at } or null. action = puppet | fight | vote | eat; name = the move for 'puppet', '' otherwise. */
+/** C4: { v: 2, type: 'control', action, name, at } or null. action = puppet | fight | vote | eat | tap; name = the move for 'puppet', the thing for 'tap' ('galaxy'), '' otherwise. */
 function buildControl(action, name, at = Date.now()) {
   if (!CONTROL_ACTIONS.includes(action)) return null;
   if (action === 'puppet' && !PUPPET_MOVES.includes(name)) return null;
+  if (action === 'tap' && !TAPS.includes(name)) return null;
   const t = Math.floor(Number(at));
-  return { v: 2, type: 'control', action, name: action === 'puppet' ? name : '', at: t > 0 ? t : Date.now() };
+  return { v: 2, type: 'control', action, name: action === 'puppet' || action === 'tap' ? name : '', at: t > 0 ? t : Date.now() };
 }
 
 // who a local event is from, in the v2 event's words (a v1 event ignores them)
@@ -457,4 +461,4 @@ class VtuberLink {
   }
 }
 
-module.exports = { VtuberLink, buildEvent, buildControl, PUPPET_MOVES, CONTROL_ACTIONS, CROWD_AFTER_MS, DEFAULT_PORT, PATH, PROBE_EVERY_MS, LIKE_EVERY_MS, COMBO_QUIET_MS };
+module.exports = { VtuberLink, buildEvent, buildControl, PUPPET_MOVES, CONTROL_ACTIONS, TAPS, CROWD_AFTER_MS, DEFAULT_PORT, PATH, PROBE_EVERY_MS, LIKE_EVERY_MS, COMBO_QUIET_MS };

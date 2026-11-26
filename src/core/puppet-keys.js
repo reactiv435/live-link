@@ -9,10 +9,14 @@
 //  * 2.3.1: "Eat it" (Ctrl+Alt+8) = the Mask eats the song on air NOW (control action 'eat'; not the puppet move
 //    "Eat a comment"). It is the one key that does not follow the VTuber's Puppet show switch (`always`): it is held
 //    whenever the Mask is the chosen character (eatWanted below).
+//  * V9: "Galaxy" (Ctrl+Alt+9) = the Mask calls the galaxy up; the next press sends it away (control action 'tap',
+//    name 'galaxy'; the VTuber keeps count). It follows EAT IT's rule exactly (`always`): the Mask chosen and a show
+//    plausible, whatever the Puppet show switch says. (Not Ctrl+Alt+G: Google's Gemini app holds that key in every
+//    window on Windows, and Figma uses it.)
 //  * A system-wide key has no "key up": one press = one `control` message. The VTuber plays the move at its standard
 //    length; a second press of Goo while it pours makes it pour longer. Holding a key down repeats it: at most 4 a
 //    second per key go out.
-//  * The usual keys are Ctrl+Alt+1 ... Ctrl+Alt+8: nothing in Windows, OBS, TikTok LIVE Studio or a browser uses them
+//  * The usual keys are Ctrl+Alt+1 ... Ctrl+Alt+9: nothing in Windows, OBS, TikTok LIVE Studio or a browser uses them
 //    out of the box. F13-F24 are offered for a Stream Deck (no keyboard has them, so nothing else can clash). A key
 //    another program already holds is reported per key ("taken"), never silently dropped.
 // Electron-free: main.js passes `register(accelerator, fn) -> bool` and `unregister(accelerator)` (globalShortcut).
@@ -26,6 +30,7 @@ const ACTIONS = Object.freeze([
   { id: 'fight', action: 'fight', name: '', label: 'Boss fight' },
   { id: 'vote', action: 'vote', name: '', label: 'Vote' },
   { id: 'eat-now', action: 'eat', name: '', label: 'Eat it (the song)', always: true },
+  { id: 'galaxy', action: 'tap', name: 'galaxy', label: 'Galaxy', always: true },
 ]);
 
 // what the host sees -> Electron's accelerator
@@ -39,6 +44,9 @@ const DEFAULT_KEYS = Object.freeze(Object.fromEntries(ACTIONS.map((a, i) => [a.i
 const STREAM_DECK_KEYS = Object.freeze(Object.fromEntries(ACTIONS.map((a, i) => [a.id, `F${13 + i}`])));
 const REPEAT_MS = 250;
 const RETRY_TAKEN_MS = 30000;      // a key another program holds is tried again this often while it is still wanted
+
+/** V9: the card's line that names the galaxy key ('' when he gave it no key) */
+const galaxyLine = (key) => (typeof key === 'string' && key !== 'off' && Object.prototype.hasOwnProperty.call(KEY_CHOICES, key) ? `Galaxy: press ${key} to call the galaxy up. Press it again to send it away.` : '');
 
 const isChoice = (k) => typeof k === 'string' && Object.prototype.hasOwnProperty.call(KEY_CHOICES, k);
 
@@ -113,7 +121,7 @@ class PuppetKeys {
     this.keys = cleanKeys(opts.keys);
     this.enabled = opts.enabled !== false;
     this.wanted = false;            // a v2 VTuber is listening (the Mask, its Puppet show on): the puppet keys
-    this.eatOn = false;             // 2.3.1: a v2 VTuber is listening (the Mask): the "Eat it" key
+    this.eatOn = false;             // 2.3.1: a v2 VTuber is listening (the Mask): the "Eat it" key (V9: and the galaxy key)
     this.held = new Map();          // action id -> accelerator held right now
     this.taken = new Set();         // action ids whose key another program holds
     this.lastAt = new Map();        // action id -> when it last went out
@@ -127,7 +135,7 @@ class PuppetKeys {
 
   /** the listening VTuber changed: hold the puppet keys, or give them back */
   setWanted(on) { on = !!on; if (on === this.wanted) return false; this.wanted = on; this._sync(); return true; }
-  /** 2.3.1: the same for the "Eat it" key (it does not follow the Puppet show switch) */
+  /** 2.3.1: the same for the "Eat it" key (it does not follow the Puppet show switch); V9: the galaxy key rides with it */
   setEatWanted(on) { on = !!on; if (on === this.eatOn) return false; this.eatOn = on; this._sync(); return true; }
   setEnabled(on) { on = !!on; if (on === this.enabled) return false; this.enabled = on; this._sync(); return true; }
   setKeys(keys) { this.keys = cleanKeys(keys); this._sync(); }
@@ -182,15 +190,16 @@ class PuppetKeys {
     return took;
   }
 
-  /** for the card: { enabled, active, rows: [{ id, label, key, state: 'held' | 'taken' | 'off' | 'idle' }], choices } */
+  /** for the card: { enabled, active, rows: [{ id, label, key, state: 'held' | 'taken' | 'off' | 'idle' }], choices, galaxy: <the line that names the galaxy key> } */
   getState() {
     return {
       enabled: this.enabled, active: this.active,
       rows: ACTIONS.map((a) => ({ id: a.id, label: a.label, key: this.keys[a.id],
         state: this.keys[a.id] === 'off' ? 'off' : this.held.has(a.id) ? 'held' : this.taken.has(a.id) ? 'taken' : 'idle' })),
       choices: Object.keys(KEY_CHOICES),
+      galaxy: galaxyLine(this.keys.galaxy),
     };
   }
 }
 
-module.exports = { PuppetKeys, puppetWanted, eatWanted, ACTIONS, KEY_CHOICES, DEFAULT_KEYS, STREAM_DECK_KEYS, REPEAT_MS, RETRY_TAKEN_MS, cleanKeys, setKey };
+module.exports = { PuppetKeys, puppetWanted, eatWanted, galaxyLine, ACTIONS, KEY_CHOICES, DEFAULT_KEYS, STREAM_DECK_KEYS, REPEAT_MS, RETRY_TAKEN_MS, cleanKeys, setKey };

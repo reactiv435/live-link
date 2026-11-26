@@ -944,8 +944,10 @@
   function renderPuppetKeys(p) {
     const box = $('vtkeys');
     if (!box) return;
-    if (!p || !Array.isArray(p.rows)) { box.classList.add('hidden'); return; }
+    const gx = $('vtkeys-galaxy');
+    if (!p || !Array.isArray(p.rows)) { box.classList.add('hidden'); if (gx) gx.classList.add('hidden'); return; }
     box.classList.remove('hidden');
+    if (gx) { $('vtkeys-galaxy').textContent = p.galaxy || ''; gx.classList.toggle('hidden', !p.galaxy || !p.enabled); }
     const key = JSON.stringify(p);
     if (key === puppetKey) return;
     puppetKey = key;
@@ -1105,9 +1107,10 @@
       captureNow: async () => ({ ok: true }),
       // V8 stills: ?demo=puppet (keys working during a LIVE), puppet-idle (no LIVE), puppet-taken (one key taken), puppet-off
       ...(String(pick).startsWith('puppet') ? (() => {
-        const labels = { goo: 'Goo', fire: 'Fire head', melt: 'Melt', crack: 'Crack open', eat: 'Eat a comment', fight: 'Boss fight', vote: 'Vote', 'eat-now': 'Eat it (the song)' };
+        const labels = { goo: 'Goo', fire: 'Fire head', melt: 'Melt', crack: 'Crack open', eat: 'Eat a comment', fight: 'Boss fight', vote: 'Vote', 'eat-now': 'Eat it (the song)', galaxy: 'Galaxy' };
         const choices = ['off', ...['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'].map((d) => 'Ctrl+Alt+' + d), ...Array.from({ length: 12 }, (_, i) => 'F' + (13 + i))];
         const p = { enabled: pick !== 'puppet-off', active: pick === 'puppet' || pick === 'puppet-taken', choices,
+          galaxy: 'Galaxy: press Ctrl+Alt+9 to call the galaxy up. Press it again to send it away.',
           rows: Object.keys(labels).map((id, i) => ({ id, label: labels[id], key: 'Ctrl+Alt+' + (i + 1), state: pick === 'puppet-taken' && id === 'melt' ? 'taken' : pick === 'puppet' || pick === 'puppet-taken' ? 'held' : 'idle' })) };
         const card = () => ({ show: true, tone: 'on', title: 'VTuber', text: 'VTuber is ON: your viewers see the Mask instead of your camera. Press OFF in the VTuber window, or close it, to show your camera again.', button: 'Show VTuber', open: true, puppet: p });
         return {

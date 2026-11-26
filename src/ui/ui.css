@@ -320,6 +320,7 @@ button:focus:not(:focus-visible) { outline: none; }
 .vtkeys-sum { font: 600 11.5px/1.3 var(--font); color: var(--muted); text-align: right; }
 .vtkeys.live .vtkeys-sum { color: #4dffa0; }
 .vtkeys.taken .vtkeys-sum { color: #fff; }
+.vtkeys-galaxy { margin: 10px 0 0; font-size: 12.5px; line-height: 1.45; color: #d6d6d6; text-wrap: pretty; }
 .vtkeys-note { margin: 8px 0 6px; font-size: 12.5px; line-height: 1.45; color: #d6d6d6; text-wrap: pretty; }
 .vtkeys-switch { display: flex; align-items: center; justify-content: space-between; gap: 10px; font: 600 13px var(--font); color: var(--text); padding: 4px 0 8px; }
 .vtkeys-switch input[type=checkbox] { appearance: none; width: 42px; height: 24px; border-radius: 999px; background: #2a2a2a; position: relative; cursor: pointer; flex: none; transition: background .15s; }
