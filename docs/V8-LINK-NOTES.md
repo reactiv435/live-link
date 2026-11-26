@@ -450,7 +450,8 @@ first message and the new `finish` shape. The reviewer's contract script with a 
   - `npm run smoke`: PASS (the mock site saw only pair, config and status).
 - Mac: tag v2.3.1-ci1 -> run 45758700826, success (universal, signed with the stable certificate, launch check on
   Apple Silicon + Intel, VTuber smoke: ready 25.1 s, closeHidMs 178, problems []). Pre-release v2.3.1-ci1 holds
-  LIVE-Link-2.3.1-mac.dmg (350,711,620 bytes), LIVE-Link-2.3.1-mac.zip (319,682,998 bytes), latest-mac.json,
-  SHA256SUMS.txt.
+  LIVE-Link-2.3.1-mac.dmg (350,711,620 bytes, sha256 171221b73a6be61b07ea8fbf078bc4d80563473aa10121e6e4b3e52961da2ee3),
+  LIVE-Link-2.3.1-mac.zip (319,682,998 bytes, sha256 ba8270461cbc0b3fad78ecda8de74b95e5c74648e66eb851f7b1337102a91a9b),
+  latest-mac.json, SHA256SUMS.txt (fetch from the public pre-release on release day and check against SHA256SUMS).
 - Release day (not done): upload exe + source zip + dmg + mac zip through Lovable-minted upload URLs, then latest.json
   and latest-mac.json LAST; verify eTags and live-link-config; owner's account first; never during a LIVE.
