@@ -24,6 +24,10 @@ const OUT = path.join(root, 'vendor', 'vtuber');
 const DEV = path.join(root, 'test', 'vtuber-dev');
 const PIN = path.join(OUT, 'VTUBER_PIN.json');
 const NEVER = /(^|\/)(testdata|review|tests|research|tmp|node_modules|chrome-vtuber|chrome-profile)\/|calib-(owner|saved)\.json$|mask-rest\.json$|gifts-owner\.json$|vtuber-obs\.json$|\.(mp4|mov|mkv|webm|wav|mp3|log)$/i;
+// V9: the ONE exception to NEVER, by exact path: the countdown song (the owner's own Suno song, off by default for
+// every host; the VTuber's assets/NOTICE.txt says it is his). Every other .mp3 is still never copied.
+const NEVER_EXCEPT = new Set(['assets/music/countdown-music.mp3']);
+const isNever = (f) => NEVER.test(f) && !NEVER_EXCEPT.has(f);
 const sha = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
 
 /** every file under dir, as forward-slash paths relative to it */
@@ -38,16 +42,17 @@ function walk(dir, rel = '') {
   return out;
 }
 
-/** vendor/vtuber and test/vtuber-dev against the pin: [] when every file matches and none is extra or missing */
-function check() {
+/** vendor/vtuber and test/vtuber-dev against the pin: [] when every file matches and none is extra or missing
+ *  (out / dev: other folders, for tests only) */
+function check({ out = OUT, dev = DEV } = {}) {
   const problems = [];
   let pin = null;
-  try { pin = JSON.parse(fs.readFileSync(PIN, 'utf8')); } catch { return ['vendor/vtuber/VTUBER_PIN.json is missing or unreadable: run scripts/sync-vtuber.js']; }
+  try { pin = JSON.parse(fs.readFileSync(path.join(out, 'VTUBER_PIN.json'), 'utf8')); } catch { return ['vendor/vtuber/VTUBER_PIN.json is missing or unreadable: run scripts/sync-vtuber.js']; }
   if (!/^[0-9a-f]{40}$/.test(String(pin.commit || ''))) problems.push('the pin names no commit');
-  for (const [dir, files, label] of [[OUT, pin.files || {}, 'vendor/vtuber'], [DEV, pin.dev || {}, 'test/vtuber-dev']]) {
-    const have = new Set(walk(dir).filter((f) => !(dir === OUT && f === 'VTUBER_PIN.json')));
+  for (const [dir, files, label] of [[out, pin.files || {}, 'vendor/vtuber'], [dev, pin.dev || {}, 'test/vtuber-dev']]) {
+    const have = new Set(walk(dir).filter((f) => !(dir === out && f === 'VTUBER_PIN.json')));
     for (const [f, want] of Object.entries(files)) {
-      if (NEVER.test(f)) problems.push(`${label}/${f}: must never be copied`);
+      if (isNever(f)) problems.push(`${label}/${f}: must never be copied`);
       if (!have.has(f)) { problems.push(`${label}/${f}: missing`); continue; }
       have.delete(f);
       if (sha(fs.readFileSync(path.join(dir, f))) !== want) problems.push(`${label}/${f}: differs from the pinned commit (edited by hand?)`);
@@ -57,7 +62,9 @@ function check() {
   return problems;
 }
 
-function sync(from, rev) {
+// (out / dev: other folders, for tests only; the default is vendor/vtuber and test/vtuber-dev)
+function sync(from, rev, { out: outDir = OUT, dev: devDir = DEV } = {}) {
+  const pinFile = path.join(outDir, 'VTUBER_PIN.json');
   const git = (args, opts = {}) => execFileSync('git', ['-C', from, ...args], { maxBuffer: 256 * 1024 * 1024, ...opts });
   const commit = git(['rev-parse', '--verify', rev + '^{commit}']).toString().trim();
   const date = git(['show', '-s', '--format=%cI', commit]).toString().trim();
@@ -69,19 +76,19 @@ function sync(from, rev) {
   const pick = (pats) => tracked.filter((f) => (pats || []).some((p) => hit(p, f)));
   const files = pick(list.include).filter((f) => !(list.exclude || []).some((p) => hit(p, f)));
   const dev = pick(list.dev);
-  for (const f of [...files, ...dev]) if (NEVER.test(f)) throw new Error('the list names a file that must never be copied: ' + f);
+  for (const f of [...files, ...dev]) if (isNever(f)) throw new Error('the list names a file that must never be copied: ' + f);
   if (!files.includes('livelink-host.js') || !files.includes('vtuber.html') || !files.includes('avatar.html')) throw new Error('the list is missing the app itself');
 
   // one git process hands over every file's exact bytes
-  const all = [...files.map((f) => [f, OUT]), ...dev.map((f) => [f, DEV])];
+  const all = [...files.map((f) => [f, outDir]), ...dev.map((f) => [f, devDir])];
   const r = spawnSync('git', ['-C', from, 'cat-file', '--batch'], { input: all.map(([f]) => `${commit}:${f}\n`).join(''), maxBuffer: 1024 * 1024 * 1024 });
   if (r.status !== 0) throw new Error('git cat-file failed: ' + String(r.stderr || '').slice(0, 300));
   const buf = r.stdout;
   // what was there before, so the names that come and go are printed: a file added under js/**, mask/**, assets/** or
   // vendor/** ships and is published without anyone listing it, so it must at least be seen
-  const before = { out: new Set(walk(OUT).filter((f) => f !== 'VTUBER_PIN.json')), dev: new Set(walk(DEV)) };
-  fs.rmSync(OUT, { recursive: true, force: true });
-  fs.rmSync(DEV, { recursive: true, force: true });
+  const before = { out: new Set(walk(outDir).filter((f) => f !== 'VTUBER_PIN.json')), dev: new Set(walk(devDir)) };
+  fs.rmSync(outDir, { recursive: true, force: true });
+  fs.rmSync(devDir, { recursive: true, force: true });
   const pin = { about: 'Written by scripts/sync-vtuber.js. Never edit vendor/vtuber or test/vtuber-dev by hand: change the VTuber repo, commit, sync again.', commit, date, bytes: 0, files: {}, dev: {} };
   let at = 0;
   for (const [f, dir] of all) {
@@ -94,9 +101,9 @@ function sync(from, rev) {
     const dest = path.join(dir, f);
     fs.mkdirSync(path.dirname(dest), { recursive: true });
     fs.writeFileSync(dest, body);
-    if (dir === OUT) { pin.files[f] = sha(body); pin.bytes += size; } else pin.dev[f] = sha(body);
+    if (dir === outDir) { pin.files[f] = sha(body); pin.bytes += size; } else pin.dev[f] = sha(body);
   }
-  fs.writeFileSync(PIN, JSON.stringify(pin, null, 1) + '\n');
+  fs.writeFileSync(pinFile, JSON.stringify(pin, null, 1) + '\n');
   const diff = (label, was, now) => [...now.filter((f) => !was.has(f)).map((f) => `+ ${label}/${f}`), ...[...was].filter((f) => !now.includes(f)).map((f) => `- ${label}/${f}`)];
   // (not part of the pin file: only for the person running the sync)
   Object.defineProperty(pin, 'changes', { value: [...diff('vendor/vtuber', before.out, files), ...diff('test/vtuber-dev', before.dev, dev)], enumerable: false });
@@ -125,4 +132,4 @@ if (require.main === module) {
   } catch (e) { console.error('sync failed: ' + (e && e.message)); process.exit(1); }
 }
 
-module.exports = { check, sync, walk, NEVER, OUT, DEV, PIN };
+module.exports = { check, sync, walk, NEVER, NEVER_EXCEPT, isNever, OUT, DEV, PIN };

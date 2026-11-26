@@ -59,7 +59,7 @@ test('2.2.0 vendor/vtuber is exactly the pinned VTuber commit, complete, and hol
   for (const must of ['livelink-host.js', 'one-click.js', 'server.js', 'vtuber.html', 'avatar.html', 'js/vtuber.js', 'js/avatar.js', 'mask/mask-core.js', 'vendor/ws/index.js', 'vendor/babylon.js',
     'assets/models/ryo-arena.glb', 'assets/models/melanie-arena.glb', 'tracking/tracker.html', 'tracking/vendor/models/face_landmarker.task', 'tracking/vendor/tasks-vision/wasm/vision_wasm_internal.wasm',
     'sound-loopback.ps1', 'win-windows.ps1']) assert.ok(files.includes(must), 'missing: ' + must);
-  for (const f of [...files, ...Object.keys(pin.dev)]) assert.ok(!sync.NEVER.test(f), 'must never be copied: ' + f);
+  for (const f of [...files, ...Object.keys(pin.dev)]) assert.ok(!sync.isNever(f), 'must never be copied: ' + f);   // (V9: the countdown song is the one exception, test/v9-sync-music.test.js)
   assert.ok(!files.some((f) => /^(tools|tests|review|research)\//.test(f)), 'no tools, tests or review media in the app');
   assert.ok(pin.bytes > 30e6 && pin.bytes < 75e6, 'size ' + Math.round(pin.bytes / 1e6) + ' MB');
   // it ships inside the app as plain files (the local server streams them; PowerShell runs the two helper scripts)
