@@ -347,7 +347,7 @@ const vtuberCardNow = () => ({ ...vtuberCard(vtHost ? vtHost.getState() : null, 
 // the chosen character is the Mask (the puppet moves are the Mask's: with Ryo or Melanie the keys would do nothing and
 // still be taken from every other program). core/puppet-keys.js puppetWanted has the rule.
 // 2.3.1: "Eat it" (Ctrl+Alt+8) is held with the Mask chosen even when its Puppet show switch is off (eatWanted).
-// All nine (V9: the galaxy key follows EAT IT's rule) are held only while a show is plausible (a song on air, up to 30 minutes after one, or a TikTok LIVE
+// All eleven (V9: the galaxy, show sign and live overlay keys follow EAT IT's rule) are held only while a show is plausible (a song on air, up to 30 minutes after one, or a TikTok LIVE
 // connected: core/show-feed.js `plausible`), so the Ctrl+Alt digits are not taken from other programs all day.
 function syncPuppetKeys() {
   if (!puppetKeys) return;

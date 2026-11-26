@@ -469,8 +469,40 @@ first message and the new `finish` shape. The reviewer's contract script with a 
 - Keys saved by 2.3.1 gain `galaxy: Ctrl+Alt+9` (or "No key" if he had already given Ctrl+Alt+9 to another action).
 - The card: a line under the buttons, "Galaxy: press Ctrl+Alt+9 to call the galaxy up. Press it again to send it
   away." It follows the key he picked and is hidden when the galaxy has no key or the keys are switched off. The two
-  preset buttons now read "Usual keys: Ctrl+Alt+1 to 9" and "Stream Deck keys: F13 to F21".
+  preset buttons now read "Usual keys: Ctrl+Alt+1 to 9" and "Stream Deck keys: F13 to F21". (Superseded by the next section: the
+  line now says "press" only while the key is held, and the presets read "1 to 9 and 0" / "F13 to F23".)
 - `core/vtuber-link.js`: C4 gains the action `tap` (names: `galaxy` only).
 - The VTuber pinned in `vendor/vtuber` (7416148) does not know `tap`: its `cleanControl` drops it. The key does
   nothing until the vendor is re-synced to a VTuber that listens for it.
 - Tests: `test/v9-galaxy-key.test.js` (4), and the counts in `v8-keys`, `v8-events`, `v8-show-feed`, `v8-vendor`.
+
+## V9: the show sign and live overlay keys, honest card lines, the VTuber window size (branch `galaxy-key`; not built, not released)
+
+- Two more rows after the galaxy (the VTuber repo's review/V9-SIGN-NOTES.md "What LIVE Link must change"), sent as
+  the existing control message `{ v: 2, type: 'control', action: 'sign' | 'overlay', name: '', at }`:
+  - "Show sign: show / hide": **Ctrl+Alt+0** (set by hand: `key` in ACTIONS), Stream Deck preset **F22**.
+  - "Live overlay: show / hide": **no key** by default ('off'), Stream Deck preset **F23**.
+  - Both are `always` (EAT IT's rule: the Mask chosen and a show plausible, whatever the Puppet show switch says).
+- The whole table (usual / Stream Deck): goo 1/F13, fire 2/F14, melt 3/F15, crack 4/F16, eat 5/F17, fight 6/F18,
+  vote 7/F19, eat-now 8/F20, galaxy 9/F21, sign Ctrl+Alt+0/F22, overlay none/F23. Ten different keyboard keys, eleven
+  different F keys, none of them the "Clip that" keys (MOMENT_KEYS).
+- A 2.3.1 key file (eight actions) or a V9-galaxy file (nine) loads with `cleanKeys` as before: each missing action
+  gets its usual key, and if he already gave that key to another action, that action keeps it and the new one starts
+  with "No key". Nothing he set moves. (A 2.3.1 file with EAT IT on Ctrl+Alt+0 gives the sign "No key".)
+- `press()` now sends only for a key LIVE Link actually holds (an action with "No key" sends nothing).
+- `core/vtuber-link.js` CONTROL_ACTIONS gains `sign` and `overlay` (name always '').
+- The card lines (`core/puppet-keys.js keyLine`): the galaxy and the sign each get a line, worded from the row's
+  real state. Held: "press <key> ...". Idle (no show right now): what the key does "during your show ... Right now it
+  does nothing." Taken: "another program already uses <key> ... Pick another key". No key, or the keys switched off:
+  no line. The overlay gets no line. `test/v9-key-card.test.js` runs the real `ui/ui.js` against a fake DOM built from
+  the real `ui/index.html` ids and checks the text in each state (it replaced the source-regex test).
+- The VTuber window (`core/vtuber-window.js`): opens at **1366 x 768**, never below **1000 x 640** (the deck draws
+  stacked below 1000 wide), always clamped to the primary display's work area as it is now (a screen smaller than the
+  minimum gets the screen). If he resized it, the size (never the place; `getNormalBounds`) is saved on close as
+  `vtuberSize` in the app's store, never in a test run, and used next time, clamped again. A saved value that is the
+  old 600 x 940, under the minimum, or not whole numbers in 1..16384 is ignored. A test run keeps 360 x 560.
+- The VTuber pinned in `vendor/vtuber` (7416148) does not know `sign` or `overlay`: its `cleanControl` drops them,
+  so both keys do nothing until the vendor is re-synced. Its own desktop-shortcut launcher (`vendor/vtuber/one-click.js`)
+  still opens Chrome at 600 x 940; that is the VTuber repo's file, not changed here.
+- Tests: `test/v9-sign-keys.test.js`, `test/v9-key-card.test.js`, `test/v9-vtuber-window.test.js`, and the counts in
+  `v8-keys`, `v8-events`, `v8-show-feed`, `v8-vendor`, `v9-galaxy-key`.
