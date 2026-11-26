@@ -10,7 +10,12 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
-const { PuppetKeys, DEFAULT_KEYS, STREAM_DECK_KEYS, keyLine, galaxyLine } = require('../src/core/puppet-keys');
+// V9 release: the galaxy key is DORMANT (puppet-keys.js GALAXY_KEY_ON = false). The galaxy-line tests use puppet-keys.js
+// with the switch ON (test/puppet-keys-build.js), ready for the day it flips; the card as it ships (no galaxy line, no
+// galaxy row, the summaries) uses the real file, REL.
+const REL = require('../src/core/puppet-keys');
+const ON = require('./puppet-keys-build').puppetKeysWith({ galaxy: true });
+const { DEFAULT_KEYS, keyLine, galaxyLine } = ON;
 
 const UI = path.join(__dirname, '..', 'src', 'ui');
 const HTML = fs.readFileSync(path.join(UI, 'index.html'), 'utf8');
@@ -86,9 +91,9 @@ function keyboard({ taken = [] } = {}) {
   k.unregister = (acc) => { k.held.delete(acc); };
   return k;
 }
-function keysIn({ taken = [], keys = DEFAULT_KEYS, on = true, enabled = true } = {}) {
+function keysIn({ taken = [], keys, on = true, enabled = true, build = ON } = {}) {
   const kb = keyboard({ taken });
-  const pk = new PuppetKeys({ register: kb.register, unregister: kb.unregister, send: () => true, keys, enabled });
+  const pk = new build.PuppetKeys({ register: kb.register, unregister: kb.unregister, send: () => true, keys: keys || build.DEFAULT_KEYS, enabled });
   pk.setWanted(on); pk.setEatWanted(on);
   return pk.getState();
 }
@@ -173,13 +178,18 @@ test('the line itself (core/puppet-keys.js keyLine): one rule for every state; t
 
 test('fix round 1: the keys part\'s summary names the keys he set in plain words (was "Ctrl+Alt+1 to Ctrl+Alt+0")', () => {
   const p = page();
-  const sum = (keys) => { p.render(keysIn({ keys, on: false })); return p.$('vtkeys-sum').textContent; };
-  const all = (k) => Object.fromEntries(Object.keys(DEFAULT_KEYS).map((id) => [id, k]));
-  assert.equal(sum(DEFAULT_KEYS), 'Ctrl+Alt+1 to 9 and 0', 'the usual keys (as the preset button says)');
-  assert.equal(sum(STREAM_DECK_KEYS), 'F13 to F23', 'the Stream Deck keys');
-  // a 2.3.1 Stream Deck file: its eight F keys, then the galaxy's and the sign's usual keys
-  assert.equal(sum({ ...STREAM_DECK_KEYS, galaxy: 'Ctrl+Alt+9', sign: 'Ctrl+Alt+0', overlay: 'off' }), 'Ctrl+Alt+9 and 0, F13 to F20');
-  assert.equal(sum({ ...DEFAULT_KEYS, melt: 'off' }), 'Ctrl+Alt+1, 2, 4 to 9 and 0', 'a gap');
+  const sum = (keys, build = REL) => { p.render(keysIn({ keys, on: false, build })); return p.$('vtkeys-sum').textContent; };
+  const all = (k) => Object.fromEntries(Object.keys(ON.DEFAULT_KEYS).map((id) => [id, k]));
+  // as it ships (the galaxy dormant: Ctrl+Alt+9 and F21 are nobody's)
+  assert.equal(sum(REL.DEFAULT_KEYS), 'Ctrl+Alt+1 to 8 and 0', 'the usual keys');
+  assert.equal(sum(REL.STREAM_DECK_KEYS), 'F13 to F20, F22 and F23', 'the Stream Deck keys');
+  // a 2.3.1 Stream Deck file: its eight F keys, then the sign's usual key (a galaxy key in the file is ignored)
+  assert.equal(sum({ ...REL.STREAM_DECK_KEYS, galaxy: 'Ctrl+Alt+9', sign: 'Ctrl+Alt+0', overlay: 'off' }), 'Ctrl+Alt+0, F13 to F20');
+  assert.equal(sum({ ...REL.DEFAULT_KEYS, melt: 'off' }), 'Ctrl+Alt+1, 2, 4 to 8 and 0', 'a gap');
+  // the galaxy switched on: its keys are his again
+  assert.equal(sum(ON.DEFAULT_KEYS, ON), 'Ctrl+Alt+1 to 9 and 0', 'the usual keys (as the preset button says)');
+  assert.equal(sum(ON.STREAM_DECK_KEYS, ON), 'F13 to F23', 'the Stream Deck keys');
+  assert.equal(sum({ ...ON.STREAM_DECK_KEYS, galaxy: 'Ctrl+Alt+9', sign: 'Ctrl+Alt+0', overlay: 'off' }, ON), 'Ctrl+Alt+9 and 0, F13 to F20');
   assert.equal(sum({ ...all('off'), sign: 'F22' }), 'F22');
   assert.equal(sum({ ...all('off'), goo: 'F13', fire: 'F14' }), 'F13 and F14');
   assert.equal(sum(all('off')), 'No keys set');
@@ -188,4 +198,26 @@ test('fix round 1: the keys part\'s summary names the keys he set in plain words
   assert.equal(p.$('vtkeys-sum').textContent, 'Working now');
   p.render(keysIn({ enabled: false }));
   assert.equal(p.$('vtkeys-sum').textContent, 'Off');
+});
+
+test('V9 release (the galaxy dormant): no galaxy line and no galaxy row on the card in any state, even with a galaxy key in his file; the sign line as before', () => {
+  const p = page();
+  const labels = () => p.$('vtkeys-rows').children.filter((c) => c.className === 'k-label').map((c) => c.textContent);
+  for (const st of [{}, { on: false }, { taken: ['Control+Alt+9'] }, { keys: { ...REL.DEFAULT_KEYS, galaxy: 'F21' } }, { keys: { ...REL.DEFAULT_KEYS, galaxy: 'Ctrl+Alt+9' } }]) {
+    const k = keysIn({ ...st, build: REL });
+    p.render(k);
+    assert.equal(k.galaxy, '', JSON.stringify(st));
+    assert.equal(seen(p, 'vtkeys-galaxy'), '', JSON.stringify(st));
+    assert.ok(!k.rows.some((r) => r.id === 'galaxy'), JSON.stringify(st));
+    assert.equal(labels().length, 10);
+    assert.ok(!labels().includes('Galaxy'), JSON.stringify(st));
+  }
+  p.render(keysIn({ build: REL }));
+  assert.match(seen(p, 'vtkeys-sign'), /^Show sign: press Ctrl\+Alt\+0 /);
+  assert.equal(REL.keyLine('galaxy', 'Ctrl+Alt+9', 'held'), '', 'a dormant key has no line');
+  assert.equal(REL.galaxyLine('Ctrl+Alt+9', 'held'), '');
+  // the switch on: the same card has the galaxy's row and line
+  p.render(keysIn());
+  assert.ok(labels().includes('Galaxy'));
+  assert.match(seen(p, 'vtkeys-galaxy'), /^Galaxy: press Ctrl\+Alt\+9 /);
 });

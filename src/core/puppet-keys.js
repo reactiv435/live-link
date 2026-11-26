@@ -12,7 +12,7 @@
 //  * V9: "Galaxy" (Ctrl+Alt+9) = the Mask calls the galaxy up; the next press sends it away (control action 'tap',
 //    name 'galaxy'; the VTuber keeps count). It follows EAT IT's rule exactly (`always`): the Mask chosen and a show
 //    plausible, whatever the Puppet show switch says. (Not Ctrl+Alt+G: Google's Gemini app holds that key in every
-//    window on Windows, and Figma uses it.)
+//    window on Windows, and Figma uses it.) V9 release: DORMANT, see GALAXY_KEY_ON below.
 //  * V9: "Show sign: show / hide" (Ctrl+Alt+0) and "Live overlay: show / hide" (no keyboard key until he gives it one)
 //    = the VTuber window's show sign and live overlay step aside / come back (control actions 'sign' and 'overlay'; the
 //    VTuber repo's review/V9-SIGN-NOTES.md "What LIVE Link must change"). Both follow EAT IT's rule (`always`). Their
@@ -25,7 +25,16 @@
 //    another program already holds is reported per key ("taken"), never silently dropped.
 // Electron-free: main.js passes `register(accelerator, fn) -> bool` and `unregister(accelerator)` (globalShortcut).
 
-const ACTIONS = Object.freeze([
+// V9 RELEASE SWITCH: the galaxy key. OFF in this release: its VTuber part is not finished, and the VTuber LIVE Link
+// ships with accepts the sign and overlay keys but not 'tap'. Off, the galaxy keeps its row in ALL_ACTIONS and its
+// place in the order, so no other key moves (the sign stays Ctrl+Alt+0 / F22, the overlay F23), but it is not a key
+// this build offers: never registered, no usual key, no Stream Deck key, no card line, not in the keys list, and a
+// saved key for it loads cleanly and is ignored. Turn it on only together with a vendored VTuber that accepts
+// { action: 'tap', name: 'galaxy' }: the release gate (test/v8-vendor.test.js) then checks the galaxy too.
+const GALAXY_KEY_ON = false;
+
+// every key LIVE Link knows, in their fixed order (a key's place gives its usual key and its Stream Deck key)
+const ALL_ACTIONS = Object.freeze([
   { id: 'goo', action: 'puppet', name: 'goo', label: 'Goo' },
   { id: 'fire', action: 'puppet', name: 'fire', label: 'Fire head' },
   { id: 'melt', action: 'puppet', name: 'melt', label: 'Melt' },
@@ -38,6 +47,9 @@ const ACTIONS = Object.freeze([
   { id: 'sign', action: 'sign', name: '', label: 'Show sign: show / hide', always: true, key: 'Ctrl+Alt+0', toggle: true },
   { id: 'overlay', action: 'overlay', name: '', label: 'Live overlay: show / hide', always: true, key: 'off', toggle: true },
 ]);
+const keyOn = (a) => a.id !== 'galaxy' || GALAXY_KEY_ON;
+// the keys this build offers, in that order (V9: all but a dormant galaxy). Everything below works from these.
+const ACTIONS = Object.freeze(ALL_ACTIONS.filter(keyOn));
 
 // what the host sees -> Electron's accelerator
 const KEY_CHOICES = (() => {
@@ -46,9 +58,10 @@ const KEY_CHOICES = (() => {
   for (let f = 13; f <= 24; f++) m[`F${f}`] = `F${f}`;
   return Object.freeze(m);
 })();
-// the usual key of each action: Ctrl+Alt+1 ... 9 in order, or the one set by hand (V9: the sign's 0, the overlay's none)
-const DEFAULT_KEYS = Object.freeze(Object.fromEntries(ACTIONS.map((a, i) => [a.id, a.key || `Ctrl+Alt+${i + 1}`])));
-const STREAM_DECK_KEYS = Object.freeze(Object.fromEntries(ACTIONS.map((a, i) => [a.id, `F${13 + i}`])));
+// the usual key of each action: Ctrl+Alt+1 ... 9 by its place in ALL_ACTIONS, or the one set by hand (V9: the sign's
+// 0, the overlay's none). A dormant galaxy gets none, and keeps its place (Ctrl+Alt+9 / F21 stay unused).
+const DEFAULT_KEYS = Object.freeze(Object.fromEntries(ALL_ACTIONS.flatMap((a, i) => (keyOn(a) ? [[a.id, a.key || `Ctrl+Alt+${i + 1}`]] : []))));
+const STREAM_DECK_KEYS = Object.freeze(Object.fromEntries(ALL_ACTIONS.flatMap((a, i) => (keyOn(a) ? [[a.id, `F${13 + i}`]] : []))));
 const REPEAT_MS = 250;
 // V9 fix round 1: an on/off switch (`toggle`: the sign, the overlay) fires ONCE per press. A press within this long of
 // the last one (sent or ignored) is the OS repeating a held key, so a held key sends once and never flips back and
@@ -68,7 +81,7 @@ const KEY_LINES = Object.freeze({
 });
 const DURING_SHOW = 'during your show (VTuber open with the Mask, and a song on air or your TikTok LIVE connected). Right now it does nothing.';
 function keyLine(id, key, state = 'idle', enabled = true) {
-  const L = Object.prototype.hasOwnProperty.call(KEY_LINES, id) ? KEY_LINES[id] : null;
+  const L = Object.prototype.hasOwnProperty.call(KEY_LINES, id) && ACTIONS.some((a) => a.id === id) ? KEY_LINES[id] : null;   // (a dormant galaxy: no line)
   if (!L || !isChoice(key) || key === 'off' || !enabled || state === 'off') return '';
   if (state === 'held') return `${L.name}: press ${key} ${L.press}`;
   if (state === 'taken') return `${L.name}: another program already uses ${key}, so it does nothing here. Pick another key for ${L.name} in Puppet show keys.`;
@@ -226,9 +239,9 @@ class PuppetKeys {
   getState() {
     const rows = ACTIONS.map((a) => ({ id: a.id, label: a.label, key: this.keys[a.id],
       state: this.keys[a.id] === 'off' ? 'off' : this.held.has(a.id) ? 'held' : this.taken.has(a.id) ? 'taken' : 'idle' }));
-    const line = (id) => { const r = rows.find((x) => x.id === id); return keyLine(id, r.key, r.state, this.enabled); };
+    const line = (id) => { const r = rows.find((x) => x.id === id); return r ? keyLine(id, r.key, r.state, this.enabled) : ''; };   // (no row: a dormant galaxy)
     return { enabled: this.enabled, active: this.active, rows, choices: Object.keys(KEY_CHOICES), galaxy: line('galaxy'), sign: line('sign') };
   }
 }
 
-module.exports = { PuppetKeys, puppetWanted, eatWanted, keyLine, galaxyLine, ACTIONS, KEY_CHOICES, DEFAULT_KEYS, STREAM_DECK_KEYS, REPEAT_MS, TOGGLE_MS, RETRY_TAKEN_MS, cleanKeys, setKey };
+module.exports = { PuppetKeys, puppetWanted, eatWanted, keyLine, galaxyLine, GALAXY_KEY_ON, ALL_ACTIONS, ACTIONS, KEY_CHOICES, DEFAULT_KEYS, STREAM_DECK_KEYS, REPEAT_MS, TOGGLE_MS, RETRY_TAKEN_MS, cleanKeys, setKey };

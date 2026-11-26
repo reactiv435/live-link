@@ -3,12 +3,14 @@
 // name: 'galaxy' }: the Mask calls the galaxy up; the next press sends it away (the VTuber keeps count, not LIVE Link).
 // It follows EAT IT's rule: held only while a v2 VTuber is listening with the Mask chosen AND a show is plausible
 // (2.3.1 L-6). No real key is ever registered here: `register` / `unregister` are functions inside the test.
+// V9 release: the galaxy key is DORMANT (puppet-keys.js GALAXY_KEY_ON = false). These tests load puppet-keys.js with
+// the switch ON, so the galaxy is ready when it flips; the dormant galaxy is tested in test/v9-galaxy-switch.test.js.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const EventEmitter = require('events');
 const fs = require('fs');
 const path = require('path');
-const PK = require('../src/core/puppet-keys');
+const PK = require('./puppet-keys-build').puppetKeysWith({ galaxy: true });
 const { PuppetKeys, puppetWanted, eatWanted, ACTIONS, KEY_CHOICES, DEFAULT_KEYS, STREAM_DECK_KEYS, cleanKeys, setKey } = PK;
 const { VtuberLink, buildControl, CONTROL_ACTIONS } = require('../src/core/vtuber-link');
 

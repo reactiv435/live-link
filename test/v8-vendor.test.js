@@ -83,34 +83,33 @@ test('2.3.0 the vendored VTuber speaks v2: wire 2, the keys follow the Mask and 
   assert.equal(vlink.canControl, true, 'a v2 VTuber in the app, TikTok not connected');
   choose({ mask: true, v8: { on: true } });
   await until(() => host.vt.character === 'mask' && host.vt.puppet === true, 6000, 'the VTuber says: the Mask, Puppet show on');
-  await until(() => kb.held.size === 10, 2000, 'the ten keys are held (the seven puppet keys + EAT IT + V9: the galaxy and the sign; the live overlay has no key by default)');
+  await until(() => kb.held.size === 9, 2000, 'the nine keys are held (the seven puppet keys + EAT IT + V9: the sign; the live overlay has no key by default, the galaxy is dormant)');
   // a pressed key reaches the page as a command
   kb.held.get('Control+Alt+1')();
   await until(() => got.some((m) => m.t === 'v8-cmd' && m.name === 'goo'), 4000, 'Goo reached the VTuber\'s page');
   // EAT IT (Ctrl+Alt+8): the VTuber takes the message without an error (2.3.0's files do not know it yet and drop it; a later VTuber eats)
   assert.doesNotThrow(() => kb.held.get('Control+Alt+8')());
   assert.equal(host.running, true);
-  // V9, the galaxy (Ctrl+Alt+9): the same (the VTuber pinned here may not know it yet and drops it)
-  assert.doesNotThrow(() => kb.held.get('Control+Alt+9')());
-  assert.equal(host.running, true);
+  // V9 release: the galaxy key is dormant (puppet-keys.js GALAXY_KEY_ON): Ctrl+Alt+9 stays with the other programs
+  assert.equal(kb.held.has('Control+Alt+9'), false);
   // V9, the show sign (Ctrl+Alt+0): the same
   assert.doesNotThrow(() => kb.held.get('Control+Alt+0')());
   assert.equal(host.running, true);
   // a TikTok LIVE connects: nothing changes for the keys
   tiktok.state = { status: 'live' }; tiktok.emit('state', tiktok.state);
   assert.equal(vlink.canControl, true);
-  assert.equal(kb.held.size, 10);
+  assert.equal(kb.held.size, 9);
   // the Puppet show switch goes off: the puppet keys go back to the other programs, EAT IT stays; on again: all held again
   choose({ mask: true, v8: { on: false } });
-  await until(() => host.vt.puppet === false && kb.held.size === 3, 6000, 'Puppet show off: the puppet keys are given back');
-  assert.deepEqual([...kb.held.keys()], ['Control+Alt+8', 'Control+Alt+9', 'Control+Alt+0'], 'EAT IT, the galaxy and the sign do not follow the Puppet show switch');
+  await until(() => host.vt.puppet === false && kb.held.size === 2, 6000, 'Puppet show off: the puppet keys are given back');
+  assert.deepEqual([...kb.held.keys()], ['Control+Alt+8', 'Control+Alt+0'], 'EAT IT and the sign do not follow the Puppet show switch');
   choose({ mask: true, v8: { on: true } });
-  await until(() => kb.held.size === 10, 6000, 'Puppet show on again: held again');
+  await until(() => kb.held.size === 9, 6000, 'Puppet show on again: held again');
   // Ryo is chosen: the keys are given back (EAT IT too: Ryo does not eat songs)
   choose({ character: 'ryo' });
   await until(() => host.vt.character === 'ryo' && kb.held.size === 0, 6000, 'Ryo: the keys are given back');
   choose({ mask: true, v8: { on: true } });
-  await until(() => kb.held.size === 10, 6000, 'the Mask again');
+  await until(() => kb.held.size === 9, 6000, 'the Mask again');
 
   // the show feed: no song on air = not one read of the site; the state still reaches the page
   feed.update({ connected: true, target: null, hold: 'song' });
@@ -131,7 +130,7 @@ test('2.3.0 the vendored VTuber speaks v2: wire 2, the keys follow the Mask and 
   assert.ok(site.state.restCalls.length <= n + 3, 'off air: only the two late looks for a grade, then nothing');
   // 2.3.1: the TikTok LIVE drops: the keys stay and the show state goes on reaching the page (a song put on air now is still said)
   tiktok.state = { status: 'offline' }; tiktok.emit('state', tiktok.state);
-  assert.equal(kb.held.size, 10, 'no LIVE: the keys stay (the VTuber is still open with the Mask)');
+  assert.equal(kb.held.size, 9, 'no LIVE: the keys stay (the VTuber is still open with the Mask)');
   assert.equal(vlink.canControl, true);
   site.state.rest.project_hype.push({ submission_id: 'sub-2', hype_bar: 0 });
   feed.update({ connected: false, target: { submission_id: 'sub-2', title: 'After The Drop' }, hold: null });
@@ -144,19 +143,24 @@ test('2.3.0 the vendored VTuber speaks v2: wire 2, the keys follow the Mask and 
 
 // =====================================================================================================================
 // RELEASE GATE (V9). DO NOT SKIP, .todo OR DELETE THIS TEST. It is red on purpose until vendor/vtuber is re-synced
-// (scripts/sync-vtuber.js) to a VTuber commit that accepts EVERY key LIVE Link sends. With the pinned 7416148 the
-// VTuber's cleanControl drops 'sign', 'overlay' and 'tap' (galaxy): the card would tell him to press keys that do
-// nothing. Re-vendor at a commit that accepts all three TOGETHER (the vtuber-v9-sign branch alone does not accept 'tap').
-// No build is released while this test fails.
+// (scripts/sync-vtuber.js) to a VTuber commit that accepts EVERY key LIVE Link sends: every key that is ON in
+// src/core/puppet-keys.js (ACTIONS). With the pinned 7416148 the VTuber's cleanControl drops 'sign' and 'overlay': the
+// card would tell him to press keys that do nothing. No build is released while this test fails.
+// The galaxy key ('tap', name 'galaxy') is DORMANT in this release (puppet-keys.js GALAXY_KEY_ON = false), so it is not
+// checked here yet. It JOINS THIS GATE BY ITSELF when that switch flips to true: from then on the vendored VTuber
+// must accept 'tap' too (the vtuber-v9-sign branch alone does not).
 // =====================================================================================================================
-test('RELEASE GATE (V9, never skip): the vendored VTuber accepts every key LIVE Link sends, including sign, overlay and tap (galaxy)', () => {
-  const { ACTIONS } = require('../src/core/puppet-keys');
+test('RELEASE GATE (V9, never skip): the vendored VTuber accepts every key LIVE Link sends (every key that is ON: sign and overlay among them; the galaxy once its switch is on)', () => {
+  const { ACTIONS, GALAXY_KEY_ON } = require('../src/core/puppet-keys');
   const { buildControl } = require('../src/core/vtuber-link');
   const wire = require(path.join(VT, 'js', 'mask-wire.js'));
   const pin = JSON.parse(fs.readFileSync(path.join(VT, 'VTUBER_PIN.json'), 'utf8')).commit;
-  // the three V9 keys are among the ones checked (a later edit cannot quietly drop them from ACTIONS)
+  // the V9 keys that are on are among the ones checked (a later edit cannot quietly drop them from ACTIONS); the
+  // galaxy is checked exactly when its switch is on
   const sent = ACTIONS.map((a) => [a.action, a.name]);
-  for (const k of [['sign', ''], ['overlay', ''], ['tap', 'galaxy']]) assert.ok(sent.some((s) => s[0] === k[0] && s[1] === k[1]), `LIVE Link sends ${k}`);
+  const has = (k) => sent.some((s) => s[0] === k[0] && s[1] === k[1]);
+  for (const k of [['sign', ''], ['overlay', '']]) assert.ok(has(k), `LIVE Link sends ${k}`);
+  assert.equal(has(['tap', 'galaxy']), GALAXY_KEY_ON, 'the galaxy is in the gate exactly when GALAXY_KEY_ON is true');
   const dropped = [];
   for (const a of ACTIONS) {
     const got = wire.cleanControl(buildControl(a.action, a.name, 1));
