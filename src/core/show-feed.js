@@ -3,11 +3,14 @@
 // song on air, "eats" the song's cover, spits the host's grade out as fire or goo, and may start a boss fight only
 // between songs. Contract: the VTuber repo's V8-PHASE2.md, C3:
 //   { v: 2, type: 'show', onAir, song: { id, title, cover } | null, hype: { taps, rank, label, mythic }, score, at }
-//   sent on every change and at least every 5 s while a TikTok LIVE is connected.
+//   sent on every change and at least every 5 s, to a VTuber that speaks v2 (2.3.1: with or without a TikTok LIVE).
 //
 // Where each part comes from:
-//  * The song on air: the site's own answer to LIVE Link's push / config (`target` = { submission_id, title } or null;
-//    controller.js). Nothing is read from the site without a song on air (except two looks for a late grade, below).
+//  * The song on air (2.3.1): the site's public table active_projects for THIS host (the hype-target row, else the
+//    newest), as the site's /live/now overlay finds it; read every 2.5 s while a v2 VTuber listens. So the Mask knows
+//    the song whether or not TikTok is connected. Until that read has answered (or when the site's config gives no
+//    host id), the site's own answer to LIVE Link's push / config is used (`target` = { submission_id, title } or
+//    null; controller.js), and a new target from the controller is taken at once.
 //  * Hype: two public tables, read with the site's publishable key (the same key the site's own pages use; RLS lets
 //    anyone read them): project_hype.hype_bar (the song's bar) and the song's newest hype_plays row (start_bar,
 //    ended_at). This play's taps = max(0, hype_bar - start_bar), as the site's src/hooks/useProjectHype.ts does it.
@@ -22,7 +25,7 @@
 //    after the play began): an old verdict from an earlier review must not come out of the Mask's mouth at the
 //    song's start. GRADE_SCORE below maps it to 0-100 for mask.score(n).
 //
-// Gentle on the site: one small read every 2.5 s while a song is on air AND a VTuber that speaks v2 is listening;
+// Gentle on the site: one small read round every 2.5 s while a VTuber that speaks v2 is listening (GET only);
 // nothing otherwise. Any failed read doubles the wait (5 s, 10 s, 20 s, 30 s at most; a 429's Retry-After is honoured);
 // the first good read puts it back. Electron-free.
 const { cleanPictureUrl } = require('./pictures');
@@ -132,6 +135,7 @@ class ShowFeed {
   /**
    * opts: restBase ('https://<site>/rest/v1/'), apiKey (the site's publishable key), fetch, coverHosts (the site's
    *       storage host), send(msg) -> bool (vtuber-link sendShow), wanted() -> bool (a v2 VTuber is listening),
+   *       hostId() -> string | null (the host this computer is paired to: the site's live-link-config host_id),
    *       log, now, mono, setTimeout, clearTimeout, pollMs, tickMs
    */
   constructor(opts = {}) {
@@ -141,6 +145,7 @@ class ShowFeed {
     this.coverHosts = Array.isArray(opts.coverHosts) ? opts.coverHosts : [];
     this.send = opts.send || (() => false);
     this.wanted = opts.wanted || (() => true);
+    this.hostId = typeof opts.hostId === 'function' ? opts.hostId : () => null;
     this.log = opts.log || (() => {});
     this.now = opts.now || (() => Date.now());
     this.mono = opts.mono || (() => performance.now());
@@ -153,7 +158,11 @@ class ShowFeed {
     this.readTimeoutMs = opts.readTimeoutMs || READ_TIMEOUT_MS;
     this.lateGradeMs = opts.lateGradeMs || LATE_GRADE_MS;
     this.lateScoreShowMs = opts.lateScoreShowMs || LATE_SCORE_SHOW_MS;
-    this.connected = false;         // a TikTok LIVE is connected
+    this.connected = false;         // a TikTok LIVE is connected (kept for the record: it gates nothing here since 2.3.1)
+    this.started = false;           // the controller has said something: the clock runs
+    this.ctl = { id: null, title: '', hold: null };   // the controller's word: its target and why taps are on hold
+    this.air = undefined;           // the site's own word (active_projects): { id, activatedAt } | null; undefined = not answered yet
+    this.wasWant = false;           // a v2 VTuber was listening at the last tick
     this.song = null;               // { id, title, cover, coverTried } the song on air
     this.play = null;               // { key, startBar, startedAt, hostId, open } the song's newest play
     this.shownKey = null;           // the play `shown` belongs to
@@ -172,40 +181,55 @@ class ShowFeed {
     this.stopped = false;
   }
 
-  /** The controller's state changed: connected to the TikTok LIVE?, the site's target, why taps are on hold. */
+  /**
+   * The controller's state changed: connected to the TikTok LIVE?, the site's target, why taps are on hold.
+   * 2.3.1: TikTok being connected no longer decides anything here. The song on air is the site's own table (read in
+   * _poll for this host); the controller's target is the word used until that read has answered, and a NEW target
+   * from the controller (the site's push answer, the freshest word there is) is taken at once again.
+   * hold 'show' (the site's show is not on) and 'song' (nothing on air) still mean: no song on air.
+   */
   update(s) {
     if (this.stopped) return;
     s = s && typeof s === 'object' ? s : {};
-    const connected = !!s.connected;
+    this.connected = !!s.connected;
     const t = s.target && typeof s.target === 'object' ? s.target : null;
-    // no song on air: no target, the site's show is not on ('show'), or nothing is on air ('song')
-    const onAir = connected && !!t && okId(t.submission_id) && s.hold !== 'show' && s.hold !== 'song';
-    const id = onAir ? t.submission_id : null;
-    if (connected !== this.connected) {
-      this.connected = connected;
-      if (!connected) { this._offAir(false); this._stopTick(); this.lastSentKey = ''; this.lastSentAt = -Infinity; return; }
-      this._startTick();
-      if (!id) this._emit(true);
-    }
-    if (!connected) return;
+    const hold = s.hold === 'show' || s.hold === 'song' ? s.hold : null;
+    const id = !hold && t && okId(t.submission_id) ? t.submission_id : null;
+    const changed = id !== this.ctl.id || hold !== this.ctl.hold;
+    this.ctl = { id, title: id ? text(t.title, 80) : '', hold };
+    if (changed) this.air = undefined;                 // the controller knows something new: ask the table again
+    if (!this.started) { this.started = true; this._startTick(); }
+    this._resolve();
+    if (changed && this._hostId() && this._want()) this._pollSoon(0);
+  }
+
+  /** the host this computer is paired to, or null (then the controller's target is all there is) */
+  _hostId() { try { const h = this.hostId(); return okId(h) ? h : null; } catch { return null; } }
+
+  /** Which song is on air right now, from the two words above; says it when it changed. */
+  _resolve() {
+    if (this.stopped) return;
+    let id = null;
+    if (!this.ctl.hold) id = this.air !== undefined ? (this.air ? this.air.id : null) : this.ctl.id;
+    const title = id && id === this.ctl.id ? this.ctl.title : '';
     if ((this.song && this.song.id) !== id) {
       if (this.song) this._offAir(true);
       if (id) {
         this.gen++;
         this._clearLate();
-        this.song = { id, title: text(t.title, 80), cover: null, coverTried: 0 };
+        this.song = { id, title, cover: null, coverTried: 0 };
         this.play = null; this.bar = null; this.real = 0; this.shown = 0; this.score = null; this.reads = 0; this.shownKey = null;
         this.fails = 0; this.retryAfterMs = 0;
         this._pollSoon(0);
       }
       this._emit(true);
-    } else if (this.song && t && text(t.title, 80) !== this.song.title) { this.song.title = text(t.title, 80); this._emit(true); }
+    } else if (this.song && title && title !== this.song.title) { this.song.title = title; this._emit(true); }
   }
 
-  /** A VTuber just started listening (or the LIVE is back after a drop): the state is sent again now, not at the next 5 s beat. */
-  nudge() { if (this.stopped || !this.connected) return; this.lastSentKey = ''; this.lastSentAt = -Infinity; this._emit(true); }
+  /** A VTuber just started listening: the state is sent again now, not at the next 5 s beat. */
+  nudge() { if (this.stopped || !this.started) return; this.lastSentKey = ''; this.lastSentAt = -Infinity; this._emit(true); }
 
-  stop() { this.stopped = true; this.connected = false; this._offAir(false); this._stopTick(); }
+  stop() { this.stopped = true; this.connected = false; this._offAir(false); this._stopTick(); this.clearTimeout(this.pollTimer); this.pollTimer = null; }
 
   // ---------------------------------------------------------------- the message
   message() {
@@ -221,7 +245,7 @@ class ShowFeed {
   }
 
   _emit(force) {
-    if (!this.connected || this.stopped) return;
+    if (!this.started || this.stopped) return;
     const m = this.message();
     const key = JSON.stringify({ ...m, at: 0 });
     const due = this.mono() - this.lastSentAt >= this.keepMs;
@@ -238,13 +262,20 @@ class ShowFeed {
   _stopTick() { this.clearTimeout(this.tickTimer); this.tickTimer = null; }
   _tick() {
     this.tickTimer = null;
-    if (!this.connected || this.stopped) return;
+    if (!this.started || this.stopped) return;
     const now = this.mono(), dt = Math.max(0, (now - (this.lastTickAt === null ? now : this.lastTickAt)) / 1000);
     this.lastTickAt = now;
     if (this.song) this.shown = climb(this.shown, this.real, dt);
     if (this.late && now >= this.late.until) this.late = null;
-    // a VTuber appeared after the song went on air: start reading now
-    if (this.song && !this.pollTimer && !this.polling) this._pollSoon(0);
+    const want = this._want();
+    if (want && !this.wasWant) {
+      // a VTuber appeared: what the table said while nobody listened is old (ask again), and it gets the state now
+      this.air = undefined; this._resolve();
+      this.lastSentKey = ''; this.lastSentAt = -Infinity;
+    }
+    this.wasWant = want;
+    // a VTuber is listening: read (the song on air for this host; the bar of the song on air)
+    if (want && (this.song || this._hostId()) && !this.pollTimer && !this.polling) this._pollSoon(0);
     this._emit(false);
     this.tickTimer = this._later(() => this._tick(), this.tickMs);
   }
@@ -253,17 +284,16 @@ class ShowFeed {
   _offAir(lookForGrade) {
     const was = this.song, play = this.play, hadScore = this.score !== null;
     this.gen++;
-    this.clearTimeout(this.pollTimer); this.pollTimer = null;
     this.song = null; this.play = null; this.bar = null; this.real = 0; this.shown = 0; this.score = null;
     this._clearLate();
-    if (!lookForGrade || !was || hadScore || !play || !this.connected) return;
+    if (!lookForGrade || !was || hadScore || !play || this.stopped) return;
     // The host often gives the verdict as the song ends: look twice more for one given during that play.
     const gen = this.gen;
     for (const wait of this.lateGradeMs) {
       this.lateTimers.push(this._later(async () => {
-        if (gen !== this.gen || this.late || !this.connected || this.stopped || !this._want()) return;
+        if (gen !== this.gen || this.late || this.stopped || !this._want()) return;
         const score = await this._grade(was.id, play).catch(() => null);
-        if (gen !== this.gen || this.late || score === null || !this.connected) return;
+        if (gen !== this.gen || this.late || score === null || this.stopped) return;
         this.late = { song: { id: was.id, title: was.title, cover: was.cover }, score, until: this.mono() + this.lateScoreShowMs };
         this._emit(true);
       }, wait));
@@ -318,14 +348,36 @@ class ShowFeed {
     return null;
   }
 
+  /** the song on air for this host, as the site's /live/now overlay finds it: the hype target, else the newest active one */
+  async _onAir(hostId) {
+    const rows = await this._get(`active_projects?select=submission_id,activated_at,is_hype_target&host_id=eq.${encodeURIComponent(hostId)}&order=activated_at.desc&limit=5`);
+    const ok = rows.filter((r) => r && okId(r.submission_id));
+    const pick = ok.find((r) => r.is_hype_target === true) || ok[0] || null;
+    return pick ? { id: pick.submission_id, activatedAt: ms(pick.activated_at) } : null;
+  }
+
   async _poll() {
-    if (this.polling || !this.song || !this.connected || this.stopped) return;
+    if (this.polling || !this.started || this.stopped) return;
     if (!this._want()) return;                       // no v2 VTuber listening: nothing is read (the tick asks again)
-    const gen = this.gen, song = this.song, id = encodeURIComponent(song.id);
+    const hostId = this._hostId();
+    if (!hostId && !this.song) return;               // no song on air and no host to ask about: nothing to read
     this.polling = true;
-    let ok = true, retryAfter = 0;
+    let ok = true, retryAfter = 0, gen = this.gen;
     const fail = (e) => { ok = false; if (e && e.retryAfterMs) retryAfter = Math.max(retryAfter, e.retryAfterMs); };
     try {
+      if (hostId) {
+        // 2.3.1: which song is on air, from the site's own table (TikTok or not)
+        const ctl = this.ctl;
+        try {
+          const air = await this._onAir(hostId);
+          if (this.stopped) return;
+          if (ctl === this.ctl) { this.air = air; this._resolve(); }   // (the controller said something new meanwhile: its word stands, the next read settles it)
+        } catch (e) { fail(e); }
+      }
+      gen = this.gen;
+      const song = this.song;
+      if (!song) { this.stats.reads++; if (!ok) this.stats.failed++; return; }
+      const id = encodeURIComponent(song.id);
       const needPlay = !this.play || !this.play.open || this.reads % PLAY_EVERY === 0;
       const jobs = [this._get(`project_hype?select=hype_bar&submission_id=eq.${id}&limit=1`).then((rows) => { if (gen === this.gen) this.bar = rows[0] ? Math.max(0, Math.floor(Number(rows[0].hype_bar) || 0)) : 0; }, fail)];
       if (needPlay) {
@@ -341,6 +393,7 @@ class ShowFeed {
           if (gen !== this.gen) return;
           song.coverTried = 3;                                     // answered: a song without a usable cover stays without
           song.cover = coverOf(rows[0], this.coverHosts);
+          if (!song.title && rows[0] && typeof rows[0].title === 'string') song.title = text(rows[0].title, 80);   // (the table gave the song, not the controller)
         }, (e) => { song.coverTried++; fail(e); }));
       }
       await Promise.all(jobs);
@@ -354,10 +407,11 @@ class ShowFeed {
     } catch (e) { fail(e); this.stats.failed++; }
     finally {
       this.polling = false;
-      if (gen === this.gen && this.song && this.connected && !this.stopped) {
-        if (ok) { this.fails = 0; this.retryAfterMs = 0; this.reads++; this._say('ok'); }
+      if (!this.stopped) {
+        if (ok) { this.fails = 0; this.retryAfterMs = 0; if (gen === this.gen && this.song) this.reads++; this._say('ok'); }
         else { this.fails++; this.retryAfterMs = retryAfter; this._say('fail'); }
-        this._pollSoon(this.nextWaitMs());
+        // the song changed while its reads were out: read the new one now; else at the usual pace
+        if (this.song || this._hostId()) this._pollSoon(gen !== this.gen && this.song && ok ? 0 : this.nextWaitMs());
         this._emit(false);
       }
     }

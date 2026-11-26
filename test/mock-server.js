@@ -24,7 +24,8 @@ function createMock(opts = {}) {
     failNext: [],             // e.g. [{ path: 'live-link-push', status: 503 }]
     nextShowAt: opts.nextShowAt,   // 2.1.0: live-link-config next_show_at (left out when undefined)
     // V8: the site's public tables the show feed reads over REST (GET /rest/v1/<table>, publishable key, no device token)
-    rest: { project_hype: [], hype_plays: [], ranking_board: [], content_scores: [], submissions_public: [] },
+    // (2.3.1: active_projects + stream_status = the song on air as the /live/now overlay reads it; radio_tracks = ADD TO AI RADIO)
+    rest: { project_hype: [], hype_plays: [], ranking_board: [], content_scores: [], submissions_public: [], active_projects: [], stream_status: [], radio_tracks: [] },
     restCalls: [],            // { table, query, apikey: bool }
     restFail: null,           // (table) -> null | { status, retryAfter? }: an injected failure
   };

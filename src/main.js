@@ -549,12 +549,15 @@ app.whenReady().then(async () => {
     ...(TEST_RUN ? (testHttpPort && testHttpPort !== 8791 ? { port: testHttpPort } : { http: false }) : {}),
   });
   // V8: the show state for the Mask (the song on air, its cover, the hype rank, the host's grade). It reads the site's
-  // public tables with the publishable key, and only while a song is on air and a VTuber that wants it is listening.
+  // public tables with the publishable key, and only while a VTuber that wants it is listening.
+  // 2.3.1: the song on air is read from the site's own table for the host this computer is paired to (host_id in the
+  // site's live-link-config answer), so it is known with or without a TikTok LIVE; the controller's target is the
+  // word used until that read answers.
   // A test run reads its local stand-in for the site (LIVE_LINK_API on 127.0.0.1), never the real one.
   let restBase = '';
   try { restBase = new URL(API_BASE).origin + '/rest/v1/'; } catch { restBase = ''; }
   showFeed = new ShowFeed({ restBase, apiKey: SITE.publishableKey, coverHosts: coverHosts(SITE.apiBase), log,
-    send: (m) => vtuber.sendShow(m), wanted: () => vtuber.canControl });
+    send: (m) => vtuber.sendShow(m), wanted: () => vtuber.canControl, hostId: () => (ctl && ctl.cfg && ctl.cfg.host_id) || null });
   // V8: the puppet keys. A test run never takes a real key from this computer.
   puppetKeys = new PuppetKeys({
     keys: store.get('puppetKeys'), enabled: store.get('puppetKeysOn') !== false, log, onChange: () => sendVtuber(),

@@ -123,9 +123,8 @@ test('the cover: the overlay\'s rule (album art, else the first picture attached
 
 // ---------------------------------------------------------------- the feed
 
-test('no LIVE: nothing is read and nothing is sent. A LIVE with no song: "off air" right away and at least every 5 s, still nothing read', async (t) => {
+test('before the controller has said anything: nothing is read and nothing is sent. No song: "off air" right away and at least every 5 s, still nothing read; 2.3.1: a TikTok LIVE that drops does not silence it', async (t) => {
   const x = await setup(t, { speed: 10 });                       // 5 s of the feed's clock = 500 ms
-  x.feed.update({ connected: false, target: SONG, hold: null });
   await wait(120);
   assert.equal(x.sent.length + x.reads().length, 0);
   for (const hold of ['song', 'show']) x.feed.update({ connected: true, target: hold === 'show' ? SONG : null, hold });
@@ -134,11 +133,17 @@ test('no LIVE: nothing is read and nothing is sent. A LIVE with no song: "off ai
   for (let i = 1; i < x.sent.length; i++) assert.ok(x.sent[i].at - x.sent[i - 1].at <= 5000 + 3000, `gap ${x.sent[i].at - x.sent[i - 1].at} ms of the feed's clock`);
   assert.ok(x.sent[1].at - x.sent[0].at >= 4000, 'unchanged: not more often than the 5 s beat');
   assert.equal(x.reads().length, 0, 'no song on air: the site is not asked anything');
-  // the LIVE drops: silence
+  // 2.3.1: the TikTok LIVE drops (or was never connected): the state still goes out, still nothing is read
   x.feed.update({ connected: false, target: null, hold: null });
   const n = x.sent.length;
+  assert.ok(await until(() => x.sent.length >= n + 2, 6000), 'still said at least every 5 s');
+  assert.ok(x.sent.slice(n).every((m) => m.onAir === false && m.song === null));
+  assert.equal(x.reads().length, 0);
+  // stopped (LIVE Link quits): silence
+  x.feed.stop();
+  const k = x.sent.length;
   await wait(200);
-  assert.equal(x.sent.length, n);
+  assert.equal(x.sent.length, k);
 });
 
 test('a song on air: read with the publishable key (GET only), its cover and title sent, the hype climbs one rank per 15 s and never ahead of that', async (t) => {
@@ -361,6 +366,96 @@ test('a throwing send, a throwing wanted() and a site that answers nonsense neve
   for (const bad of [undefined, null, 5, 'x', { connected: true, target: 'x' }, { connected: true, target: { submission_id: {} } }]) assert.doesNotThrow(() => x.feed.update(bad));
 });
 
+/// ---------------------------------------------------------------- 2.3.1: the song on air without TikTok
+
+test('2.3.1 the on-air song comes from active_projects with TikTok disconnected: the hype-target row (else the newest), read for this host only, GET only', async (t) => {
+  const x = await setup(t, { opts: { hostId: () => 'host-1' } });
+  const now = x.now();
+  x.rest.active_projects.push(
+    { id: 'a1', submission_id: 'sub-old', activated_at: iso(now - 60000), host_id: 'host-1', is_hype_target: false },
+    { id: 'a2', submission_id: 'sub-9', activated_at: iso(now - 30000), host_id: 'host-1', is_hype_target: true },
+    { id: 'a3', submission_id: 'sub-new', activated_at: iso(now - 1000), host_id: 'host-1', is_hype_target: false },
+    { id: 'a4', submission_id: 'sub-other', activated_at: iso(now), host_id: 'host-2', is_hype_target: true });
+  x.rest.project_hype.push({ submission_id: 'sub-9', hype_bar: 350 });
+  x.rest.hype_plays.push({ id: 'p9', submission_id: 'sub-9', host_id: 'host-1', start_bar: 0, end_bar: null, started_at: iso(now - 600000), ended_at: null });
+  x.rest.submissions_public.push({ id: 'sub-9', title: 'Site Title', album_artwork_url: COVER, attachment_urls: [] });
+  x.feed.update({ connected: false, target: null, hold: null });            // TikTok was never connected; the controller knows no song
+  assert.ok(await until(() => x.sent.length && x.feed.message().onAir === true, 3000), 'on air without TikTok');
+  assert.equal(x.feed.message().song.id, 'sub-9', 'the hype target, not the newest row and not another host\'s');
+  assert.ok(await until(() => x.last().song && x.last().song.cover === COVER && x.last().hype.taps === 350 && x.last().song.title === 'Site Title', 3000), JSON.stringify(x.last()));
+  for (const c of x.reads('active_projects')) { assert.equal(c.method, 'GET'); assert.equal(c.apikey, true); assert.match(c.query, /host_id=eq\.host-1/); assert.match(c.query, /order=activated_at\.desc/); assert.match(c.query, /limit=5/); }
+  // no hype target: the newest row
+  x.rest.active_projects[1].is_hype_target = false;
+  assert.ok(await until(() => x.feed.message().song && x.feed.message().song.id === 'sub-new', 3000), 'no hype target: the newest');
+  // nothing active: off air (and it is said)
+  x.rest.active_projects.length = 0;
+  assert.ok(await until(() => x.last().onAir === false && x.last().song === null, 3000), 'off air');
+  const n = x.reads('active_projects').length;
+  assert.ok(await until(() => x.reads('active_projects').length >= n + 2, 2000), 'still looking for the next song');
+  assert.equal(x.mock.state.calls.length, 0, 'no LIVE Link endpoint was called by the feed');
+  assert.ok(x.mock.state.restCalls.every((c) => c.method === 'GET'));
+});
+
+test('2.3.1 the controller\'s target is used until the direct read answers; then the site\'s own table wins; a new target from the controller is taken at once again', async (t) => {
+  const x = await setup(t, { opts: { hostId: () => 'host-1' } });
+  x.mock.state.restFail = (table) => (table === 'active_projects' ? { status: 503 } : null);       // the direct read does not answer yet
+  x.feed.update({ connected: false, target: SONG, hold: null });
+  assert.equal(x.sent[0].onAir, true, 'said at once from the controller\'s target, TikTok or not');
+  assert.equal(x.sent[0].song.id, 'sub-1');
+  assert.ok(await until(() => x.reads('active_projects').length >= 2));
+  assert.equal(x.feed.message().song.id, 'sub-1', 'no answer yet: the controller\'s target stays');
+  x.rest.active_projects.push({ id: 'a1', submission_id: 'sub-2', activated_at: iso(x.now()), host_id: 'host-1', is_hype_target: true });
+  x.mock.state.restFail = null;
+  assert.ok(await until(() => x.feed.message().song && x.feed.message().song.id === 'sub-2', 4000), 'answered: the site\'s table wins');
+  x.feed.update({ connected: false, target: SONG, hold: null });            // the same target said again changes nothing
+  assert.equal(x.feed.message().song.id, 'sub-2');
+  x.rest.active_projects[0].submission_id = 'sub-3';
+  x.feed.update({ connected: true, target: { submission_id: 'sub-3', title: 'Third' }, hold: null });   // a NEW target (a push answer): at once
+  assert.deepEqual([x.last().song.id, x.last().song.title], ['sub-3', 'Third']);
+  // hold ('show' / 'song') still forces off air, whatever the table says
+  for (const hold of ['show', 'song']) {
+    x.feed.update({ connected: true, target: { submission_id: 'sub-3', title: 'Third' }, hold });
+    assert.equal(x.last().onAir, false, hold);
+    await wait(120);
+    assert.equal(x.feed.message().onAir, false, `${hold}: stays off air`);
+    x.feed.update({ connected: true, target: { submission_id: 'sub-3', title: 'Third' }, hold: null });
+    assert.equal(x.last().onAir, true);
+  }
+});
+
+test('2.3.1 no host id known (an older site answer) or an odd one: the controller\'s target alone, TikTok or not; active_projects is never asked', async (t) => {
+  for (const hostId of [undefined, () => null, () => '../x', () => { throw new Error('boom'); }]) {
+    const x = await setup(t, { opts: hostId ? { hostId } : {} });
+    x.rest.active_projects.push({ id: 'a1', submission_id: 'sub-2', activated_at: iso(x.now()), host_id: 'host-1', is_hype_target: true });
+    x.rest.project_hype.push({ submission_id: 'sub-1', hype_bar: 42 });
+    x.rest.hype_plays.push({ id: 'p1', submission_id: 'sub-1', host_id: 'host-1', start_bar: 0, end_bar: null, started_at: iso(x.now() - 600000), ended_at: null });
+    x.feed.update({ connected: false, target: SONG, hold: null });
+    assert.ok(await until(() => x.sent.length && x.last().hype.taps === 42, 3000));
+    assert.equal(x.last().song.id, 'sub-1');
+    assert.equal(x.reads('active_projects').length, 0);
+    x.feed.stop();
+  }
+});
+
+test('2.3.1 no VTuber listening: active_projects is not read either; the TikTok LIVE dropping changes nothing for the show state', async (t) => {
+  let wanted = false;
+  const x = await setup(t, { wanted: () => wanted, opts: { hostId: () => 'host-1' } });
+  x.rest.active_projects.push({ id: 'a1', submission_id: 'sub-1', activated_at: iso(x.now()), host_id: 'host-1', is_hype_target: true });
+  x.feed.update({ connected: true, target: null, hold: 'song' });
+  x.feed.update({ connected: true, target: SONG, hold: null });
+  await wait(200);
+  assert.equal(x.reads().length, 0, 'no VTuber: the site is left alone');
+  wanted = true;
+  assert.ok(await until(() => x.reads('active_projects').length >= 2 && x.last() && x.last().onAir, 3000));
+  const n = x.sent.length;
+  x.feed.update({ connected: false, target: SONG, hold: null });            // the TikTok LIVE drops
+  await wait(150);
+  assert.equal(x.feed.message().onAir, true, 'still on air');
+  assert.ok(x.sent.slice(n).every((m) => m.onAir === true && m.song.id === 'sub-1'), 'nothing said "off air"');
+  const r = x.reads('project_hype').length;
+  assert.ok(await until(() => x.reads('project_hype').length >= r + 2, 2000), 'the bar is still read');
+});
+
 // ---------------------------------------------------------------- with the real controller (as main.js wires it)
 
 test('wired as in the app: the controller\'s own state (the site\'s push answer) drives the feed; the show state reaches a v2 VTuber in the app; the song going off air is said at once', async (t) => {
@@ -390,12 +485,14 @@ test('wired as in the app: the controller\'s own state (the site\'s push answer)
   const direct = Object.assign((ev) => { got.push(ev); return true; }, { v: 2 });
   const vt = new VtuberLink({ http: false, direct: () => direct }).attach(link);
   const feed = new ShowFeed({ restBase: `http://127.0.0.1:${port}/rest/v1/`, apiKey: 'test-publishable-key', coverHosts: [SITE], pollMs: 40, tickMs: 15,
-    send: (m) => vt.sendShow(m), wanted: () => vt.canControl });
+    send: (m) => vt.sendShow(m), wanted: () => vt.canControl, hostId: () => (ctl && ctl.cfg && ctl.cfg.host_id) || null });   // main.js, word for word
   ctl.on('state', (s) => feed.update({ connected: s.connected, target: s.target, hold: s.hold }));   // main.js, word for word
   t.after(async () => { feed.stop(); vt.stop(); try { ctl.stop && ctl.stop(); } catch {} link.stop(); await mock.close(); try { fs.rmSync(dir, { recursive: true, force: true }); } catch {} });
   mock.state.rest.project_hype.push({ submission_id: 'sub-1', hype_bar: 350 });
   mock.state.rest.hype_plays.push({ id: 'p1', submission_id: 'sub-1', host_id: 'host-1', start_bar: 0, end_bar: null, started_at: iso(Date.now() - 600000), ended_at: null });
   mock.state.rest.submissions_public.push({ id: 'sub-1', title: 'Test Song', album_artwork_url: COVER, attachment_urls: [] });
+  // 2.3.1: the site's own table says the same song is on air for this host (the id the site's config answer names)
+  mock.state.rest.active_projects.push({ id: 'a1', submission_id: 'sub-1', activated_at: iso(Date.now() - 600000), host_id: 'host-1', is_hype_target: true });
   await ctl.pair('TEST2345');
   const shows = () => got.filter((e) => e.type === 'show');
   const last = () => shows()[shows().length - 1];
@@ -403,12 +500,15 @@ test('wired as in the app: the controller\'s own state (the site\'s push answer)
   assert.deepEqual({ ...last(), at: 0 }, { v: 2, type: 'show', onAir: true, song: { id: 'sub-1', title: 'Test Song', cover: COVER }, hype: { taps: 350, rank: 2, label: 'Heating Up', mythic: 0 }, score: null, at: 0 });
   // the site takes the song off air: its next push answer says target null
   made[0].emit('like', { count: 3, total: '50' });
-  mock.state.target = null;
+  mock.state.target = null; mock.state.rest.active_projects.length = 0;
   made[0].emit('like', { count: 3, total: '53' });
   assert.ok(await until(() => last().onAir === false, 6000), 'off air reached the VTuber');
   assert.deepEqual([last().song, last().hype.rank], [null, 0]);
   // only GETs of the public tables left the feed; the device token was never sent to them
   assert.ok(mock.state.restCalls.length > 0 && mock.state.restCalls.every((c) => c.method === 'GET' && c.apikey));
+  // 2.3.1: the song on air was asked for THIS host (host_id from the site's live-link-config answer), and only for it
+  const air = mock.state.restCalls.filter((c) => c.table === 'active_projects');
+  assert.ok(air.length >= 2 && air.every((c) => /host_id=eq\.host-1(&|$)/.test(c.query)), 'active_projects read for the paired host');
 });
 
 test('main.js keeps the rules: a test run never takes a real key, the keys are given back on quit, the feed reads only the site named by the app\'s own settings', () => {
@@ -418,11 +518,12 @@ test('main.js keeps the rules: a test run never takes a real key, the keys are g
   assert.match(main, /app\.on\('will-quit', \(\) => \{ try \{ if \(puppetKeys\) puppetKeys\.release\(\); \}/);
   assert.match(main, /restBase = new URL\(API_BASE\)\.origin \+ '\/rest\/v1\/'/);
   assert.match(main, /apiKey: SITE\.publishableKey, coverHosts: coverHosts\(SITE\.apiBase\)/);
+  assert.ok(main.includes('send: (m) => vtuber.sendShow(m), wanted: () => vtuber.canControl, hostId: () => (ctl && ctl.cfg && ctl.cfg.host_id) || null });'), '2.3.1: the host whose song on air is read = the one this computer is paired to (the site\'s own config answer)');
   assert.ok(main.includes('puppetKeys.setWanted(puppetWanted({ canControl: !!(vtuber && vtuber.canControl), enabled: vtuberOn(), inApp: !!(vtHost && vtHost.running), vt: vtHost ? vtHost.vt : null }));'), 'the keys follow the chosen character');
   assert.ok(main.includes('onChange: () => { syncPuppetKeys(); if (showFeed && vtuber && vtuber.canControl) showFeed.nudge(); }'), 'a VTuber that starts listening gets the state at once');
 });
 
-test('fix round: when a VTuber starts listening or the LIVE comes back, the current state is sent at once (not at the next 5 s beat)', async (t) => {
+test('fix round: when a VTuber starts listening, the current state is sent at once (not at the next 5 s beat)', async (t) => {
   const x = await setup(t);
   x.rest.project_hype.push({ submission_id: 'sub-1', hype_bar: 42 });
   x.rest.hype_plays.push({ id: 'p1', submission_id: 'sub-1', host_id: 'host-1', start_bar: 0, end_bar: null, started_at: iso(x.now() - 600000), ended_at: null });
@@ -435,7 +536,13 @@ test('fix round: when a VTuber starts listening or the LIVE comes back, the curr
   x.feed.nudge();
   assert.equal(x.sent.length, n + 1, 'nudged: sent now');
   assert.deepEqual({ ...x.last(), at: 0 }, { ...x.sent[n - 1], at: 0 });
-  x.feed.update({ connected: false, target: null, hold: null });
+  // 2.3.1: the TikTok LIVE dropping changes nothing: the song is still on air and a nudge still sends it
+  x.feed.update({ connected: false, target: SONG, hold: null });
+  assert.equal(x.sent.length, n + 1, 'the LIVE dropped: nothing new to say');
   x.feed.nudge();
-  assert.equal(x.sent.length, n + 1, 'no LIVE: a nudge sends nothing');
+  assert.equal(x.sent.length, n + 2);
+  assert.equal(x.last().onAir, true);
+  x.feed.stop();
+  x.feed.nudge();
+  assert.equal(x.sent.length, n + 2, 'stopped: a nudge sends nothing');
 });
